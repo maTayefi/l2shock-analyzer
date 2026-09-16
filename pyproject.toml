@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=80", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "l2-liquidity-shock-analyzer"
+version = "0.1.0"
+description = "Historical L2 liquidity reconstruction and shock-movement analysis"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+license = { text = "Proprietary" }
+authors = [
+    { name = "MTI" }
+]
+dependencies = [
+    "nicegui==3.16.0",
+    "httpx>=0.28",
+    "tenacity>=9.1",
+    "huggingface_hub>=0.30",
+    "SQLAlchemy>=2.0.43",
+    "psycopg[binary,pool]>=3.2.10",
+    "alembic>=1.16",
+    "pydantic>=2.11",
+    "pydantic-settings>=2.10",
+    "python-dotenv>=1.1",
+    "PyYAML>=6.0.2",
+    "pyarrow>=22",
+    "numpy>=2.3",
+    "pandas>=2.3",
+    "zstandard>=0.23",
+    "orjson>=3.11",
+    "python-dateutil>=2.9",
+    "tzdata>=2025.2",
+    "apscheduler>=3.11",
+    "psutil>=7.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.4",
+    "pytest-asyncio>=1.1",
+    "ruff>=0.12",
+    "black>=25.1",
+]
+
+[project.scripts]
+l2shock = "l2shock.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["l2shock*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+asyncio_mode = "auto"
+markers = [
+    "postgresql: requires the configured local PostgreSQL database",
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"

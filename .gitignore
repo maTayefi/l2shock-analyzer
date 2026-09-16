@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.pyc
+*.py[cod]
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environment
+.venv/
+venv/
+
+# Local configuration and credentials
+.env
+config.yaml
+*.pem
+*.key
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.VSCodeCounter/
+.pytest_cache/
+.ruff_cache/
+
+
+# Runtime data
+data/
+data/raw/
+data/cache/
+data/quarantine/
+data/exports/
+logs/
+backups/
+exports/
+backup/
+export/
+ai_chunks/
+cache_depth_probe/
+cache_multi_venue/
+cache_venue_inspection/
+l2_liquidity_shock_analyzer.egg-info/
+*.parquet
+*.l2checkpoint
+*.tmp
+
+# PostgreSQL archives
+*.dump
+*.backup
+*.sql.gz
+
+# Temporary downloads and atomic-write intermediates
+*.part
+*.tmp
+*.download
+
+# Generated package files
+build/
+dist/
+*.egg-info/
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store

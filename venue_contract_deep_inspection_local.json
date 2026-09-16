@@ -1,0 +1,58 @@
+{
+  "bybit_BTC": {
+    "ob_h12": {
+      "error": "File not found: cache_multi_venue\\bybit_BTC_ob_h12.parquet",
+      "path": "cache_multi_venue\\bybit_BTC_ob_h12.parquet"
+    },
+    "ob_h13": {
+      "error": "File not found: cache_multi_venue\\bybit_BTC_ob_h13.parquet",
+      "path": "cache_multi_venue\\bybit_BTC_ob_h13.parquet"
+    },
+    "tr_h13": {
+      "error": "File not found: cache_multi_venue\\bybit_BTC_trades_h13.parquet",
+      "path": "cache_multi_venue\\bybit_BTC_trades_h13.parquet"
+    }
+  },
+  "bybit_ETH": {
+    "ob_h12": {
+      "error": "File not found: cache_multi_venue\\bybit_ETH_ob_h12.parquet",
+      "path": "cache_multi_venue\\bybit_ETH_ob_h12.parquet"
+    },
+    "ob_h13": {
+      "error": "File not found: cache_multi_venue\\bybit_ETH_ob_h13.parquet",
+      "path": "cache_multi_venue\\bybit_ETH_ob_h13.parquet"
+    },
+    "tr_h13": {
+      "error": "File not found: cache_multi_venue\\bybit_ETH_trades_h13.parquet",
+      "path": "cache_multi_venue\\bybit_ETH_trades_h13.parquet"
+    }
+  },
+  "bitget_BTC": {
+    "ob_h12": {
+      "error": "File not found: cache_multi_venue\\bitget_BTC_ob_h12.parquet",
+      "path": "cache_multi_venue\\bitget_BTC_ob_h12.parquet"
+    },
+    "ob_h13": {
+      "error": "File not found: cache_multi_venue\\bitget_BTC_ob_h13.parquet",
+      "path": "cache_multi_venue\\bitget_BTC_ob_h13.parquet"
+    },
+    "tr_h13": {
+      "error": "File not found: cache_multi_venue\\bitget_BTC_trades_h13.parquet",
+      "path": "cache_multi_venue\\bitget_BTC_trades_h13.parquet"
+    }
+  },
+  "bitget_ETH": {
+    "ob_h12": {
+      "error": "File not found: cache_multi_venue\\bitget_ETH_ob_h12.parquet",
+      "path": "cache_multi_venue\\bitget_ETH_ob_h12.parquet"
+    },
+    "ob_h13": {
+      "error": "File not found: cache_multi_venue\\bitget_ETH_ob_h13.parquet",
+      "path": "cache_multi_venue\\bitget_ETH_ob_h13.parquet"
+    },
+    "tr_h13": {
+      "error": "File not found: cache_multi_venue\\bitget_ETH_trades_h13.parquet",
+      "path": "cache_multi_venue\\bitget_ETH_trades_h13.parquet"
+    }
+  }
+}

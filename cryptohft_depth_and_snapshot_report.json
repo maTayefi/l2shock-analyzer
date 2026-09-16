@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-09-11T18:45:00.259600+00:00",
+  "search_days": 14,
+  "venues": {
+    "bybit": {
+      "oldest_available_date": null,
+      "newest_available_date": null,
+      "total_available_hours": 0,
+      "snapshot_scan": {}
+    },
+    "bitget_futures": {
+      "oldest_available_date": null,
+      "newest_available_date": null,
+      "total_available_hours": 0,
+      "snapshot_scan": {}
+    },
+    "okx_futures": {
+      "oldest_available_date": null,
+      "newest_available_date": null,
+      "total_available_hours": 0,
+      "snapshot_scan": {}
+    },
+    "binance_futures": {
+      "oldest_available_date": null,
+      "newest_available_date": null,
+      "total_available_hours": 0,
+      "snapshot_scan": {}
+    }
+  }
+}

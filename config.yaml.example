@@ -1,0 +1,71 @@
+# Copy to config.yaml.
+# Store the database password in .env, not in this file.
+
+app:
+  title: "Liquidity Shock Analyzer"
+  host: "127.0.0.1"
+  port: 8080
+  timezone: "Asia/Tehran"
+  log_level: "INFO"
+
+database:
+  host: "127.0.0.1"
+  port: 5432
+  user: "postgres"
+  password: ""
+  database: "l2shock_local"
+  admin_database: "postgres"
+  pool_size: 5
+  max_overflow: 5
+  pool_timeout_seconds: 30
+
+storage:
+  raw_dir: "data/raw"
+  cache_dir: "data/cache"
+  quarantine_dir: "data/quarantine"
+  export_dir: "data/exports"
+  log_dir: "logs"
+  backup_dir: "backups"
+  raw_retention_hours: 72
+  minimum_free_disk_gib: 5.0
+
+cryptohft:
+  base_url: "https://api.cryptohftdata.com/v1"
+  api_key: ""
+  request_timeout_seconds: 60
+  download_rate_limit_per_minute: 55
+  retry_max_attempts: 5
+  retry_initial_backoff_seconds: 2
+  expected_release_delay_minutes: 15
+  release_poll_interval_minutes: 5
+  
+  # Newest incomplete release-eligible UTC hour is fetched first. Once it is
+  # complete, Automatic Fetch walks backward through this bounded window.
+  automatic_fetch_catch_up_hours: 72
+
+processing:
+  checkpoint_search_max_hours: 168
+
+analysis:
+  supported_bases: ["BTC", "ETH"]
+  base_sampling_interval_ms: 1000
+  activity_timeframes: ["1s", "5s", "10s", "15s", "30s"]
+  default_activity_timeframe: "1s"
+  default_chart_max_bars: 400
+  price_context_bars_before: 3
+  price_context_bars_after: 3
+  l2_long_invalid_warning_seconds: 60
+  price_long_invalid_warning_minutes: 3
+
+  lm:
+    confirmation_retracement_fraction: 0.20
+    top_n_height: 10
+    top_n_sharpness: 10
+    priority_height: 0.35
+    priority_sharpness: 0.30
+    priority_endpoint_extremeness: 0.20
+    priority_retracement_magnitude: 0.10
+    priority_retracement_count: 0.05
+    highlight_min_alpha: 0.05
+    highlight_max_alpha: 0.18
+    highlight_accumulated_alpha_cap: 0.40

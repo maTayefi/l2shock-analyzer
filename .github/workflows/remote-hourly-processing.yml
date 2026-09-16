@@ -1,0 +1,143 @@
+name: Remote hourly L2 preprocessing
+
+on:
+  schedule:
+    - cron: "30 * * * *"
+
+  workflow_dispatch:
+    inputs:
+      chain:
+        description: "Remote processing chain"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - binance_btc
+          - binance_eth
+          - okx_btc
+          - okx_eth
+
+      hour:
+        description: "Optional canonical UTC hour, for example 2026-09-14T12:00:00Z"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  process-hour:
+    name: ${{ matrix.chain }}
+
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch'
+        || vars.L2SHOCK_REMOTE_PROCESSING_ENABLED == 'true'
+      }}
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - chain: binance_btc
+            venue: binance_futures
+            instrument: BTCUSDT
+
+          - chain: binance_eth
+            venue: binance_futures
+            instrument: ETHUSDT
+
+          - chain: okx_btc
+            venue: okx_futures
+            instrument: BTC-USDT-SWAP
+
+          - chain: okx_eth
+            venue: okx_futures
+            instrument: ETH-USDT-SWAP
+
+    concurrency:
+      group: l2shock-remote-${{ matrix.chain }}
+      cancel-in-progress: false
+      queue: max
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      L2SHOCK_HF_REPO_ID: ${{ vars.L2SHOCK_HF_REPO_ID }}
+      L2SHOCK_HF_REVISION: ${{ vars.L2SHOCK_HF_REVISION || 'main' }}
+      TARGET_HOUR: ${{ inputs.hour || '' }}
+      SELECTED_CHAIN: ${{ inputs.chain || 'all' }}
+      DEPTH_LOWER: ${{ vars.L2SHOCK_DEPTH_LOWER || '0' }}
+      DEPTH_UPPER: ${{ vars.L2SHOCK_DEPTH_UPPER || '0.01' }}
+
+    steps:
+      - name: Skip unselected manual chain
+        id: selection
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] \
+             && [[ "${SELECTED_CHAIN}" != "all" ]] \
+             && [[ "${SELECTED_CHAIN}" != "${{ matrix.chain }}" ]]; then
+            echo "run=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "run=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Check out source
+        if: steps.selection.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.14
+        if: steps.selection.outputs.run == 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      - name: Install project
+        if: steps.selection.outputs.run == 'true'
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Validate required private-dataset configuration
+        if: steps.selection.outputs.run == 'true'
+        shell: bash
+        run: |
+          if [[ -z "${HF_TOKEN}" ]]; then
+            echo "HF_TOKEN GitHub Actions secret is not configured." >&2
+            exit 2
+          fi
+
+          if [[ -z "${L2SHOCK_HF_REPO_ID}" ]]; then
+            echo "L2SHOCK_HF_REPO_ID GitHub Actions variable is not configured." >&2
+            exit 2
+          fi
+
+      - name: Process and publish one completed hour
+        if: steps.selection.outputs.run == 'true'
+        shell: bash
+        run: |
+          args=(
+            "--venue" "${{ matrix.venue }}"
+            "--instrument" "${{ matrix.instrument }}"
+            "--release-delay-minutes" "15"
+            "--depth-lower" "${DEPTH_LOWER}"
+            "--depth-upper" "${DEPTH_UPPER}"
+            "--hf-repo-id" "${L2SHOCK_HF_REPO_ID}"
+            "--hf-revision" "${L2SHOCK_HF_REVISION}"
+          )
+
+          if [[ -n "${TARGET_HOUR}" ]]; then
+            args+=("--hour" "${TARGET_HOUR}")
+          fi
+
+          python -m l2shock.remote_worker "${args[@]}"
