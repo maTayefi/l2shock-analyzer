@@ -13,6 +13,7 @@ from l2shock.processing.l2_coordinator import (
     SessionScopeFactory,
     SingleMarketL2ProcessingCoordinator,
     create_production_l2_processing_coordinator,
+    updated_l2_analytical_output_metadata,
 )
 from l2shock.processing.price_coordinator import (
     PriceProcessingProgressSink,
@@ -92,5 +93,6 @@ __all__ = [
     "load_downloaded_processing_targets",
     "load_materialization_processing_targets",
     "raise_if_processing_cancelled",
+    "updated_l2_analytical_output_metadata",
     "verify_processing_source_archive",
 ]

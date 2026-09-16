@@ -33,6 +33,14 @@ from l2shock.remote.hf_repository import (
     HuggingFaceRepositoryError,
     HuggingFaceRepositoryUnavailableError,
 )
+from l2shock.remote.importer import (
+    REMOTE_IMPORT_ORIGIN,
+    RemoteArtifactImportError,
+    RemoteArtifactImportResult,
+    RemoteImportSessionScopeFactory,
+    download_and_import_huggingface_artifact,
+    import_downloaded_huggingface_artifact,
+)
 from l2shock.remote.source_acquisition import (
     RemoteWorkerAcquisitionError,
     RemoteWorkerAcquisitionResult,
@@ -70,7 +78,10 @@ __all__ = [
     "HuggingFacePublicationResult",
     "HuggingFaceRepositoryError",
     "HuggingFaceRepositoryUnavailableError",
+    "REMOTE_IMPORT_ORIGIN",
     "RemoteArtifactCodecError",
+    "RemoteArtifactImportError",
+    "RemoteArtifactImportResult",
     "RemoteArtifactCorruptionError",
     "RemoteArtifactFileInfo",
     "RemoteArtifactKey",
@@ -88,9 +99,12 @@ __all__ = [
     "RemoteWorkerWorkspace",
     "acquire_remote_worker_archives",
     "build_remote_worker_workspace",
+    "download_and_import_huggingface_artifact",
+    "import_downloaded_huggingface_artifact",
     "process_l2_archive_headlessly",
     "process_price_archives_headlessly",
     "read_remote_artifact_file",
+    "RemoteImportSessionScopeFactory",
     "temporary_remote_worker_workspace",
     "write_remote_artifact_file",
 ]

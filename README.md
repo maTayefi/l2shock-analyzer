@@ -1142,13 +1142,23 @@ Processing.
 An hour is considered acquisition-complete when all six expected production
 source identities are proven by durable metadata.
 
-For downloaded or processing rows, completeness requires an intact canonical
-local archive whose size matches durable metadata.
+Downloaded and processing rows require an intact canonical local archive whose
+size matches durable metadata.
 
-A processed row remains acquisition-complete after explicit raw pruning when
-its durable size and content SHA-256 remain present. Raw pruning must not cause
-Automatic Fetch to re-download an already processed source. Reattaching raw
-bytes remains the separate raw-rehydration workflow.
+A local processed row with a non-null local path also requires that intact
+canonical file. A processed row remains acquisition-complete after explicit raw
+pruning when its local path is null and its durable size and content SHA-256
+remain present.
+
+A verified Hugging Face import is a separate processed-source case. It records
+the canonical source SHA-256 and a typed remote-import ownership marker without
+inventing a local raw path or raw size. Automatic Fetch treats that verified
+remote ownership as acquisition-complete while the remote-import profile owns
+normal acquisition.
+
+Raw pruning and remote import must not cause Automatic Fetch to redownload an
+already processed source. Reattaching local raw bytes remains the separate
+raw-rehydration workflow.
 
 The catch-up search is bounded. Automatic Fetch does not silently start an
 unlimited historical backfill.

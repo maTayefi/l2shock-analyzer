@@ -341,3 +341,73 @@ async def test_retry_cursor_finishes_persistence_before_cancellation_propagates(
         await task
 
     assert completed.is_set()
+
+
+def test_remote_imported_processed_source_is_acquisition_complete_without_raw(
+    tmp_path: Path,
+) -> None:
+    assert _source_row_counts_as_complete(
+        venue="binance_futures",
+        instrument="BTCUSDT",
+        data_kind="orderbook",
+        hour_utc=_utc(12, 0),
+        status="processed",
+        local_path=None,
+        file_size_bytes=None,
+        content_sha256="a" * 64,
+        raw_root=tmp_path,
+        quality_json={
+            "schema": "l2shock.remote_imported_source_hour_quality",
+            "schema_version": 1,
+            "processing_origin": "hugging_face_remote_import_v1",
+        },
+    )
+
+
+def test_processed_source_with_claimed_local_path_requires_intact_file(
+    tmp_path: Path,
+) -> None:
+    from l2shock.acquisition import SourceFileSpec
+
+    spec = SourceFileSpec(
+        venue="binance_futures",
+        symbol="BTCUSDT",
+        data_kind="orderbook",
+        hour_utc=_utc(12, 0),
+    )
+    missing_path = spec.local_path(tmp_path)
+
+    assert not _source_row_counts_as_complete(
+        venue=spec.venue,
+        instrument=spec.symbol,
+        data_kind=spec.data_kind.value,
+        hour_utc=spec.hour_utc,
+        status="processed",
+        local_path=str(missing_path),
+        file_size_bytes=123,
+        content_sha256="a" * 64,
+        raw_root=tmp_path,
+    )
+
+
+def test_remote_import_marker_does_not_bypass_noncanonical_local_path(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside" / "BTCUSDT_orderbook.parquet"
+    outside.parent.mkdir(parents=True)
+    outside.write_bytes(b"source")
+
+    assert not _source_row_counts_as_complete(
+        venue="binance_futures",
+        instrument="BTCUSDT",
+        data_kind="orderbook",
+        hour_utc=_utc(12, 0),
+        status="processed",
+        local_path=str(outside),
+        file_size_bytes=outside.stat().st_size,
+        content_sha256="a" * 64,
+        raw_root=tmp_path / "raw",
+        quality_json={
+            "processing_origin": "hugging_face_remote_import_v1",
+        },
+    )

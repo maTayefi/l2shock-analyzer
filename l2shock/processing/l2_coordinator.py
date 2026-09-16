@@ -141,13 +141,13 @@ def _canonical_sha256_or_none(
     return digest
 
 
-def _updated_analytical_output_metadata(
+def updated_l2_analytical_output_metadata(
     previous_quality: object,
     *,
     preset_hash: str,
     content_sha256: str,
 ) -> tuple[list[str], dict[str, str]]:
-    """Preserve every known L2 analytical output for one raw source hour."""
+    """Preserve every known L2 analytical output for one source hour."""
 
     normalized_preset_hash = _canonical_sha256_or_none(preset_hash)
     normalized_content_hash = _canonical_sha256_or_none(content_sha256)
@@ -208,6 +208,11 @@ def _updated_analytical_output_metadata(
         sorted(known_hashes),
         dict(sorted(outputs_by_preset.items())),
     )
+
+
+# Compatibility alias retained for existing focused tests and internal callers.
+# New infrastructure should use the public descriptive name above.
+_updated_analytical_output_metadata = updated_l2_analytical_output_metadata
 
 
 def _single_market_contract(
@@ -782,7 +787,7 @@ class SingleMarketL2ProcessingCoordinator:
         (
             analytical_content_sha256s,
             analytical_outputs_by_preset,
-        ) = _updated_analytical_output_metadata(
+        ) = updated_l2_analytical_output_metadata(
             previous_quality,
             preset_hash=preset.preset_hash,
             content_sha256=encoded.content_sha256,
@@ -986,4 +991,5 @@ __all__ = [
     "SessionScopeFactory",
     "SingleMarketL2ProcessingCoordinator",
     "create_production_l2_processing_coordinator",
+    "updated_l2_analytical_output_metadata",
 ]

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -403,23 +403,23 @@ def _source_row_counts_as_complete(
     file_size_bytes: object,
     content_sha256: object,
     raw_root: Path,
+    quality_json: object = None,
 ) -> bool:
     """Return whether one durable source row satisfies acquisition completeness.
 
-    A processed row remains acquisition-complete after explicit raw pruning.
-    Downloaded or processing rows require an intact canonical local file.
+    Downloaded and processing rows require an intact canonical local file.
+
+    A local processed row with ``local_path=None`` counts as complete after
+    explicit pruning only when durable size and SHA-256 metadata remain.
+
+    A verified HF-imported processed row counts as complete from its canonical
+    source SHA and remote-import ownership marker without pretending that raw
+    bytes exist locally.
     """
 
     digest = _canonical_sha256_or_none(content_sha256)
 
     if digest is None:
-        return False
-
-    if (
-        isinstance(file_size_bytes, bool)
-        or not isinstance(file_size_bytes, int)
-        or file_size_bytes <= 0
-    ):
         return False
 
     try:
@@ -435,18 +435,36 @@ def _source_row_counts_as_complete(
 
     status_text = str(status or "").strip().lower()
 
-    if status_text == "processed":
-        # Explicit raw pruning clears only local_path. The durable processed
-        # row still proves that acquisition previously completed.
-        return True
-
     if status_text not in {
         "downloaded",
         "processing",
+        "processed",
     }:
         return False
 
+    quality = quality_json if isinstance(quality_json, Mapping) else {}
+    remote_imported = (
+        quality.get("processing_origin") == "hugging_face_remote_import_v1"
+    )
+
     path_text = str(local_path or "").strip()
+
+    if status_text == "processed" and not path_text:
+        if remote_imported:
+            return True
+
+        return bool(
+            not isinstance(file_size_bytes, bool)
+            and isinstance(file_size_bytes, int)
+            and file_size_bytes > 0
+        )
+
+    if (
+        isinstance(file_size_bytes, bool)
+        or not isinstance(file_size_bytes, int)
+        or file_size_bytes <= 0
+    ):
+        return False
 
     if not path_text:
         return False
@@ -507,6 +525,7 @@ def _complete_source_hours_sync(
                 SourceHour.local_path,
                 SourceHour.file_size_bytes,
                 SourceHour.content_sha256,
+                SourceHour.quality_json,
             )
             .where(SourceHour.provider == "cryptohftdata")
             .where(
@@ -546,6 +565,7 @@ def _complete_source_hours_sync(
         local_path,
         file_size_bytes,
         digest,
+        quality_json,
     ) in rows:
         hour = require_utc_hour(
             "stored source hour",
@@ -562,6 +582,7 @@ def _complete_source_hours_sync(
             file_size_bytes=file_size_bytes,
             content_sha256=digest,
             raw_root=raw_root,
+            quality_json=quality_json,
         ):
             continue
 
