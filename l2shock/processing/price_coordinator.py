@@ -610,7 +610,7 @@ class SingleMarketPriceProcessingCoordinator:
 
         try:
             current = SourceHourStatus(row.status)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return
 
         if current is not SourceHourStatus.PROCESSING:

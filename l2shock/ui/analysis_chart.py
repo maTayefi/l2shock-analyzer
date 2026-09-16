@@ -184,7 +184,7 @@ def _decimal_float(
 
     try:
         result = float(value)
-    except (TypeError, ValueError, OverflowError):
+    except TypeError, ValueError, OverflowError:
         return None
 
     return result if math.isfinite(result) else None

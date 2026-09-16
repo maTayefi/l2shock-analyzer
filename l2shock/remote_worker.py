@@ -34,7 +34,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from enum import IntEnum
 from pathlib import Path
@@ -195,6 +195,39 @@ class _ExistingRemoteState:
     pinned_revision: str
     l2_artifact: RemoteL2ProcessedArtifact | None
     price_artifact: RemotePriceProcessedArtifact | None
+
+
+@dataclass(frozen=True, slots=True)
+class _RemoteCatchUpObservation:
+    """One pinned-revision hour inspected during chain-frontier discovery."""
+
+    hour_utc: datetime
+    l2_exists: bool
+    output_checkpoint_exists: bool
+    price_exists: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "hour_utc",
+            require_utc_hour(
+                "hour_utc",
+                self.hour_utc,
+            ),
+        )
+
+        for field_name in (
+            "l2_exists",
+            "output_checkpoint_exists",
+            "price_exists",
+        ):
+            if not isinstance(getattr(self, field_name), bool):
+                raise TypeError(f"{field_name} must be bool")
+
+        if self.output_checkpoint_exists and not self.l2_exists:
+            raise RemoteWorkerError(
+                "A remote output checkpoint cannot exist without its L2 artifact"
+            )
 
 
 _SUPPORTED_CHAINS: Final[dict[tuple[str, str], bool]] = {
@@ -381,6 +414,222 @@ def _price_key(
         venue="binance_futures",
         instrument=instrument,
         hour_utc=hour_utc,
+    )
+
+
+def _catch_up_target_from_observations(
+    *,
+    venue: str,
+    latest_eligible_hour_utc: datetime,
+    observations: tuple[_RemoteCatchUpObservation, ...],
+    price_required: bool,
+) -> datetime:
+    """Select one safe remote target from newest-to-oldest observations.
+
+    The first existing L2 artifact is the newest verified chain frontier inside
+    the bounded search window.
+
+    For Binance:
+
+    - a missing price artifact at that frontier is repaired first;
+    - otherwise only the immediately following hour may advance;
+    - the frontier must own a usable output checkpoint;
+    - absence of a frontier fails closed because update-only archives cannot
+      initialize a fresh book.
+
+    For OKX:
+
+    - the same existing-frontier behavior is used when a frontier exists;
+    - when no artifact exists in the bounded window, the oldest inspected hour
+      is selected because the approved OKX source contract requires an opening
+      complete snapshot in the target archive.
+
+    Returning the latest already-complete hour is an idempotent no-work probe.
+    ``process_remote_hour`` will verify and reuse its existing artifacts.
+    """
+
+    normalized_venue = str(venue or "").strip().lower()
+    latest = require_utc_hour(
+        "latest_eligible_hour_utc",
+        latest_eligible_hour_utc,
+    )
+    values = tuple(observations)
+
+    if not values:
+        raise RemoteWorkerError(
+            "Remote catch-up planning requires at least one inspected hour"
+        )
+
+    if not isinstance(price_required, bool):
+        raise TypeError("price_required must be bool")
+
+    expected_hour = latest
+
+    for observation in values:
+        if not isinstance(observation, _RemoteCatchUpObservation):
+            raise TypeError(
+                "observations must contain _RemoteCatchUpObservation objects"
+            )
+
+        if observation.hour_utc != expected_hour:
+            raise RemoteWorkerError(
+                "Remote catch-up observations must be contiguous and ordered "
+                "newest to oldest"
+            )
+
+        expected_hour -= timedelta(hours=1)
+
+    frontier = next(
+        (observation for observation in values if observation.l2_exists),
+        None,
+    )
+
+    if frontier is None:
+        if normalized_venue == "okx_futures":
+            return values[-1].hour_utc
+
+        raise RemoteWorkerCheckpointBlockedError(
+            "No verified Binance L2/checkpoint seed exists inside the bounded "
+            "remote catch-up search window"
+        )
+
+    if not frontier.output_checkpoint_exists:
+        raise RemoteWorkerCheckpointBlockedError(
+            "The newest remote L2 frontier has no usable output checkpoint"
+        )
+
+    if price_required and not frontier.price_exists:
+        return frontier.hour_utc
+
+    next_hour = frontier.hour_utc + timedelta(hours=1)
+
+    if next_hour <= latest:
+        return next_hour
+
+    return frontier.hour_utc
+
+
+async def select_remote_catch_up_hour(
+    *,
+    repository: HuggingFaceDatasetRepository,
+    venue: str,
+    instrument: str,
+    latest_eligible_hour_utc: datetime,
+    lower_fraction: Decimal,
+    upper_fraction: Decimal,
+    search_hours: int,
+) -> datetime:
+    """Find one safe processable hour from one pinned HF repository revision."""
+
+    if not isinstance(
+        repository,
+        HuggingFaceDatasetRepository,
+    ):
+        raise TypeError("repository must be HuggingFaceDatasetRepository")
+
+    if (
+        isinstance(search_hours, bool)
+        or not isinstance(search_hours, int)
+        or search_hours <= 0
+    ):
+        raise RemoteWorkerError("search_hours must be a positive integer")
+
+    latest = require_utc_hour(
+        "latest_eligible_hour_utc",
+        latest_eligible_hour_utc,
+    )
+    normalized_venue, normalized_instrument, price_required = _normalized_chain(
+        venue,
+        instrument,
+    )
+    preset = _preset_for_chain(
+        venue=normalized_venue,
+        instrument=normalized_instrument,
+        lower_fraction=lower_fraction,
+        upper_fraction=upper_fraction,
+    )
+
+    pinned_revision = await asyncio.to_thread(
+        repository.current_revision,
+    )
+    observations: list[_RemoteCatchUpObservation] = []
+
+    for offset in range(search_hours):
+        hour = latest - timedelta(hours=offset)
+        l2_key = _l2_key(
+            venue=normalized_venue,
+            instrument=normalized_instrument,
+            hour_utc=hour,
+            preset=preset,
+        )
+        downloaded_l2 = await asyncio.to_thread(
+            repository.download_artifact,
+            l2_key,
+            revision=pinned_revision,
+        )
+
+        if downloaded_l2 is None:
+            observations.append(
+                _RemoteCatchUpObservation(
+                    hour_utc=hour,
+                    l2_exists=False,
+                    output_checkpoint_exists=False,
+                    price_exists=False,
+                )
+            )
+            continue
+
+        if not isinstance(
+            downloaded_l2.artifact,
+            RemoteL2ProcessedArtifact,
+        ):
+            raise RemoteWorkerError(
+                "Remote catch-up L2 key resolved to a non-L2 artifact"
+            )
+
+        price_exists = False
+
+        if price_required:
+            downloaded_price = await asyncio.to_thread(
+                repository.download_artifact,
+                _price_key(
+                    instrument=normalized_instrument,
+                    hour_utc=hour,
+                ),
+                revision=pinned_revision,
+            )
+
+            if downloaded_price is not None:
+                if not isinstance(
+                    downloaded_price.artifact,
+                    RemotePriceProcessedArtifact,
+                ):
+                    raise RemoteWorkerError(
+                        "Remote catch-up price key resolved to a non-price artifact"
+                    )
+
+                price_exists = True
+
+        observations.append(
+            _RemoteCatchUpObservation(
+                hour_utc=hour,
+                l2_exists=True,
+                output_checkpoint_exists=(
+                    downloaded_l2.artifact.output_checkpoint is not None
+                ),
+                price_exists=price_exists,
+            )
+        )
+
+        # The newest existing L2 artifact is the only frontier needed for the
+        # next safe chain transition. Older artifacts cannot supersede it.
+        break
+
+    return _catch_up_target_from_observations(
+        venue=normalized_venue,
+        latest_eligible_hour_utc=latest,
+        observations=tuple(observations),
+        price_required=price_required,
     )
 
 
@@ -760,6 +1009,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=15,
     )
     parser.add_argument(
+        "--catch-up-hours",
+        type=_positive_integer,
+        default=72,
+        help=(
+            "Bounded newest-to-oldest HF frontier search used when --hour "
+            "is omitted."
+        ),
+    )
+    parser.add_argument(
         "--depth-lower",
         type=_depth_fraction,
         required=True,
@@ -826,12 +1084,6 @@ async def _run_from_arguments(
         current,
         release_delay_minutes=args.release_delay_minutes,
     )
-    target_hour = args.hour or latest_eligible
-
-    if target_hour > latest_eligible:
-        raise RemoteWorkerError(
-            "Requested target hour is newer than the release-eligible boundary"
-        )
 
     hf_token = _required_environment_secret("HF_TOKEN")
 
@@ -853,6 +1105,24 @@ async def _run_from_arguments(
         revision=args.hf_revision,
         token=hf_token,
     )
+
+    if args.hour is None:
+        target_hour = await select_remote_catch_up_hour(
+            repository=repository,
+            venue=args.venue,
+            instrument=args.instrument,
+            latest_eligible_hour_utc=latest_eligible,
+            lower_fraction=args.depth_lower,
+            upper_fraction=args.depth_upper,
+            search_hours=args.catch_up_hours,
+        )
+    else:
+        target_hour = args.hour
+
+    if target_hour > latest_eligible:
+        raise RemoteWorkerError(
+            "Requested target hour is newer than the release-eligible boundary"
+        )
 
     with temporary_remote_worker_workspace(
         parent=args.workspace_parent,
@@ -955,4 +1225,5 @@ __all__ = [
     "build_parser",
     "main",
     "process_remote_hour",
+    "select_remote_catch_up_hour",
 ]

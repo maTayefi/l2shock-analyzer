@@ -925,7 +925,7 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
             timeframe = str(row.get("timeframe") or "")
             direction = str(row.get("direction") or "")
             population_rank = int(row.get("population_rank"))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             table_navigation_status.text = (
                 "The selected row has incomplete ranking identity."
             )

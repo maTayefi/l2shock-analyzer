@@ -350,7 +350,7 @@ def _decoded_method_result(value: object) -> object:
 
     try:
         return json.loads(value)
-    except (TypeError, ValueError, json.JSONDecodeError):
+    except TypeError, ValueError, json.JSONDecodeError:
         return value
 
 

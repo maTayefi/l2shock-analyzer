@@ -252,7 +252,7 @@ def _parse_canonical_hour_text(
             "automatic-fetch cursor hour",
             parsed,
         )
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
     if _canonical_hour_text(hour) != text_value:
@@ -430,7 +430,7 @@ def _source_row_counts_as_complete(
             data_kind=SourceDataKind(str(data_kind)),
             hour_utc=hour_utc,
         )
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
 
     status_text = str(status or "").strip().lower()

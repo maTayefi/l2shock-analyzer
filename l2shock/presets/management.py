@@ -121,7 +121,7 @@ def _market_profile_from_config(
 
     try:
         preset = liquidity_data_preset_from_canonical_dict(config_json)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
     if preset.base != normalized_base:

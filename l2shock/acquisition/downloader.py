@@ -309,7 +309,7 @@ class CryptoHFTDownloader:
         try:
             validation = validate_parquet_file(destination, spec)
             digest, file_size = sha256_file(destination)
-        except (ParquetValidationError, DownloadIntegrityError):
+        except ParquetValidationError, DownloadIntegrityError:
             quarantined = quarantine_file(
                 destination,
                 self._storage.quarantine_path,

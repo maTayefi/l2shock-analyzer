@@ -24,12 +24,18 @@ on:
         default: ""
         type: string
 
+      catch_up_hours:
+        description: "Bounded HF chain-frontier search when hour is omitted"
+        required: true
+        default: "72"
+        type: string
+
 permissions:
   contents: read
 
 jobs:
-  process-hour:
-    name: ${{ matrix.chain }}
+  prepare:
+    name: Prepare remote chain matrix
 
     if: >-
       ${{
@@ -38,61 +44,72 @@ jobs:
       }}
 
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+
+    steps:
+      - name: Build selected chain matrix
+        id: matrix
+        shell: bash
+        env:
+          SELECTED_CHAIN: ${{ inputs.chain || 'all' }}
+        run: |
+          case "${SELECTED_CHAIN}" in
+            all)
+              matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT"},{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT"},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP"},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP"}]}'
+              ;;
+            binance_btc)
+              matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT"}]}'
+              ;;
+            binance_eth)
+              matrix='{"include":[{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT"}]}'
+              ;;
+            okx_btc)
+              matrix='{"include":[{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP"}]}'
+              ;;
+            okx_eth)
+              matrix='{"include":[{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP"}]}'
+              ;;
+            *)
+              echo "Unsupported remote chain selection." >&2
+              exit 2
+              ;;
+          esac
+
+          echo "matrix=${matrix}" >> "${GITHUB_OUTPUT}"
+
+  process-hour:
+    name: ${{ matrix.chain }}
+    needs: prepare
+
+    runs-on: ubuntu-latest
     timeout-minutes: 330
 
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - chain: binance_btc
-            venue: binance_futures
-            instrument: BTCUSDT
-
-          - chain: binance_eth
-            venue: binance_futures
-            instrument: ETHUSDT
-
-          - chain: okx_btc
-            venue: okx_futures
-            instrument: BTC-USDT-SWAP
-
-          - chain: okx_eth
-            venue: okx_futures
-            instrument: ETH-USDT-SWAP
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
 
     concurrency:
       group: l2shock-remote-${{ matrix.chain }}
       cancel-in-progress: false
-      queue: max
+      queue: single
 
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       L2SHOCK_HF_REPO_ID: ${{ vars.L2SHOCK_HF_REPO_ID }}
       L2SHOCK_HF_REVISION: ${{ vars.L2SHOCK_HF_REVISION || 'main' }}
       TARGET_HOUR: ${{ inputs.hour || '' }}
-      SELECTED_CHAIN: ${{ inputs.chain || 'all' }}
+      CATCH_UP_HOURS: ${{ inputs.catch_up_hours || '72' }}
       DEPTH_LOWER: ${{ vars.L2SHOCK_DEPTH_LOWER || '0' }}
       DEPTH_UPPER: ${{ vars.L2SHOCK_DEPTH_UPPER || '0.01' }}
 
     steps:
-      - name: Skip unselected manual chain
-        id: selection
-        shell: bash
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] \
-             && [[ "${SELECTED_CHAIN}" != "all" ]] \
-             && [[ "${SELECTED_CHAIN}" != "${{ matrix.chain }}" ]]; then
-            echo "run=false" >> "${GITHUB_OUTPUT}"
-          else
-            echo "run=true" >> "${GITHUB_OUTPUT}"
-          fi
-
       - name: Check out source
-        if: steps.selection.outputs.run == 'true'
         uses: actions/checkout@v4
 
       - name: Set up Python 3.14
-        if: steps.selection.outputs.run == 'true'
         uses: actions/setup-python@v6
         with:
           python-version: "3.14"
@@ -102,14 +119,12 @@ jobs:
             pyproject.toml
 
       - name: Install project
-        if: steps.selection.outputs.run == 'true'
         shell: bash
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .
 
       - name: Validate required private-dataset configuration
-        if: steps.selection.outputs.run == 'true'
         shell: bash
         run: |
           if [[ -z "${HF_TOKEN}" ]]; then
@@ -122,14 +137,19 @@ jobs:
             exit 2
           fi
 
+          if ! [[ "${CATCH_UP_HOURS}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "catch_up_hours must be a positive integer." >&2
+            exit 2
+          fi
+
       - name: Process and publish one completed hour
-        if: steps.selection.outputs.run == 'true'
         shell: bash
         run: |
           args=(
             "--venue" "${{ matrix.venue }}"
             "--instrument" "${{ matrix.instrument }}"
             "--release-delay-minutes" "15"
+            "--catch-up-hours" "${CATCH_UP_HOURS}"
             "--depth-lower" "${DEPTH_LOWER}"
             "--depth-upper" "${DEPTH_UPPER}"
             "--hf-repo-id" "${L2SHOCK_HF_REPO_ID}"

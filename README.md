@@ -334,6 +334,47 @@ allowing different chains to run concurrently.
 Do not enable scheduled Binance processing until a verified predecessor seed
 exists in the private Hugging Face dataset.
 
+When the scheduled worker omits an explicit target hour, it performs a bounded
+newest-to-oldest inspection of one pinned Hugging Face revision.
+
+For each venue/instrument chain:
+
+```text
+newest existing verified L2 artifact
+    ->
+verify usable output checkpoint
+    ->
+repair missing same-hour Binance price when required
+    ->
+process only the immediately following L2 hour
+```
+
+If the newest release-eligible hour is already complete, the worker performs an
+idempotent existing-artifact verification and publishes nothing.
+
+Binance fails closed when no verified seed exists inside the bounded search
+window. The worker never treats the first update in an update-only Binance
+archive as a snapshot.
+
+OKX may select the oldest hour in an empty bounded search window because the
+approved OKX contract requires the target archive to establish its own complete
+opening snapshot. Headless processing must still produce a usable output
+checkpoint before publication.
+
+GitHub Actions keeps one running and at most one pending invocation for each
+venue/instrument chain:
+
+```text
+cancel-in-progress: false
+queue: single
+```
+
+A running predecessor is never canceled. Independent chains retain separate
+concurrency groups and may run concurrently. GitHub concurrency remains an
+operational serialization layer; immutable artifact identity, pinned reads,
+checkpoint validation, and optimistic Hugging Face publication remain the
+authoritative correctness boundaries.
+
 Example L2 invocation:
 
 ```powershell

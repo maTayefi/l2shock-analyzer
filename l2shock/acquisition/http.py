@@ -117,7 +117,7 @@ def parse_retry_after_seconds(
 
     try:
         retry_at = parsedate_to_datetime(text)
-    except (TypeError, ValueError, OverflowError):
+    except TypeError, ValueError, OverflowError:
         return None
 
     if retry_at.tzinfo is None or retry_at.utcoffset() is None:

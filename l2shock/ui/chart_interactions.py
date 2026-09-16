@@ -160,7 +160,7 @@ def _decoded_json(value: object) -> object:
 
     try:
         return json.loads(value)
-    except (TypeError, ValueError, json.JSONDecodeError):
+    except TypeError, ValueError, json.JSONDecodeError:
         return value
 
 
