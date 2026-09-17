@@ -7,12 +7,17 @@ from l2shock.ui.state import get_state, reset_state_for_tests
 
 
 @pytest.fixture(autouse=True)
-def _isolate_automatic_fetch_runtime(
+def _isolate_background_runtimes(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
         shutdown_module,
         "peek_automatic_fetch_runtime",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        shutdown_module,
+        "peek_remote_import_runtime",
         lambda: None,
     )
     yield
@@ -715,3 +720,75 @@ async def test_shutdown_does_not_dispose_engine_when_tracked_tasks_remain(
 
     assert state.shutdown_started is True
     assert state.shutdown_complete is False
+
+
+@pytest.mark.asyncio
+async def test_shutdown_stops_remote_import_before_processing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset_state_for_tests()
+    events: list[str] = []
+
+    remote_import_runtime = FakeRuntime(
+        events,
+        name="remote_import",
+    )
+    processing_runtime = FakeRuntime(
+        events,
+        name="processing",
+    )
+
+    monkeypatch.setattr(
+        shutdown_module,
+        "peek_manual_fetch_runtime",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        shutdown_module,
+        "peek_remote_import_runtime",
+        lambda: remote_import_runtime,
+    )
+    monkeypatch.setattr(
+        shutdown_module,
+        "peek_manual_processing_runtime",
+        lambda: processing_runtime,
+    )
+    monkeypatch.setattr(
+        shutdown_module,
+        "peek_manual_analysis_runtime",
+        lambda: None,
+    )
+
+    async def cancel_tasks(
+        *,
+        timeout_seconds: float,
+    ) -> int:
+        events.append(f"tasks:{timeout_seconds}")
+        return 0
+
+    monkeypatch.setattr(
+        shutdown_module,
+        "cancel_and_wait_for_tracked_tasks",
+        cancel_tasks,
+    )
+    monkeypatch.setattr(
+        shutdown_module,
+        "reset_engine",
+        lambda: events.append("engine"),
+    )
+
+    await shutdown_module.shutdown_runtime(
+        request_server_stop=False,
+        remote_import_grace_seconds=7.0,
+        remote_import_force_cancel_seconds=8.0,
+        processing_grace_seconds=5.0,
+        processing_force_cancel_seconds=6.0,
+        other_task_timeout_seconds=4.0,
+    )
+
+    assert events == [
+        "remote_import:cooperative:7.0",
+        "processing:cooperative:5.0",
+        "tasks:4.0",
+        "engine",
+    ]

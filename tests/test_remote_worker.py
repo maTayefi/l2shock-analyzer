@@ -17,12 +17,11 @@ from l2shock.remote_worker import (
     RemoteWorkerError,
     RemoteWorkerResult,
     _RemoteCatchUpObservation,
+    _canonical_utc_hour,
+    _catch_up_target_from_observations,
+    _normalized_chain,
     build_parser,
     process_remote_catch_up,
-    _catch_up_target_from_observations,
-    _canonical_utc_hour,
-    _normalized_chain,
-    _RemoteCatchUpObservation,
 )
 
 

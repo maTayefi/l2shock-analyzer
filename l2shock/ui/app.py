@@ -28,6 +28,7 @@ from l2shock.ui.automatic_fetch_runtime import (
     peek_automatic_fetch_runtime,
 )
 from l2shock.ui.processing_runtime import peek_manual_processing_runtime
+from l2shock.ui.remote_import_runtime import peek_remote_import_runtime
 from l2shock.ui.shutdown import shutdown_runtime
 from l2shock.ui.state import get_state
 from l2shock.ui.tab_analysis import build_analysis_tab
@@ -138,6 +139,11 @@ def build_health_snapshot() -> dict[str, Any]:
         processing_runtime.snapshot() if processing_runtime is not None else None
     )
 
+    remote_import_runtime = peek_remote_import_runtime()
+    remote_import_snapshot = (
+        remote_import_runtime.snapshot() if remote_import_runtime is not None else None
+    )
+
     analysis_runtime = peek_manual_analysis_runtime()
     analysis_snapshot = (
         analysis_runtime.snapshot() if analysis_runtime is not None else None
@@ -214,6 +220,22 @@ def build_health_snapshot() -> dict[str, Any]:
         "manual_processing_stop_requested": bool(
             processing_snapshot is not None and processing_snapshot.stop_requested
         ),
+        "active_remote_import_operation_id": (
+            remote_import_snapshot.operation_id
+            if remote_import_snapshot is not None
+            else None
+        ),
+        "remote_import_running": bool(
+            remote_import_snapshot is not None and remote_import_snapshot.is_running
+        ),
+        "remote_import_stop_requested": bool(
+            remote_import_snapshot is not None and remote_import_snapshot.stop_requested
+        ),
+        "remote_import_pinned_revision": (
+            remote_import_snapshot.pinned_revision
+            if remote_import_snapshot is not None
+            else None
+        ),
         "active_analysis_operation_id": (
             analysis_snapshot.operation_id if analysis_snapshot is not None else None
         ),
@@ -254,6 +276,8 @@ def build_health_snapshot() -> dict[str, Any]:
             "trade_price_processing_coordinator": True,
             "processing_runtime_ui": True,
             "production_processing_pipeline": True,
+            "remote_hf_artifact_importer": True,
+            "remote_hf_range_import_runtime": True,
             "timeframe_aggregation": True,
             "verified_analysis_loading": True,
             "segmented_price_filtering": True,
