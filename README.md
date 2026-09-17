@@ -334,6 +334,35 @@ allowing different chains to run concurrently.
 Do not enable scheduled Binance processing until a verified predecessor seed
 exists in the private Hugging Face dataset.
 
+### Bounded multi-hour catch-up
+
+When `--hour` is omitted, the remote worker performs bounded sequential
+catch-up for exactly one venue/instrument chain.
+
+The worker first discovers the newest safe target using one bounded Hugging
+Face frontier scan. It then processes contiguous hours in ascending order.
+
+Each subsequent hour is admitted only after the preceding hour completed
+successfully. `process_remote_hour` resolves current Hugging Face state for
+each target, validates the immediate predecessor checkpoint, and publishes
+that hour independently.
+
+Catch-up stops when:
+
+- the newest release-eligible hour completes;
+- `--max-hours-per-run` operations complete;
+- the cooperative `--max-runtime-minutes` budget expires;
+- the selected source is unavailable;
+- checkpoint continuity is blocked;
+- acquisition, processing, verification, or publication fails;
+- the process is interrupted.
+
+The runtime budget does not cancel an already-started hour. It prevents another
+hour from starting after the budget expires. This avoids interrupting an atomic
+Hugging Face publication solely to enforce a soft catch-up deadline.
+
+An explicit `--hour` continues to process or verify only that exact hour.
+
 When the scheduled worker omits an explicit target hour, it performs a bounded
 newest-to-oldest inspection of one pinned Hugging Face revision.
 

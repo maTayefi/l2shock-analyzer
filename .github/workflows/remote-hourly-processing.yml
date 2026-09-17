@@ -30,6 +30,18 @@ on:
         default: "72"
         type: string
 
+      max_hours_per_run:
+        description: "Maximum contiguous hours processed per catch-up run"
+        required: true
+        default: "4"
+        type: string
+
+      max_runtime_minutes:
+        description: "Cooperative catch-up runtime budget in minutes"
+        required: true
+        default: "240"
+        type: string
+
 permissions:
   contents: read
 
@@ -85,7 +97,7 @@ jobs:
     needs: prepare
 
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 350
 
     strategy:
       fail-fast: false
@@ -102,6 +114,8 @@ jobs:
       L2SHOCK_HF_REVISION: ${{ vars.L2SHOCK_HF_REVISION || 'main' }}
       TARGET_HOUR: ${{ inputs.hour || '' }}
       CATCH_UP_HOURS: ${{ inputs.catch_up_hours || '72' }}
+      MAX_HOURS_PER_RUN: ${{ inputs.max_hours_per_run || vars.L2SHOCK_MAX_HOURS_PER_RUN || '4' }}
+      MAX_RUNTIME_MINUTES: ${{ inputs.max_runtime_minutes || vars.L2SHOCK_MAX_RUNTIME_MINUTES || '240' }}
       DEPTH_LOWER: ${{ vars.L2SHOCK_DEPTH_LOWER || '0' }}
       DEPTH_UPPER: ${{ vars.L2SHOCK_DEPTH_UPPER || '0.01' }}
 
@@ -142,7 +156,17 @@ jobs:
             exit 2
           fi
 
-      - name: Process and publish one completed hour
+          if ! [[ "${MAX_HOURS_PER_RUN}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "max_hours_per_run must be a positive integer." >&2
+            exit 2
+          fi
+
+          if ! [[ "${MAX_RUNTIME_MINUTES}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "max_runtime_minutes must be a positive integer." >&2
+            exit 2
+          fi
+
+      - name: Process and publish bounded remote catch-up
         shell: bash
         run: |
           args=(
@@ -150,6 +174,8 @@ jobs:
             "--instrument" "${{ matrix.instrument }}"
             "--release-delay-minutes" "15"
             "--catch-up-hours" "${CATCH_UP_HOURS}"
+            "--max-hours-per-run" "${MAX_HOURS_PER_RUN}"
+            "--max-runtime-minutes" "${MAX_RUNTIME_MINUTES}"
             "--depth-lower" "${DEPTH_LOWER}"
             "--depth-upper" "${DEPTH_UPPER}"
             "--hf-repo-id" "${L2SHOCK_HF_REPO_ID}"

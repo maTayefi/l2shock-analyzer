@@ -33,6 +33,7 @@ import asyncio
 import json
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -187,6 +188,141 @@ class RemoteWorkerResult:
                 "downloaded_count": self.source_downloaded_count,
                 "reused_count": self.source_reused_count,
             },
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteCatchUpRunResult:
+    """JSON-safe summary of one bounded sequential catch-up run."""
+
+    venue: str
+    instrument: str
+    latest_eligible_hour_utc: datetime
+    results: tuple[RemoteWorkerResult, ...]
+    max_hours_per_run: int
+    max_runtime_minutes: int
+    stop_reason: str
+
+    def __post_init__(self) -> None:
+        venue = str(self.venue or "").strip().lower()
+        instrument = str(self.instrument or "").strip().upper()
+        latest = require_utc_hour(
+            "latest_eligible_hour_utc",
+            self.latest_eligible_hour_utc,
+        )
+        results = tuple(self.results)
+
+        if not venue or not instrument:
+            raise RemoteWorkerError(
+                "Remote catch-up result identity cannot contain blank fields"
+            )
+
+        for field_name in (
+            "max_hours_per_run",
+            "max_runtime_minutes",
+        ):
+            value = getattr(self, field_name)
+
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise RemoteWorkerError(f"{field_name} must be a positive integer")
+
+        allowed_stop_reasons = {
+            "caught_up",
+            "max_hours_per_run",
+            "runtime_budget",
+        }
+
+        if self.stop_reason not in allowed_stop_reasons:
+            raise RemoteWorkerError("Unsupported remote catch-up stop reason")
+
+        if not results:
+            raise RemoteWorkerError(
+                "A successful remote catch-up run must contain at least "
+                "one hour result"
+            )
+
+        expected_hour: datetime | None = None
+
+        for result in results:
+            if not isinstance(result, RemoteWorkerResult):
+                raise TypeError("results must contain RemoteWorkerResult objects")
+
+            if result.venue != venue or result.instrument != instrument:
+                raise RemoteWorkerError(
+                    "Catch-up results must belong to one remote chain"
+                )
+
+            if expected_hour is not None and result.hour_utc != expected_hour:
+                raise RemoteWorkerError(
+                    "Catch-up results must be contiguous and ordered "
+                    "oldest to newest"
+                )
+
+            if result.hour_utc > latest:
+                raise RemoteWorkerError(
+                    "Catch-up result exceeds the release-eligible boundary"
+                )
+
+            expected_hour = result.hour_utc + timedelta(hours=1)
+
+        if len(results) > self.max_hours_per_run:
+            raise RemoteWorkerError("Catch-up result exceeds max_hours_per_run")
+
+        if self.stop_reason == "caught_up" and results[-1].hour_utc != latest:
+            raise RemoteWorkerError(
+                "caught_up requires the latest eligible hour to complete"
+            )
+
+        object.__setattr__(self, "venue", venue)
+        object.__setattr__(self, "instrument", instrument)
+        object.__setattr__(
+            self,
+            "latest_eligible_hour_utc",
+            latest,
+        )
+        object.__setattr__(self, "results", results)
+
+    @property
+    def completed_hour_count(self) -> int:
+        return len(self.results)
+
+    @property
+    def first_hour_utc(self) -> datetime:
+        return self.results[0].hour_utc
+
+    @property
+    def last_hour_utc(self) -> datetime:
+        return self.results[-1].hour_utc
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": "l2shock.remote_catch_up_run_result",
+            "schema_version": 1,
+            "venue": self.venue,
+            "instrument": self.instrument,
+            "latest_eligible_hour_utc": (
+                self.latest_eligible_hour_utc.isoformat().replace(
+                    "+00:00",
+                    "Z",
+                )
+            ),
+            "first_hour_utc": (
+                self.first_hour_utc.isoformat().replace(
+                    "+00:00",
+                    "Z",
+                )
+            ),
+            "last_hour_utc": (
+                self.last_hour_utc.isoformat().replace(
+                    "+00:00",
+                    "Z",
+                )
+            ),
+            "completed_hour_count": self.completed_hour_count,
+            "max_hours_per_run": self.max_hours_per_run,
+            "max_runtime_minutes": self.max_runtime_minutes,
+            "stop_reason": self.stop_reason,
+            "hours": [result.to_dict() for result in self.results],
         }
 
 
@@ -633,6 +769,156 @@ async def select_remote_catch_up_hour(
     )
 
 
+async def process_remote_catch_up(
+    *,
+    repository: HuggingFaceDatasetRepository,
+    cryptohft: CryptoHFTConfig,
+    workspace: RemoteWorkerWorkspace,
+    venue: str,
+    instrument: str,
+    latest_eligible_hour_utc: datetime,
+    lower_fraction: Decimal,
+    upper_fraction: Decimal,
+    search_hours: int,
+    max_hours_per_run: int,
+    max_runtime_minutes: int,
+    producer_git_commit: str | None,
+    use_api_key: bool = False,
+    batch_size: int = 131_072,
+    _monotonic: Callable[[], float] | None = None,
+) -> RemoteCatchUpRunResult:
+    """Process a bounded contiguous sequence for one remote chain.
+
+    Frontier discovery is performed once. Every subsequent target is exactly
+    one hour after the previously completed target.
+
+    ``process_remote_hour`` refreshes the HF repository revision and verifies
+    existing target/predecessor state for every hour, so this loop does not
+    reuse stale publication state.
+
+    The runtime budget is cooperative. It prevents admission of another hour
+    after the budget expires; it does not interrupt an hour that is already
+    downloading, processing, or publishing.
+    """
+
+    if (
+        isinstance(search_hours, bool)
+        or not isinstance(search_hours, int)
+        or search_hours <= 0
+    ):
+        raise RemoteWorkerError("search_hours must be a positive integer")
+
+    if (
+        isinstance(max_hours_per_run, bool)
+        or not isinstance(max_hours_per_run, int)
+        or max_hours_per_run <= 0
+    ):
+        raise RemoteWorkerError("max_hours_per_run must be a positive integer")
+
+    if (
+        isinstance(max_runtime_minutes, bool)
+        or not isinstance(max_runtime_minutes, int)
+        or max_runtime_minutes <= 0
+    ):
+        raise RemoteWorkerError("max_runtime_minutes must be a positive integer")
+
+    latest = require_utc_hour(
+        "latest_eligible_hour_utc",
+        latest_eligible_hour_utc,
+    )
+    normalized_venue, normalized_instrument, _ = _normalized_chain(
+        venue,
+        instrument,
+    )
+
+    if _monotonic is None:
+        clock = asyncio.get_running_loop().time
+    elif callable(_monotonic):
+        clock = _monotonic
+    else:
+        raise TypeError("_monotonic must be callable or None")
+
+    started_at = clock()
+    runtime_seconds = float(max_runtime_minutes * 60)
+
+    target_hour = await select_remote_catch_up_hour(
+        repository=repository,
+        venue=normalized_venue,
+        instrument=normalized_instrument,
+        latest_eligible_hour_utc=latest,
+        lower_fraction=lower_fraction,
+        upper_fraction=upper_fraction,
+        search_hours=search_hours,
+    )
+
+    if target_hour > latest:
+        raise RemoteWorkerError(
+            "Catch-up planner selected an hour after the eligible boundary"
+        )
+
+    completed: list[RemoteWorkerResult] = []
+
+    while True:
+        # Always admit the first selected hour. On later iterations, enforce
+        # the cooperative runtime budget before starting more expensive work.
+        if completed and clock() - started_at >= runtime_seconds:
+            stop_reason = "runtime_budget"
+            break
+
+        result = await process_remote_hour(
+            repository=repository,
+            cryptohft=cryptohft,
+            workspace=workspace,
+            venue=normalized_venue,
+            instrument=normalized_instrument,
+            hour_utc=target_hour,
+            latest_eligible_hour_utc=latest,
+            lower_fraction=lower_fraction,
+            upper_fraction=upper_fraction,
+            producer_git_commit=producer_git_commit,
+            use_api_key=use_api_key,
+            batch_size=batch_size,
+        )
+        completed.append(result)
+
+        # No later target exists.
+        if target_hour == latest:
+            stop_reason = "caught_up"
+            break
+
+        # The operation limit is checked after completing the current hour.
+        if len(completed) >= max_hours_per_run:
+            stop_reason = "max_hours_per_run"
+            break
+
+        # Do not admit another hour if the cooperative budget expired while
+        # processing or publishing the current hour.
+        if clock() - started_at >= runtime_seconds:
+            stop_reason = "runtime_budget"
+            break
+
+        next_hour = target_hour + timedelta(hours=1)
+
+        if next_hour > latest:
+            raise RemoteWorkerError(
+                "Remote catch-up attempted to exceed its eligible boundary"
+            )
+
+        # No gap skipping is permitted. process_remote_hour will pin current
+        # HF state and validate the immediate predecessor for this exact hour.
+        target_hour = next_hour
+
+    return RemoteCatchUpRunResult(
+        venue=normalized_venue,
+        instrument=normalized_instrument,
+        latest_eligible_hour_utc=latest,
+        results=tuple(completed),
+        max_hours_per_run=max_hours_per_run,
+        max_runtime_minutes=max_runtime_minutes,
+        stop_reason=stop_reason,
+    )
+
+
 async def _inspect_existing_state(
     repository: HuggingFaceDatasetRepository,
     *,
@@ -1018,6 +1304,25 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--max-hours-per-run",
+        type=_positive_integer,
+        default=4,
+        help=(
+            "Maximum number of contiguous remote hours processed when "
+            "--hour is omitted."
+        ),
+    )
+    parser.add_argument(
+        "--max-runtime-minutes",
+        type=_positive_integer,
+        default=240,
+        help=(
+            "Cooperative runtime budget for omitted-hour catch-up. "
+            "The worker finishes an already-started hour but does not "
+            "admit another hour after the budget expires."
+        ),
+    )
+    parser.add_argument(
         "--depth-lower",
         type=_depth_fraction,
         required=True,
@@ -1070,7 +1375,7 @@ def _required_environment_secret(name: str) -> SecretStr:
 
 async def _run_from_arguments(
     args: argparse.Namespace,
-) -> RemoteWorkerResult:
+) -> RemoteWorkerResult | RemoteCatchUpRunResult:
     repo_id = str(args.hf_repo_id or "").strip()
 
     if not repo_id:
@@ -1106,40 +1411,46 @@ async def _run_from_arguments(
         token=hf_token,
     )
 
-    if args.hour is None:
-        target_hour = await select_remote_catch_up_hour(
+    producer_git_commit = str(os.environ.get("GITHUB_SHA", "") or "").strip() or None
+
+    with temporary_remote_worker_workspace(
+        parent=args.workspace_parent,
+    ) as workspace:
+        if args.hour is not None:
+            if args.hour > latest_eligible:
+                raise RemoteWorkerError(
+                    "Requested target hour is newer than the "
+                    "release-eligible boundary"
+                )
+
+            return await process_remote_hour(
+                repository=repository,
+                cryptohft=cryptohft,
+                workspace=workspace,
+                venue=args.venue,
+                instrument=args.instrument,
+                hour_utc=args.hour,
+                latest_eligible_hour_utc=latest_eligible,
+                lower_fraction=args.depth_lower,
+                upper_fraction=args.depth_upper,
+                producer_git_commit=producer_git_commit,
+                use_api_key=bool(args.use_api_key),
+                batch_size=args.batch_size,
+            )
+
+        return await process_remote_catch_up(
             repository=repository,
+            cryptohft=cryptohft,
+            workspace=workspace,
             venue=args.venue,
             instrument=args.instrument,
             latest_eligible_hour_utc=latest_eligible,
             lower_fraction=args.depth_lower,
             upper_fraction=args.depth_upper,
             search_hours=args.catch_up_hours,
-        )
-    else:
-        target_hour = args.hour
-
-    if target_hour > latest_eligible:
-        raise RemoteWorkerError(
-            "Requested target hour is newer than the release-eligible boundary"
-        )
-
-    with temporary_remote_worker_workspace(
-        parent=args.workspace_parent,
-    ) as workspace:
-        return await process_remote_hour(
-            repository=repository,
-            cryptohft=cryptohft,
-            workspace=workspace,
-            venue=args.venue,
-            instrument=args.instrument,
-            hour_utc=target_hour,
-            latest_eligible_hour_utc=latest_eligible,
-            lower_fraction=args.depth_lower,
-            upper_fraction=args.depth_upper,
-            producer_git_commit=(
-                str(os.environ.get("GITHUB_SHA", "") or "").strip() or None
-            ),
+            max_hours_per_run=args.max_hours_per_run,
+            max_runtime_minutes=args.max_runtime_minutes,
+            producer_git_commit=producer_git_commit,
             use_api_key=bool(args.use_api_key),
             batch_size=args.batch_size,
         )
@@ -1218,12 +1529,14 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "RemoteCatchUpRunResult",
     "RemoteWorkerCheckpointBlockedError",
     "RemoteWorkerError",
     "RemoteWorkerExitStatus",
     "RemoteWorkerResult",
     "build_parser",
     "main",
+    "process_remote_catch_up",
     "process_remote_hour",
     "select_remote_catch_up_hour",
 ]
