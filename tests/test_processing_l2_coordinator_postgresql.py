@@ -26,8 +26,10 @@ from l2shock.processing import (
     ProcessingCancelledError,
     ProcessingQualityState,
     ProcessingRequest,
+    ProcessingSourceArchive,
     SingleMarketL2ProcessingCoordinator,
 )
+from l2shock.remote import process_l2_archive_headlessly
 
 pytestmark = pytest.mark.postgresql
 
@@ -271,3 +273,77 @@ def test_processing_cancellation_resets_processing_to_downloaded(
         )
         is None
     )
+
+
+def test_local_coordinator_and_headless_l2_outputs_are_identical(
+    database_session: Session,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "BTCUSDT_equivalence_orderbook.parquet"
+    _write_snapshot(source)
+
+    digest, size = sha256_file(source)
+
+    archive = ProcessingSourceArchive(
+        spec=_spec(),
+        local_path=source,
+        content_sha256=digest,
+        file_size_bytes=size,
+        status=SourceHourStatus.DOWNLOADED,
+    )
+
+    preset = build_binance_futures_data_preset(
+        base="BTC",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0"),
+    )
+
+    headless = process_l2_archive_headlessly(
+        archive,
+        preset,
+        batch_size=1,
+    )
+
+    _register_source(
+        database_session,
+        source,
+    )
+
+    @contextmanager
+    def scope():
+        yield database_session
+
+    coordinator = SingleMarketL2ProcessingCoordinator(
+        checkpoint_store=CheckpointStore(tmp_path / "local-equivalence-cache"),
+        session_scope_factory=scope,
+        batch_size=1,
+    )
+
+    local_result = coordinator.run(
+        ProcessingRequest(
+            operation_id=uuid4(),
+            target=_spec(),
+            max_checkpoint_search_hours=24,
+        ),
+        preset,
+    )
+
+    stored = AnalyticalRepository(
+        database_session,
+    ).get_l2_hour(
+        base="BTC",
+        hour_utc=_hour(),
+        preset_hash=preset.preset_hash,
+    )
+
+    assert stored is not None
+    assert stored.encoded == headless.artifact.encoded
+    assert (
+        local_result.analytical_content_sha256
+        == headless.artifact.manifest.content_sha256
+    )
+    assert (
+        local_result.output_checkpoint_content_sha256
+        == headless.artifact.manifest.output_checkpoint_content_sha256
+    )
+    assert headless.artifact.manifest.source_hours[0].content_sha256 == digest

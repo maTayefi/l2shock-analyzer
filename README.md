@@ -1232,6 +1232,21 @@ inventing a local raw path or raw size. Automatic Fetch treats that verified
 remote ownership as acquisition-complete while the remote-import profile owns
 normal acquisition.
 
+If a pre-existing source row already claims a local raw path, remote import
+preserves that attachment only after verifying:
+
+```text
+canonical raw-root path
+regular non-symbolic-link file
+durable file size
+complete source SHA-256
+```
+
+An invalid claimed local attachment fails the complete import transaction. The
+remote importer must not bless or preserve stale local-file metadata merely
+because the verified remote analytical artifact is valid.
+
+
 Raw pruning and remote import must not cause Automatic Fetch to redownload an
 already processed source. Reattaching local raw bytes remains the separate
 raw-rehydration workflow.

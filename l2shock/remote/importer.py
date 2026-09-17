@@ -33,6 +33,7 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Protocol
 
 from sqlalchemy.orm import Session
@@ -43,7 +44,9 @@ from l2shock.acquisition import (
     SourceFileSpec,
     SourceHourStatus,
     acquire_source_hour_transaction_lock,
+    sha256_file,
 )
+from l2shock.config import get_settings
 from l2shock.db import (
     AnalyticalRepository,
     L2HourlyProvenance,
@@ -277,6 +280,79 @@ def _source_quality_mapping(value: object) -> dict[str, object]:
     return {str(key): item for key, item in value.items() if isinstance(key, str)}
 
 
+def _verify_existing_local_source_attachment(
+    row,
+    spec: SourceFileSpec,
+    *,
+    expected_content_sha256: str,
+) -> None:
+    """Fail closed when a source row claims unverified local raw bytes.
+
+    A remote import may own a source without any local raw archive. However,
+    when an existing row claims ``local_path``, that attachment remains subject
+    to the normal canonical path, size, and SHA-256 contracts.
+    """
+
+    path_text = str(row.local_path or "").strip()
+
+    if not path_text:
+        return
+
+    expected_size = row.file_size_bytes
+
+    if (
+        isinstance(expected_size, bool)
+        or not isinstance(expected_size, int)
+        or expected_size <= 0
+    ):
+        raise RemoteArtifactImportError(
+            "Existing local raw attachment has no positive durable file size"
+        )
+
+    stored_path = Path(path_text).expanduser()
+
+    try:
+        if stored_path.is_symlink():
+            raise RemoteArtifactImportError(
+                "Existing local raw attachment cannot be a symbolic link"
+            )
+
+        resolved_path = stored_path.resolve()
+        canonical_path = spec.local_path(
+            get_settings().storage.raw_path,
+        ).resolve()
+
+        if resolved_path != canonical_path:
+            raise RemoteArtifactImportError(
+                "Existing local raw attachment is not at its canonical path"
+            )
+
+        if not resolved_path.is_file():
+            raise RemoteArtifactImportError(
+                "Existing local raw attachment is not a regular file"
+            )
+
+        actual_digest, actual_size = sha256_file(resolved_path)
+
+    except RemoteArtifactImportError:
+        raise
+    except Exception as exc:
+        raise RemoteArtifactImportError(
+            "Existing local raw attachment could not be verified"
+        ) from exc
+
+    if actual_size != expected_size:
+        raise RemoteArtifactImportError(
+            "Existing local raw attachment size differs from durable metadata"
+        )
+
+    if actual_digest != expected_content_sha256:
+        raise RemoteArtifactImportError(
+            "Existing local raw attachment SHA-256 differs from "
+            "the remote source identity"
+        )
+
+
 def _update_remote_source_metadata(
     session: Session,
     downloaded: DownloadedHuggingFaceArtifact,
@@ -322,6 +398,12 @@ def _update_remote_source_metadata(
         raise RemoteArtifactImportError(
             "Local source identity owns a different source archive SHA-256"
         )
+
+    _verify_existing_local_source_attachment(
+        row,
+        spec,
+        expected_content_sha256=source.content_sha256,
+    )
 
     previous_quality = _source_quality_mapping(row.quality_json)
     updated_quality = dict(previous_quality)

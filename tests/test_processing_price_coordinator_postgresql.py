@@ -26,8 +26,10 @@ from l2shock.processing import (
     PriceProcessingRequest,
     ProcessingCancelledError,
     ProcessingQualityState,
+    ProcessingSourceArchive,
     SingleMarketPriceProcessingCoordinator,
 )
+from l2shock.remote import process_price_archives_headlessly
 
 pytestmark = pytest.mark.postgresql
 
@@ -339,3 +341,91 @@ def test_price_processing_cancellation_resets_to_downloaded(
         )
         is None
     )
+
+
+def test_local_coordinator_and_headless_price_outputs_are_identical(
+    database_session: Session,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "BTCUSDT_equivalence_trades.parquet"
+
+    _write_trade_archive(
+        source,
+        source_hour_offset=0,
+        trade_times_and_prices=(
+            (
+                _hour() + timedelta(milliseconds=100),
+                "100",
+            ),
+            (
+                _hour() + timedelta(milliseconds=500),
+                "105",
+            ),
+            (
+                _hour() + timedelta(milliseconds=900),
+                "102",
+            ),
+            (
+                _hour()
+                + timedelta(
+                    seconds=2,
+                    milliseconds=100,
+                ),
+                "99",
+            ),
+        ),
+    )
+
+    digest, size = sha256_file(source)
+
+    archive = ProcessingSourceArchive(
+        spec=_spec(),
+        local_path=source,
+        content_sha256=digest,
+        file_size_bytes=size,
+        status=SourceHourStatus.DOWNLOADED,
+    )
+
+    headless = process_price_archives_headlessly(
+        _spec(),
+        (archive,),
+        batch_size=1,
+    )
+
+    _register_source(
+        database_session,
+        _spec(),
+        source,
+    )
+
+    @contextmanager
+    def scope():
+        yield database_session
+
+    coordinator = SingleMarketPriceProcessingCoordinator(
+        session_scope_factory=scope,
+        batch_size=1,
+        cancellation_check_interval_rows=1,
+        cancellation_check_interval_records=1,
+    )
+
+    local_result = coordinator.run(
+        PriceProcessingRequest(
+            operation_id=uuid4(),
+            target=_spec(),
+        )
+    )
+
+    stored = PriceAnalyticalRepository(
+        database_session,
+    ).get_price_hour(
+        base="BTC",
+        hour_utc=_hour(),
+    )
+
+    assert stored is not None
+    assert stored.encoded == headless.artifact.encoded
+    assert (
+        local_result.price_content_sha256 == headless.artifact.manifest.content_sha256
+    )
+    assert headless.artifact.manifest.source_hours[0].content_sha256 == digest

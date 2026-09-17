@@ -1,9 +1,11 @@
 # tests/test_remote_importer_postgresql.py
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.orm import Session
@@ -23,11 +25,13 @@ from l2shock.price import (
 )
 from l2shock.remote import (
     DownloadedHuggingFaceArtifact,
+    HuggingFaceDatasetRepository,
     RemoteArtifactKey,
     RemoteArtifactKind,
     RemoteArtifactManifest,
     RemotePriceProcessedArtifact,
     RemoteSourceHourReference,
+    download_and_import_huggingface_artifact,
     import_downloaded_huggingface_artifact,
     write_remote_artifact_file,
 )
@@ -231,3 +235,91 @@ def test_remote_import_rejects_local_source_digest_conflict(
     # verifies the conflict itself; production atomic rollback is owned by
     # download_and_import_huggingface_artifact() and session_scope().
     assert row.content_sha256 == "f" * 64
+
+
+def test_session_owning_remote_import_rolls_back_when_local_attachment_is_invalid(
+    database_session: Session,
+    tmp_path: Path,
+) -> None:
+    downloaded = _downloaded_price(tmp_path)
+    source = downloaded.artifact.manifest.key.source_spec
+
+    source_row = AcquisitionRepository(
+        database_session,
+    ).upsert_discovered(source)
+
+    source_row.status = "error"
+    source_row.local_path = str(tmp_path / "noncanonical-missing-source.parquet")
+    source_row.file_size_bytes = 123
+    source_row.content_sha256 = "a" * 64
+    database_session.flush()
+
+    class FakeApi:
+        def repo_info(self, **_kwargs):
+            return SimpleNamespace(
+                sha=downloaded.revision,
+            )
+
+        def create_commit(self, **_kwargs):
+            raise AssertionError("Importer test must not publish to Hugging Face")
+
+    def fake_download(**kwargs) -> str:
+        filename = str(kwargs["filename"])
+
+        if filename == downloaded.artifact.manifest.key.relative_path:
+            return str(downloaded.artifact_path)
+
+        if filename == downloaded.artifact.manifest.key.manifest_relative_path:
+            return str(downloaded.manifest_path)
+
+        raise AssertionError(f"Unexpected Hugging Face path: {filename}")
+
+    repository = HuggingFaceDatasetRepository(
+        repo_id="example/private-l2shock",
+        revision="main",
+        token="hf_test_read_token",
+        api=FakeApi(),
+        download_function=fake_download,
+    )
+
+    @contextmanager
+    def rollback_owned_scope():
+        savepoint = database_session.begin_nested()
+
+        try:
+            yield database_session
+            savepoint.commit()
+        except BaseException:
+            savepoint.rollback()
+            database_session.expire_all()
+            raise
+
+    with pytest.raises(
+        Exception,
+        match="local raw attachment",
+    ):
+        download_and_import_huggingface_artifact(
+            repository,
+            downloaded.artifact.manifest.key,
+            session_scope_factory=rollback_owned_scope,
+        )
+
+    stored = PriceAnalyticalRepository(
+        database_session,
+    ).get_price_hour(
+        base="BTC",
+        hour_utc=_hour(),
+    )
+
+    assert stored is None
+
+    refreshed_source = AcquisitionRepository(
+        database_session,
+    ).get_source_hour(source)
+
+    assert refreshed_source is not None
+    assert refreshed_source.status == "error"
+    assert refreshed_source.content_sha256 == "a" * 64
+    assert refreshed_source.local_path == str(
+        tmp_path / "noncanonical-missing-source.parquet"
+    )
