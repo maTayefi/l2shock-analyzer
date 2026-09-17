@@ -55,7 +55,7 @@ def _orderbook_row(
     *,
     received_time: int,
     event_time: int,
-    transaction_time: int,
+    transaction_time: int | None,
     first_update_id: int | None,
     final_update_id: int | None,
     prev_final_update_id: int | None,
@@ -650,3 +650,110 @@ def test_projected_row_iterator_avoids_per_row_dictionary_materialization() -> N
     assert ".to_pylist(" not in source
     assert ".to_pydict(" in source
     assert "zip(" in source
+
+
+def test_binance_snapshot_null_transaction_time_uses_event_time(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "BTCUSDT_snapshot_null_transaction.parquet"
+    received_time = 1_788_350_400_100_000_000
+    event_time = 1_788_350_400_100
+
+    rows = [
+        _orderbook_row(
+            received_time=received_time,
+            event_time=event_time,
+            transaction_time=None,
+            first_update_id=None,
+            final_update_id=None,
+            prev_final_update_id=None,
+            last_update_id=500,
+            event_type="snapshot",
+            side="bid",
+            price="59999",
+            quantity="2",
+            order_count=None,
+        ),
+        _orderbook_row(
+            received_time=received_time,
+            event_time=event_time,
+            transaction_time=None,
+            first_update_id=None,
+            final_update_id=None,
+            prev_final_update_id=None,
+            last_update_id=500,
+            event_type="snapshot",
+            side="ask",
+            price="60001",
+            quantity="3",
+            order_count=None,
+        ),
+    ]
+
+    _write_rows(
+        path,
+        rows,
+        row_group_size=1,
+    )
+
+    events: list[OrderBookEvent] = []
+
+    report = read_orderbook_file(
+        path,
+        _orderbook_spec(),
+        consumer=events.append,
+        batch_size=1,
+    )
+
+    assert report.rows_read == 2
+    assert report.events_read == 1
+    assert report.snapshot_event_count == 1
+
+    event = events[0]
+
+    assert event.event_type is OrderBookEventType.SNAPSHOT
+    assert event.event_time_ms == event_time
+    assert event.transaction_time_ms == event_time
+    assert event.last_update_id == 500
+
+    # Null order_count remains unknown; it is not fabricated as zero.
+    assert all(change.order_count is None for change in event.changes)
+
+
+def test_binance_update_still_rejects_null_transaction_time(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "BTCUSDT_update_null_transaction.parquet"
+
+    rows = [
+        _orderbook_row(
+            received_time=1_788_350_400_100_000_000,
+            event_time=1_788_350_400_100,
+            transaction_time=None,
+            first_update_id=101,
+            final_update_id=101,
+            prev_final_update_id=100,
+            last_update_id=None,
+            event_type="update",
+            side="bid",
+            price="59999",
+            quantity="2",
+            order_count=None,
+        ),
+    ]
+
+    _write_rows(
+        path,
+        rows,
+        row_group_size=1,
+    )
+
+    with pytest.raises(
+        StreamedParquetReadError,
+        match="transaction_time cannot be null",
+    ):
+        read_orderbook_file(
+            path,
+            _orderbook_spec(),
+            batch_size=1,
+        )

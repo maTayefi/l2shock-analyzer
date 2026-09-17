@@ -328,20 +328,60 @@ okx_futures / ETH-USDT-SWAP:
 A scheduled target may not be newer than the shared release-eligible UTC-hour
 boundary.
 
-Binance update-only processing requires the immediately preceding verified
-remote L2 artifact and its output checkpoint. If either is absent, the worker
-fails closed and publishes nothing for the new L2 hour.
+Binance Futures processing supports two empirically established initialization
+paths:
+
+1. A target archive containing a complete opening `snapshot` event may initialize
+   the book independently.
+2. An update-only target archive requires the immediately preceding verified
+   remote L2 artifact and its output checkpoint.
+
+For observed CryptoHFTData Binance snapshot rows, `transaction_time` and
+`order_count` may be null.
+
+The shared ingestion layer applies exactly one compatibility normalization for
+Binance snapshot rows:
+
+```text
+transaction_time = event_time when transaction_time is null
+```
+
+A null `order_count` remains null. The application must not reinterpret an
+unknown provider value as an explicit zero order count.
+
+The normalization is performed in memory while streaming. The original source
+archive and its source SHA-256 remain unchanged.
+
+If the target is update-only and the required predecessor artifact or checkpoint
+is absent, processing produces no usable output checkpoint and publishes no L2
+artifact.
 
 OKX may process without a predecessor because the approved OKX contract
 requires the target archive to establish its own complete opening snapshot.
 The target still must produce a usable output checkpoint before publication.
 
-The GitHub Actions workflow is initially deployment-gated. Scheduled execution
-is enabled only when this repository variable is set:
+
+
+
+Scheduled remote processing has two deployment gates:
 
 ```text
 L2SHOCK_REMOTE_PROCESSING_ENABLED=true
+    enables scheduled remote processing
+
+L2SHOCK_BINANCE_SEEDS_READY=true
+    admits Binance BTC and ETH into scheduled processing
 ```
+
+When remote processing is enabled but the Binance seed gate is not exactly
+lowercase `true`, scheduled runs include only the two OKX chains.
+
+Manual workflow dispatch may still select one Binance chain for controlled
+snapshot bootstrap or checkpoint validation.
+
+Do not set `L2SHOCK_BINANCE_SEEDS_READY=true` until both Binance chains own
+verified L2 artifacts containing usable output checkpoints.
+
 Local private-dataset import configuration is:
 
 ```yaml
@@ -378,8 +418,12 @@ Optional Actions variables:
 The workflow serializes each venue/instrument chain independently while
 allowing different chains to run concurrently.
 
-Do not enable scheduled Binance processing until a verified predecessor seed
-exists in the private Hugging Face dataset.
+Do not enable scheduled Binance processing until the Binance snapshot
+normalization path and both initialization paths have passed their verified
+remote-worker tests.
+
+A predecessor seed is required for an update-only target hour, but is not
+required when the target archive contains a proven complete opening snapshot.
 
 ### Bounded multi-hour catch-up
 
@@ -389,10 +433,11 @@ catch-up for exactly one venue/instrument chain.
 The worker first discovers the newest safe target using one bounded Hugging
 Face frontier scan. It then processes contiguous hours in ascending order.
 
-Each subsequent hour is admitted only after the preceding hour completed
-successfully. `process_remote_hour` resolves current Hugging Face state for
-each target, validates the immediate predecessor checkpoint, and publishes
-that hour independently.
+Each dependent update-only hour is admitted only after the preceding hour
+completed successfully. `process_remote_hour` resolves current Hugging Face
+state for each target and establishes target initialization from either a
+proven complete opening snapshot or the immediately preceding verified
+checkpoint/carry state before publishing that hour independently.
 
 Catch-up stops when:
 
@@ -428,8 +473,11 @@ process only the immediately following L2 hour
 If the newest release-eligible hour is already complete, the worker performs an
 idempotent existing-artifact verification and publishes nothing.
 
-Binance fails closed when no verified seed exists inside the bounded search
-window. The worker never treats the first update in an update-only Binance
+For Binance, catch-up fails closed when the target archive cannot establish a
+complete opening state and no verified immediately preceding checkpoint or
+carried reconstructed state is available inside the allowed continuity chain.
+
+The worker never treats the first `update` event in an update-only Binance
 archive as a snapshot.
 
 OKX may select the oldest hour in an empty bounded search window because the
@@ -643,24 +691,38 @@ Raw L2 update rows are never imported into PostgreSQL.
 
 ## Current sample findings
 
-The inspected Binance Futures files contain:
+The originally inspected Binance Futures files contain:
 
 | Asset | Rows | Event groups | Snapshots | In-hour continuity mismatches |
 |---|---:|---:|---:|---:|
 | BTCUSDT | 5,451,975 | 135,002 | 0 | 0 / 135,001 |
 | ETHUSDT | 4,733,525 | 134,880 | 0 | 0 / 134,879 |
 
-Both files contain only `update` events. They are internally continuous but
-cannot initialize a complete book by themselves.
+Those specific inspected files contain only `update` events. They are internally
+continuous but cannot initialize a complete book by themselves.
 
-A file may produce valid reconstructed liquidity only when one of the following
-exists:
+A later CryptoHFTData Binance archive was observed to contain a complete opening
+`snapshot` event. Therefore Binance is not universally update-only: the
+initialization method depends on the actual source hour.
 
-1. a verified preceding snapshot or checkpoint;
-2. a verified reconstructed state carried from the preceding hour;
-3. another provider-supported initialization mechanism proven from real data.
+For observed Binance snapshot rows, `transaction_time` and `order_count` may be
+null.
 
-The first update in an hourly file must never be treated as a snapshot.
+For Binance snapshot rows only, the shared ingestion path uses:
+
+```text
+transaction_time = event_time when transaction_time is null
+```
+
+Null `order_count` remains null because the provider did not supply an explicit
+order count.
+
+With that in-memory normalization applied, a proven complete Binance opening
+snapshot can initialize the order book without a predecessor checkpoint.
+
+For an update-only Binance hour, valid reconstruction still requires a verified
+preceding checkpoint or carried reconstructed state. The first event in a file
+must never be treated as a snapshot merely because it is the first event.
 
 ---
 
@@ -1704,8 +1766,13 @@ validated between event groups, not between individual price-level rows.
 
 An update-only file does not establish a complete order book.
 
-No liquidity observation may be marked valid before the book is initialized
-from a proven complete snapshot/checkpoint or a verified carried state.
+A file containing a proven complete opening `snapshot` may initialize the book
+independently. No liquidity observation may be marked valid before the book is
+initialized from either:
+
+- a proven complete snapshot;
+- a verified carried state from the immediately preceding hour; or
+- a verified checkpoint from the immediately preceding hour.
 
 A replay checkpoint belongs to one exact:
 
@@ -1765,6 +1832,43 @@ the state.
 A replay report proving within-hour continuity does not by itself prove that an
 update-only hour was initialized. A final checkpoint exists only when replay
 finishes with a complete valid book.
+
+A live exchange snapshot must never be assigned to a historical source hour.
+For example, a Binance REST depth snapshot captured now cannot be labelled as
+the state at the end of an earlier CryptoHFTData hour.
+
+Valid historical initialization requires one of:
+
+```text
+a complete snapshot contained in the historical source archive
+a verified checkpoint produced by replay of the immediately preceding hour
+a verified carried state from that immediately preceding hour
+```
+
+Synthetic historical checkpoints built from current live API state are
+prohibited.
+
+### Binance snapshot-field normalization
+
+CryptoHFTData Binance opening snapshot rows may contain a null
+`transaction_time` even though Binance update events require that field.
+
+For Binance `snapshot` rows only, the shared ingestion layer applies:
+
+```text
+transaction_time:
+    use event_time when transaction_time is null
+```
+
+Binance update rows retain the strict non-null `transaction_time` requirement.
+
+A null snapshot `order_count` remains null. Unknown order-count information is
+not fabricated as zero.
+
+This is a provider-compatibility normalization performed in memory while
+streaming. The original CryptoHFTData Parquet file remains unchanged, so source
+archive SHA-256 provenance continues to identify the exact downloaded bytes.
+
 
 ### Serialized checkpoint contract
 

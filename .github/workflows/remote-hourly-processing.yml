@@ -66,11 +66,18 @@ jobs:
         id: matrix
         shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
           SELECTED_CHAIN: ${{ inputs.chain || 'all' }}
+          BINANCE_SEEDS_READY: ${{ vars.L2SHOCK_BINANCE_SEEDS_READY || 'false' }}
         run: |
           case "${SELECTED_CHAIN}" in
             all)
-              matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT"},{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT"},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP"},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP"}]}'
+              if [[ "${EVENT_NAME}" == "schedule" ]] \
+                 && [[ "${BINANCE_SEEDS_READY}" != "true" ]]; then
+                matrix='{"include":[{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP"},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP"}]}'
+              else
+                matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT"},{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT"},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP"},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP"}]}'
+              fi
               ;;
             binance_btc)
               matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT"}]}'

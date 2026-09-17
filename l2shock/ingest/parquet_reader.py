@@ -766,8 +766,23 @@ def _build_event_row(
         row_number=row_number,
     )
 
+    normalized_transaction_time = raw_transaction_time
+
+    # Empirically observed CryptoHFTData Binance opening snapshots may omit
+    # transaction_time even though Binance updates require it. For snapshot
+    # rows only, event_time owns the deterministic compatibility fallback.
+    #
+    # This normalization is performed in memory. It does not rewrite the
+    # original source archive or alter update-event strictness.
+    if (
+        spec.venue == "binance_futures"
+        and event_type is OrderBookEventType.SNAPSHOT
+        and normalized_transaction_time is None
+    ):
+        normalized_transaction_time = event_time_ms
+
     transaction_time_ms = _integer(
-        raw_transaction_time,
+        normalized_transaction_time,
         field_name="transaction_time",
         path=path,
         row_number=row_number,

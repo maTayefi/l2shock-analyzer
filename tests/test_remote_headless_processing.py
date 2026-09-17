@@ -136,7 +136,7 @@ def _write_snapshot_archive(
             {
                 "received_time": received,
                 "event_time": event_time,
-                "transaction_time": event_time,
+                "transaction_time": None,
                 "symbol": "BTCUSDT",
                 "event_type": "snapshot",
                 "first_update_id": None,
@@ -151,7 +151,7 @@ def _write_snapshot_archive(
             {
                 "received_time": received,
                 "event_time": event_time,
-                "transaction_time": event_time,
+                "transaction_time": None,
                 "symbol": "BTCUSDT",
                 "event_type": "snapshot",
                 "first_update_id": None,
@@ -278,6 +278,7 @@ def test_headless_l2_processing_builds_verified_remote_artifact(
     assert checkpoint.source_content_sha256 == (
         artifact.manifest.source_hours[0].content_sha256
     )
+    assert all(level.order_count is None for level in checkpoint.levels)
 
     decoded = decode_hourly_liquidity_blocks(artifact.encoded)
 

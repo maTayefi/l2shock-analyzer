@@ -1131,11 +1131,18 @@ async def process_remote_hour(
     checkpoint_bytes: bytes | None = None
 
     if l2_missing:
+        # A verified predecessor remains preferred, but its absence does not
+        # prove that the target is unusable: the target archive may contain a
+        # complete opening snapshot.
+        #
+        # Fail-closed ownership remains below. An update-only target without a
+        # predecessor cannot produce an output checkpoint and is never
+        # published.
         checkpoint_bytes = await _predecessor_checkpoint(
             repository,
             target_key=target_l2_key,
             pinned_revision=existing.pinned_revision,
-            predecessor_required=(normalized_venue == "binance_futures"),
+            predecessor_required=False,
         )
 
     requested_specs: list[SourceFileSpec] = []
