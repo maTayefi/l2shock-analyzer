@@ -97,6 +97,36 @@ artifact verification
 recovery
 ```
 
+The local verified Hugging Face importer consumes one artifact pair from one
+full immutable dataset commit SHA.
+
+The Fetch tab defaults to the `Remote HF Import` workflow profile. A remote
+range import resolves one full Hugging Face revision and uses that same commit
+SHA for every artifact in the operation.
+
+The required remote artifact universe per selected UTC hour is:
+
+```text
+BTC:
+    Binance Futures BTCUSDT component L2
+    OKX Futures BTC-USDT-SWAP component L2
+    Binance Futures BTCUSDT price
+
+ETH:
+    Binance Futures ETHUSDT component L2
+    OKX Futures ETH-USDT-SWAP component L2
+    Binance Futures ETHUSDT price
+```
+
+The component L2 keys use the exact existing single-market preset hashes for
+the selected depth band. They do not use the aggregate Binance+OKX preset hash.
+
+The existing `Local CryptoHFTData Fetch + Processing` profile remains available
+as the fallback, debugging, recovery, and reprocessing workflow.
+
+The workflow selector is presentation state only. It does not alter preset
+identity, persisted analytical content, replay semantics, or source ownership.
+
 GitHub Actions is only an execution environment. Hugging Face is only a
 persistent transport/artifact repository. They do not own a second analytical
 implementation.
@@ -312,7 +342,24 @@ is enabled only when this repository variable is set:
 ```text
 L2SHOCK_REMOTE_PROCESSING_ENABLED=true
 ```
+Local private-dataset import configuration is:
 
+```yaml
+remote:
+  hf_repo_id: "maTayefi/l2shock-processed"
+  hf_revision: "main"
+  hf_token: ""
+  default_workflow: "remote_hf_import"
+```
+
+The local read token belongs in the ignored project `.env`:
+
+```dotenv
+L2SHOCK__REMOTE__HF_TOKEN="..."
+```
+
+Use a fine-grained read token restricted to the private dataset. The local
+application does not need HF write permission for imports.
 Required GitHub configuration is:
 
 ```text

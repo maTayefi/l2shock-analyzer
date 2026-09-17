@@ -46,6 +46,14 @@ cryptohft:
 processing:
   checkpoint_search_max_hours: 168
 
+remote:
+  # The private Hugging Face dataset containing verified processed artifacts.
+  # Store the token in .env as L2SHOCK__REMOTE__HF_TOKEN, not in this file.
+  hf_repo_id: "maTayefi/l2shock-processed"
+  hf_revision: "main"
+  hf_token: ""
+  default_workflow: "remote_hf_import"
+
 analysis:
   supported_bases: ["BTC", "ETH"]
   base_sampling_interval_ms: 1000

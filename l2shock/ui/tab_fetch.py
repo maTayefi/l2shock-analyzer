@@ -44,6 +44,11 @@ from l2shock.ui.processing_runtime import (
     ProcessingRuntimeBusyError,
     get_manual_processing_runtime,
 )
+from l2shock.ui.remote_import_runtime import (
+    RemoteImportRuntime,
+    RemoteImportRuntimeBusyError,
+    get_remote_import_runtime,
+)
 from l2shock.ui.state import get_state
 
 log = logging.getLogger(__name__)
@@ -148,6 +153,19 @@ def build_fetch_tab(
     automatic_runtime = get_automatic_fetch_runtime()
     processing_runtime = get_manual_processing_runtime()
 
+    remote_runtime: RemoteImportRuntime | None = None
+    remote_runtime_configuration_error: str | None = None
+
+    try:
+        remote_runtime = get_remote_import_runtime()
+    except Exception as exc:
+        # Configuration failures must not remove the existing local fallback.
+        remote_runtime_configuration_error = f"Unexpected {type(exc).__name__}"
+        log.warning(
+            "Remote HF Import is unavailable: %s.",
+            type(exc).__name__,
+        )
+
     default_end_utc = floor_to_hour(now_utc())
     default_start_utc = default_end_utc - timedelta(hours=1)
 
@@ -161,6 +179,11 @@ def build_fetch_tab(
     observed_automatic_completion_sequence = (
         automatic_runtime.snapshot().completion_sequence
     )
+    observed_remote_completion_sequence = (
+        remote_runtime.snapshot().completion_sequence
+        if remote_runtime is not None
+        else 0
+    )
 
     calendar_refresh_running = False
     calendar_refresh_pending = False
@@ -172,9 +195,150 @@ def build_fetch_tab(
     ).date()
 
     with ui.column().classes("w-full gap-3 p-4"):
-        section_header("Fetch — CryptoHFTData hourly files")
+        section_header("Fetch \u2014 CryptoHFTData hourly files")
 
         with ui.card().classes("w-full"):
+            ui.label("Data workflow").classes("text-lg font-semibold")
+
+            workflow_profile = ui.select(
+                options={
+                    "remote_hf_import": "Remote HF Import (default)",
+                    "local_fetch_processing": (
+                        "Local CryptoHFTData Fetch + Processing"
+                    ),
+                },
+                value=settings.remote.default_workflow,
+                label="Workflow profile",
+            ).classes("w-[32rem] max-w-full")
+
+            ui.label(
+                "Remote HF Import downloads verified compact processed "
+                "artifacts into local PostgreSQL. The existing local Fetch "
+                "and Processing workflow remains available as a fallback."
+            ).classes("text-sm text-gray-600")
+
+        with ui.card().classes("w-full") as remote_import_card:
+            ui.label("Remote Hugging Face Import").classes("text-lg font-semibold")
+
+            ui.label(
+                "Import verified Binance and OKX component L2 artifacts plus "
+                "Binance real-trade price artifacts from one pinned private "
+                "Hugging Face dataset revision."
+            ).classes("text-sm text-gray-600")
+
+            if remote_runtime is None:
+                ui.label(
+                    "Remote HF Import is not configured. Set "
+                    "remote.hf_repo_id in config.yaml and "
+                    "L2SHOCK__REMOTE__HF_TOKEN in .env, then restart."
+                ).classes("text-sm text-red-600")
+
+                if remote_runtime_configuration_error is not None:
+                    ui.label(
+                        "Configuration state: " + remote_runtime_configuration_error
+                    ).classes("text-xs font-mono text-gray-500")
+
+            with ui.row().classes("w-full gap-3 flex-wrap mt-3"):
+                remote_start_date = (
+                    ui.input(
+                        label="Remote import start date",
+                        value=start_date_value,
+                    )
+                    .props("type=date")
+                    .classes("w-48")
+                )
+                remote_start_time = (
+                    ui.input(
+                        label="Remote import start time",
+                        value=start_time_value,
+                    )
+                    .props("type=time step=60")
+                    .classes("w-44")
+                )
+                remote_end_date = (
+                    ui.input(
+                        label="Remote import end date",
+                        value=end_date_value,
+                    )
+                    .props("type=date")
+                    .classes("w-48")
+                )
+                remote_end_time = (
+                    ui.input(
+                        label="Remote import end time",
+                        value=end_time_value,
+                    )
+                    .props("type=time step=60")
+                    .classes("w-44")
+                )
+
+            ui.label(
+                "Remote ranges must convert to exact UTC-hour boundaries and "
+                "use half-open [start, end) semantics."
+            ).classes("text-xs text-gray-500")
+
+            with ui.row().classes("w-full gap-4 flex-wrap mt-3"):
+                remote_btc = ui.checkbox(
+                    "BTC",
+                    value=True,
+                )
+                remote_eth = ui.checkbox(
+                    "ETH",
+                    value=True,
+                )
+
+                remote_depth_lower = (
+                    ui.input(
+                        label="Remote depth lower fraction",
+                        value="0",
+                    )
+                    .props("type=number min=0 max=0.999999 step=0.0001")
+                    .classes("w-60")
+                )
+                remote_depth_upper = (
+                    ui.input(
+                        label="Remote depth upper fraction",
+                        value="0.01",
+                    )
+                    .props("type=number min=0 max=0.999999 step=0.0001")
+                    .classes("w-60")
+                )
+
+            with ui.row().classes("gap-2 mt-3"):
+                start_remote_import_button = ui.button(
+                    "Start Remote Import",
+                    icon="cloud_download",
+                ).props("color=primary")
+
+                stop_remote_import_button = (
+                    ui.button(
+                        "Stop Remote Import",
+                        icon="stop_circle",
+                    )
+                    .props("outline color=negative")
+                    .disable()
+                )
+
+            remote_progress_bar = ui.linear_progress(
+                value=0.0,
+                show_value=False,
+            ).classes("w-full mt-3")
+
+            remote_status_label = ui.label("Idle.").classes("text-sm font-semibold")
+            remote_revision_label = ui.label("Pinned revision: none").classes(
+                "text-xs font-mono break-all"
+            )
+            remote_current_artifact_label = ui.label("Current artifact: none").classes(
+                "text-xs font-mono break-all"
+            )
+            remote_counter_label = ui.label(
+                "Completed 0 / 0 | imported=0 | reused=0 | " "missing=0 | failed=0"
+            ).classes("text-xs font-mono")
+            remote_result_label = ui.label(
+                "No remote HF import has completed in this process."
+            ).classes("text-sm text-gray-600")
+
+        with ui.card().classes("w-full") as local_fetch_card:
             ui.label(
                 "Manual Fetch downloads BTC and ETH Binance Futures "
                 "order-book/trade archives plus empirically supported "
@@ -311,7 +475,7 @@ def build_fetch_tab(
 
             calendar_grid = ui.column().classes("w-full gap-3 mt-2")
 
-        with ui.card().classes("w-full"):
+        with ui.card().classes("w-full") as local_processing_card:
             ui.label("Processing").classes("text-lg font-semibold")
 
             ui.label(
@@ -430,7 +594,7 @@ def build_fetch_tab(
                 "No manual fetch has completed in this process."
             ).classes("text-sm text-gray-600")
 
-        with ui.card().classes("w-full"):
+        with ui.card().classes("w-full") as local_transport_card:
             ui.label("Transport and retention").classes("font-semibold")
 
             with ui.row().classes("gap-3 flex-wrap"):
@@ -454,6 +618,107 @@ def build_fetch_tab(
                 "coordinators prove initialization, continuity, and source "
                 "quality. Invalid observations are never forward-filled."
             ).classes("text-xs text-orange-700")
+
+    def _sync_workflow_profile() -> None:
+        remote_selected = (
+            str(workflow_profile.value or "").strip() == "remote_hf_import"
+        )
+
+        remote_import_card.set_visibility(remote_selected)
+        local_fetch_card.set_visibility(not remote_selected)
+        local_processing_card.set_visibility(not remote_selected)
+        local_transport_card.set_visibility(not remote_selected)
+
+    async def _start_remote_import() -> None:
+        runtime = remote_runtime
+
+        if runtime is None:
+            persistent_notify(
+                "Remote HF Import is not configured. Set "
+                "remote.hf_repo_id in config.yaml and "
+                "L2SHOCK__REMOTE__HF_TOKEN in .env, then restart.",
+                title="Remote HF Import",
+                notification_type="negative",
+            )
+            return
+
+        if state.shutdown_started:
+            persistent_notify(
+                "Application shutdown has started; new operations are blocked.",
+                title="Remote HF Import",
+                notification_type="negative",
+            )
+            return
+
+        selected_bases = tuple(
+            base
+            for base, selected in (
+                ("BTC", bool(remote_btc.value)),
+                ("ETH", bool(remote_eth.value)),
+            )
+            if selected
+        )
+
+        if not selected_bases:
+            persistent_notify(
+                "Select at least one base: BTC or ETH.",
+                title="Remote HF Import",
+                notification_type="negative",
+            )
+            return
+
+        try:
+            requested_start_utc = _parse_local_datetime(
+                remote_start_date.value,
+                remote_start_time.value,
+                field_name="Remote import start",
+            )
+            requested_end_utc = _parse_local_datetime(
+                remote_end_date.value,
+                remote_end_time.value,
+                field_name="Remote import end",
+            )
+            lower_fraction, upper_fraction = _parse_depth_band(
+                remote_depth_lower.value,
+                remote_depth_upper.value,
+            )
+
+            runtime.start(
+                requested_start_utc=requested_start_utc,
+                requested_end_utc=requested_end_utc,
+                bases=selected_bases,
+                lower_depth_fraction=lower_fraction,
+                upper_depth_fraction=upper_fraction,
+            )
+
+        except (
+            RemoteImportRuntimeBusyError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            persistent_notify(
+                str(exc),
+                title="Remote HF Import",
+                notification_type="negative",
+            )
+
+    def _stop_remote_import() -> None:
+        runtime = remote_runtime
+
+        if runtime is not None and runtime.request_stop():
+            ui.notify(
+                "Remote import stop requested. The current download or "
+                "database transaction will finish before stopping.",
+                type="warning",
+                timeout=5000,
+            )
+        else:
+            ui.notify(
+                "No stoppable remote import is active.",
+                type="info",
+                timeout=3000,
+            )
 
     async def _start_manual_fetch() -> None:
         if state.shutdown_started:
@@ -870,19 +1135,170 @@ def build_fetch_tab(
                 timeout=3000,
             )
 
+    workflow_profile.on_value_change(lambda _event: _sync_workflow_profile())
+    start_remote_import_button.on_click(_start_remote_import)
+    stop_remote_import_button.on_click(_stop_remote_import)
+
     manual_button.on_click(_start_manual_fetch)
     stop_button.on_click(_stop_manual_fetch)
     process_button.on_click(_start_manual_processing)
     stop_processing_button.on_click(_stop_manual_processing)
 
+    _sync_workflow_profile()
+
     def _refresh_runtime_view() -> None:
         nonlocal observed_fetch_completion_sequence
         nonlocal observed_processing_completion_sequence
         nonlocal observed_automatic_completion_sequence
+        nonlocal observed_remote_completion_sequence
 
         fetch_snapshot = fetch_runtime.snapshot()
         processing_snapshot = processing_runtime.snapshot()
         automatic_snapshot = automatic_runtime.snapshot()
+        remote_snapshot = (
+            remote_runtime.snapshot() if remote_runtime is not None else None
+        )
+
+        profile_is_remote = (
+            str(workflow_profile.value or "").strip() == "remote_hf_import"
+        )
+
+        if not state.shutdown_started and not state.active_operation_name:
+            workflow_profile.enable()
+        else:
+            workflow_profile.disable()
+
+        remote_inputs = (
+            remote_start_date,
+            remote_start_time,
+            remote_end_date,
+            remote_end_time,
+            remote_btc,
+            remote_eth,
+            remote_depth_lower,
+            remote_depth_upper,
+        )
+
+        remote_start_allowed = bool(
+            profile_is_remote
+            and remote_runtime is not None
+            and remote_snapshot is not None
+            and not remote_snapshot.is_running
+            and not state.active_operation_name
+            and not state.shutdown_started
+        )
+
+        for element in remote_inputs:
+            if remote_start_allowed:
+                element.enable()
+            else:
+                element.disable()
+
+        if remote_start_allowed:
+            start_remote_import_button.enable()
+        else:
+            start_remote_import_button.disable()
+
+        if (
+            remote_snapshot is not None
+            and remote_snapshot.is_running
+            and not remote_snapshot.stop_requested
+        ):
+            stop_remote_import_button.enable()
+        else:
+            stop_remote_import_button.disable()
+
+        if remote_snapshot is not None:
+            remote_progress = remote_snapshot.latest_progress
+
+            if remote_progress is not None:
+                remote_progress_bar.value = remote_progress.fraction_complete
+                remote_status_label.text = remote_progress.message
+                remote_revision_label.text = (
+                    "Pinned revision: " + remote_progress.pinned_revision
+                )
+                remote_counter_label.text = (
+                    f"Completed {remote_progress.artifacts_completed} / "
+                    f"{remote_progress.artifacts_selected} | "
+                    f"imported={remote_progress.imported_count} | "
+                    f"reused={remote_progress.reused_count} | "
+                    f"missing={remote_progress.missing_count} | "
+                    f"failed={remote_progress.failed_count}"
+                )
+                remote_current_artifact_label.text = "Current artifact: " + (
+                    remote_progress.current_key.relative_path
+                    if remote_progress.current_key is not None
+                    else "none"
+                )
+            elif remote_snapshot.is_running:
+                remote_progress_bar.value = 0.0
+                remote_status_label.text = (
+                    "Resolving one immutable Hugging Face revision..."
+                )
+                remote_current_artifact_label.text = "Current artifact: preparing"
+            else:
+                remote_status_label.text = "Idle."
+                remote_current_artifact_label.text = "Current artifact: none"
+
+            if (
+                remote_snapshot.completion_sequence
+                != observed_remote_completion_sequence
+            ):
+                observed_remote_completion_sequence = (
+                    remote_snapshot.completion_sequence
+                )
+
+                create_tracked_task(
+                    _refresh_availability_calendar(),
+                    name=("l2shock-availability-refresh-after-remote-import"),
+                )
+
+                if remote_snapshot.last_result is not None:
+                    result = remote_snapshot.last_result
+
+                    remote_progress_bar.value = (
+                        1.0
+                        if result.artifacts_selected == 0
+                        else len(result.items) / result.artifacts_selected
+                    )
+                    remote_revision_label.text = (
+                        "Pinned revision: " + result.pinned_revision
+                    )
+                    remote_result_label.text = (
+                        f"Last result: {result.status}; "
+                        f"selected={result.artifacts_selected}; "
+                        f"imported={result.imported_count}; "
+                        f"reused={result.reused_count}; "
+                        f"missing={result.missing_count}; "
+                        f"failed={result.failed_count}; "
+                        f"stopped={result.stopped}."
+                    )
+
+                    notification_type = (
+                        "positive"
+                        if result.status == "ok"
+                        else (
+                            "warning"
+                            if result.status in {"partial_ok", "stopped", "no_work"}
+                            else "negative"
+                        )
+                    )
+
+                    persistent_notify(
+                        remote_result_label.text,
+                        title="Remote HF Import completed",
+                        notification_type=notification_type,
+                    )
+
+                elif remote_snapshot.last_error:
+                    remote_result_label.text = (
+                        "Last remote import error: " + remote_snapshot.last_error
+                    )
+                    persistent_notify(
+                        remote_snapshot.last_error,
+                        title="Remote HF Import failed",
+                        notification_type="negative",
+                    )
 
         if automatic_snapshot.is_running:
             automatic_start_button.disable()

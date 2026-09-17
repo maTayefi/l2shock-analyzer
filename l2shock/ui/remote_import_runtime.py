@@ -27,6 +27,7 @@ from enum import StrEnum
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from l2shock.config import get_settings
 from l2shock.db.engine import session_scope
 from l2shock.presets import (
     build_binance_futures_data_preset,
@@ -966,6 +967,37 @@ _runtime: RemoteImportRuntime | None = None
 _runtime_loop: asyncio.AbstractEventLoop | None = None
 
 
+def create_production_remote_import_repository() -> HuggingFaceDatasetRepository:
+    """Build the local read-only private-dataset transport.
+
+    Repository permissions are enforced by the configured token on Hugging
+    Face. The local application requires only read access.
+    """
+
+    settings = get_settings()
+    config = settings.remote
+
+    if not config.hf_repo_id:
+        raise RuntimeError(
+            "Remote HF Import is not configured: "
+            "set remote.hf_repo_id in config.yaml"
+        )
+
+    token = config.hf_token.get_secret_value().strip()
+
+    if not token:
+        raise RuntimeError(
+            "Remote HF Import is not configured: "
+            "set L2SHOCK__REMOTE__HF_TOKEN in .env"
+        )
+
+    return HuggingFaceDatasetRepository(
+        repo_id=config.hf_repo_id,
+        revision=config.hf_revision,
+        token=config.hf_token,
+    )
+
+
 def get_remote_import_runtime(
     *,
     repository: HuggingFaceDatasetRepository | None = None,
@@ -977,13 +1009,14 @@ def get_remote_import_runtime(
     loop = asyncio.get_running_loop()
 
     if _runtime is None:
-        if repository is None:
-            raise RuntimeError(
-                "repository is required when creating " "the remote import runtime"
-            )
+        selected_repository = (
+            repository
+            if repository is not None
+            else create_production_remote_import_repository()
+        )
 
         _runtime = RemoteImportRuntime(
-            repository=repository,
+            repository=selected_repository,
         )
         _runtime_loop = loop
         return _runtime
@@ -1016,6 +1049,7 @@ __all__ = [
     "RemoteImportRuntimeError",
     "RemoteImportRuntimeProgress",
     "RemoteImportRuntimeSnapshot",
+    "create_production_remote_import_repository",
     "get_remote_import_runtime",
     "peek_remote_import_runtime",
     "plan_remote_import_keys",

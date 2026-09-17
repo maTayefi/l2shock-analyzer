@@ -444,6 +444,93 @@ class ProcessingConfig(StrictConfigModel):
         return result
 
 
+class RemoteConfig(StrictConfigModel):
+    """Local private-Hugging-Face import configuration.
+
+    The token belongs in ``L2SHOCK__REMOTE__HF_TOKEN`` or the project ``.env``.
+    It must not be stored in ``config.yaml``.
+    """
+
+    hf_repo_id: str = ""
+    hf_revision: str = "main"
+    hf_token: SecretStr = Field(
+        default_factory=lambda: SecretStr(""),
+        repr=False,
+    )
+    default_workflow: str = "remote_hf_import"
+
+    @field_validator("hf_repo_id")
+    @classmethod
+    def _hf_repo_id(cls, value: str) -> str:
+        result = str(value or "").strip()
+
+        if not result:
+            return ""
+
+        parts = result.split("/")
+
+        if len(parts) != 2:
+            raise ValueError(
+                "remote.hf_repo_id must use canonical " "'namespace/dataset-name' form"
+            )
+
+        for part in parts:
+            if (
+                not part
+                or not part[0].isalnum()
+                or any(
+                    not (character.isalnum() or character in {".", "_", "-"})
+                    for character in part
+                )
+            ):
+                raise ValueError(
+                    "remote.hf_repo_id must use canonical "
+                    "'namespace/dataset-name' form"
+                )
+
+        return result
+
+    @field_validator("hf_revision")
+    @classmethod
+    def _hf_revision(cls, value: str) -> str:
+        result = str(value or "").strip()
+
+        if (
+            not result
+            or result in {".", ".."}
+            or result.startswith("/")
+            or result.endswith("/")
+            or any(character.isspace() for character in result)
+        ):
+            raise ValueError(
+                "remote.hf_revision contains an unsupported revision identity"
+            )
+
+        return result
+
+    @field_validator("default_workflow")
+    @classmethod
+    def _default_workflow(cls, value: str) -> str:
+        result = str(value or "").strip().lower()
+
+        allowed = {
+            "remote_hf_import",
+            "local_fetch_processing",
+        }
+
+        if result not in allowed:
+            raise ValueError(
+                "remote.default_workflow must be remote_hf_import "
+                "or local_fetch_processing"
+            )
+
+        return result
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.hf_repo_id and self.hf_token.get_secret_value().strip())
+
+
 class LMConfig(StrictConfigModel):
     confirmation_retracement_fraction: float = 0.20
     top_n_height: int = 10
@@ -665,6 +752,7 @@ class Settings(BaseSettings):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     cryptohft: CryptoHFTConfig = Field(default_factory=CryptoHFTConfig)
     processing: ProcessingConfig = Field(default_factory=ProcessingConfig)
+    remote: RemoteConfig = Field(default_factory=RemoteConfig)
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
 
     @classmethod
@@ -726,6 +814,7 @@ __all__ = [
     "LMConfig",
     "PROJECT_ROOT",
     "ProcessingConfig",
+    "RemoteConfig",
     "Settings",
     "StorageConfig",
     "clear_settings_cache",

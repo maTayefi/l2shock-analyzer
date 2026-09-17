@@ -68,6 +68,10 @@ def test_health_snapshot_reports_foundation_status(
     assert snapshot["manual_processing_running"] is False
     assert snapshot["manual_processing_stop_requested"] is False
     assert snapshot["active_processing_operation_id"] is None
+    assert snapshot["remote_import_running"] is False
+    assert snapshot["remote_import_stop_requested"] is False
+    assert snapshot["active_remote_import_operation_id"] is None
+    assert snapshot["remote_import_pinned_revision"] is None
     assert snapshot["manual_analysis_running"] is False
     assert snapshot["manual_analysis_stop_requested"] is False
     assert snapshot["active_analysis_operation_id"] is None
@@ -98,6 +102,8 @@ def test_health_snapshot_reports_foundation_status(
     assert implemented["trade_price_processing_coordinator"] is True
     assert implemented["processing_runtime_ui"] is True
     assert implemented["production_processing_pipeline"] is True
+    assert implemented["remote_hf_artifact_importer"] is True
+    assert implemented["remote_hf_range_import_runtime"] is True
     assert implemented["timeframe_aggregation"] is True
     assert implemented["verified_analysis_loading"] is True
     assert implemented["segmented_price_filtering"] is True
@@ -285,3 +291,19 @@ def test_settings_selects_do_not_use_literal_tuple_options() -> None:
         "NiceGUI ui.select options must be a list or mapping; "
         f"literal tuple options found at lines {tuple_option_lines}"
     )
+
+
+def test_fetch_tab_exposes_remote_default_and_local_fallback_profiles() -> None:
+    from l2shock.ui import tab_fetch
+
+    source = Path(tab_fetch.__file__).read_text(
+        encoding="utf-8",
+    )
+
+    assert "Remote HF Import (default)" in source
+    assert "Local CryptoHFTData Fetch + Processing" in source
+    assert "Start Remote Import" in source
+    assert "Stop Remote Import" in source
+    assert "get_remote_import_runtime" in source
+    assert "get_manual_fetch_runtime" in source
+    assert "get_manual_processing_runtime" in source

@@ -327,3 +327,74 @@ def test_storage_roles_cannot_be_nested(
         match="cannot contain",
     ):
         Settings(**raw)
+
+
+def test_remote_hf_defaults_to_remote_import_profile() -> None:
+    settings = Settings(**_minimal_config())
+
+    assert settings.remote.default_workflow == "remote_hf_import"
+    assert settings.remote.hf_revision == "main"
+    assert settings.remote.configured is False
+
+
+def test_remote_hf_private_token_is_not_exposed_in_repr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Prevent the real .env file from overriding the test token.
+    # env_settings has higher priority than init_settings (constructor args)
+    # in Settings.settings_customise_sources, so we must set the env vars
+    # explicitly to guarantee deterministic test isolation.
+    monkeypatch.setenv("L2SHOCK__REMOTE__HF_REPO_ID", "maTayefi/l2shock-processed")
+    monkeypatch.setenv("L2SHOCK__REMOTE__HF_REVISION", "main")
+    monkeypatch.setenv("L2SHOCK__REMOTE__HF_TOKEN", "local-private-token-value")
+
+    raw = _minimal_config()
+    raw["remote"] = {
+        "hf_repo_id": "maTayefi/l2shock-processed",
+        "hf_revision": "main",
+        "hf_token": "local-private-token-value",
+    }
+
+    settings = Settings(**raw)
+
+    assert settings.remote.configured is True
+    assert "local-private-token-value" not in repr(settings.remote)
+    assert settings.remote.hf_token.get_secret_value() == ("local-private-token-value")
+
+
+@pytest.mark.parametrize(
+    "repo_id",
+    (
+        "missing-slash",
+        "/dataset",
+        "namespace/",
+        "namespace/data set",
+        "namespace/../dataset",
+    ),
+)
+def test_remote_hf_repository_id_is_strict(
+    repo_id: str,
+) -> None:
+    raw = _minimal_config()
+    raw["remote"] = {
+        "hf_repo_id": repo_id,
+    }
+
+    with pytest.raises(
+        ValidationError,
+        match="hf_repo_id",
+    ):
+        Settings(**raw)
+
+
+def test_remote_hf_default_workflow_is_strict() -> None:
+    raw = _minimal_config()
+    raw["remote"] = {
+        "default_workflow": "cloud_magic",
+    }
+
+    with pytest.raises(
+        ValidationError,
+        match="default_workflow",
+    ):
+        Settings(**raw)
