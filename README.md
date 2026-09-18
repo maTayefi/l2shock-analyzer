@@ -847,15 +847,79 @@ are established:
 
 ```text
 Bybit:
-    first_update_id and prev_final_update_id are null
-    final_update_id increments by one in the inspected streams
-    last_update_id is a distinct frontier/identity
+    first_update_id and prev_final_update_id may be null
+    final_update_id and last_update_id have distinct meanings
+    snapshot rows have now been observed in multiple archived hours
+    snapshot-row presence alone does not establish a replay contract
 
 Bitget:
     first_update_id, prev_final_update_id, last_update_id, and
-    transaction_time are null
+    transaction_time may be null
     observed final_update_id progression does not establish a complete
     continuity contract
+```
+
+### Bybit diagnostic evidence gate
+
+Bybit production support remains fail-closed while a dedicated GitHub Actions
+diagnostic collects bounded event-level evidence.
+
+The diagnostic workflow is:
+
+```text
+.github/workflows/bybit-contract-diagnostics.yml
+```
+
+It downloads two adjacent Bybit order-book archives for BTCUSDT or ETHUSDT and
+records:
+
+```text
+physical row count
+logical event count
+snapshot row count
+snapshot event count
+positive bid and ask rows per snapshot
+duplicate side/price identities inside an event
+nullable sequence-field patterns
+received-time regressions
+adjacent final_update_id relationships
+adjacent last_update_id relationships
+cross-hour final_update_id relationships
+cross-hour last_update_id relationships
+bounded first, last, update, and snapshot event samples
+```
+
+A diagnostic snapshot is considered only a complete-initialization candidate
+when one logical snapshot event contains:
+
+```text
+at least one positive bid
+at least one positive ask
+no malformed quantity
+no duplicate side/price identity
+```
+
+This classification is evidence only. It does not enable replay.
+
+Official Bybit terminology distinguishes:
+
+```text
+u:
+    update ID
+
+seq:
+    cross-stream sequence number
+```
+
+CryptoHFTData exposes normalized field names. The application must not assume
+that `final_update_id` and `last_update_id` correspond to `u` and `seq`, or
+that either field is the strict predecessor frontier, until the normalized
+mapping and adjacent-event/cross-hour behavior are proven from the downloaded
+archives.
+
+The GitHub diagnostic prints the complete bounded report into the Actions log
+and uploads the JSON report. Raw Bybit source archives are temporary runner
+inputs and are not uploaded as workflow artifacts.
 ```
 
 ### OKX production integration

@@ -1,0 +1,174 @@
+name: Bybit order-book contract diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Bybit diagnostic chain"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - bybit_btc
+          - bybit_eth
+
+      btc_first_hour:
+        description: "First BTC UTC hour; second adjacent hour is automatic"
+        required: true
+        default: "2026-09-04T06:00:00Z"
+        type: string
+
+      eth_first_hour:
+        description: "First ETH UTC hour; second adjacent hour is automatic"
+        required: true
+        default: "2026-09-04T05:00:00Z"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare Bybit diagnostics matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+
+    steps:
+      - name: Build selected diagnostics matrix
+        id: matrix
+        shell: bash
+        env:
+          PROFILE: ${{ inputs.profile }}
+          BTC_FIRST_HOUR: ${{ inputs.btc_first_hour }}
+          ETH_FIRST_HOUR: ${{ inputs.eth_first_hour }}
+        run: |
+          case "${PROFILE}" in
+            all)
+              matrix=$(
+                python -c '
+          import json
+          import os
+
+          print(json.dumps({
+              "include": [
+                  {
+                      "profile": "bybit_btc",
+                      "first_hour": os.environ["BTC_FIRST_HOUR"],
+                  },
+                  {
+                      "profile": "bybit_eth",
+                      "first_hour": os.environ["ETH_FIRST_HOUR"],
+                  },
+              ]
+          }, separators=(",", ":")))
+          '
+              )
+              ;;
+            bybit_btc)
+              matrix=$(
+                python -c '
+          import json
+          import os
+
+          print(json.dumps({
+              "include": [
+                  {
+                      "profile": "bybit_btc",
+                      "first_hour": os.environ["BTC_FIRST_HOUR"],
+                  }
+              ]
+          }, separators=(",", ":")))
+          '
+              )
+              ;;
+            bybit_eth)
+              matrix=$(
+                python -c '
+          import json
+          import os
+
+          print(json.dumps({
+              "include": [
+                  {
+                      "profile": "bybit_eth",
+                      "first_hour": os.environ["ETH_FIRST_HOUR"],
+                  }
+              ]
+          }, separators=(",", ":")))
+          '
+              )
+              ;;
+            *)
+              echo "Unsupported Bybit diagnostic profile." >&2
+              exit 2
+              ;;
+          esac
+
+          echo "matrix=${matrix}" >> "${GITHUB_OUTPUT}"
+
+  diagnose:
+    name: ${{ matrix.profile }}
+    needs: prepare
+
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      - name: Install diagnostic dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Run bounded Bybit contract diagnostics
+        shell: bash
+        run: |
+          python tools/diagnose_bybit_contract.py \
+            --profile "${{ matrix.profile }}" \
+            --first-hour "${{ matrix.first_hour }}" \
+            --cache-root "diagnostics/bybit-samples" \
+            --output "diagnostics/${{ matrix.profile }}-contract.json"
+
+      - name: Print complete bounded JSON report
+        if: always()
+        shell: bash
+        run: |
+          report="diagnostics/${{ matrix.profile }}-contract.json"
+
+          if [[ -f "${report}" ]]; then
+            echo "============================================================"
+            echo "COMPLETE BYBIT CONTRACT REPORT: ${report}"
+            echo "============================================================"
+            cat "${report}"
+          else
+            echo "Bybit contract report was not produced." >&2
+          fi
+
+      - name: Upload Bybit contract report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.profile }}-contract-diagnostics
+          path: diagnostics/${{ matrix.profile }}-contract.json
+          if-no-files-found: warn
+          retention-days: 14

@@ -56,7 +56,17 @@ def check_exists(
     path = f"{venue}/{date_str}/{hour:02d}/{symbol}_{suffix}.parquet"
     url = f"{BASE_URL}?file={path}"
     try:
-        resp = client.head(url, timeout=10.0, follow_redirects=True)
+        # The API does not support HEAD requests (returns 404).
+        # Use a GET request with a Range header to check existence efficiently.
+        resp = client.get(
+            url,
+            headers={"Range": "bytes=0-1023"},
+            timeout=10.0,
+            follow_redirects=True
+        )
+        # 200 (OK) or 206 (Partial Content) means the file exists
+        if resp.status_code in (200, 206):
+            return 200
         return resp.status_code
     except Exception:
         return -1
