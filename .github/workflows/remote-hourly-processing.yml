@@ -35,7 +35,7 @@ on:
       max_hours_per_run:
         description: "Maximum contiguous hours processed per catch-up run"
         required: true
-        default: "4"
+        default: "24"
         type: string
 
       max_runtime_minutes:
@@ -137,7 +137,7 @@ jobs:
       L2SHOCK_HF_REVISION: ${{ vars.L2SHOCK_HF_REVISION || 'main' }}
       TARGET_HOUR: ${{ inputs.hour || '' }}
       CATCH_UP_HOURS: ${{ inputs.catch_up_hours || vars.L2SHOCK_CATCH_UP_HOURS || '720' }}
-      MAX_HOURS_PER_RUN: ${{ inputs.max_hours_per_run || vars.L2SHOCK_MAX_HOURS_PER_RUN || '4' }}
+      MAX_HOURS_PER_RUN: ${{ inputs.max_hours_per_run || vars.L2SHOCK_MAX_HOURS_PER_RUN || '24' }}
       MAX_RUNTIME_MINUTES: ${{ inputs.max_runtime_minutes || vars.L2SHOCK_MAX_RUNTIME_MINUTES || '240' }}
       DEPTH_LOWER: ${{ vars.L2SHOCK_DEPTH_LOWER || '0' }}
       DEPTH_UPPER: ${{ vars.L2SHOCK_DEPTH_UPPER || '0.01' }}
