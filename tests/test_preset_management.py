@@ -5,6 +5,7 @@ import pytest
 
 from l2shock.presets import (
     PresetMarketProfile,
+    build_binance_bybit_okx_futures_data_preset,
     build_binance_futures_data_preset,
     build_binance_okx_futures_data_preset,
     build_bybit_data_preset,
@@ -64,6 +65,10 @@ def test_fraction_parser_rejects_invalid_values(
             PresetMarketProfile.BINANCE_OKX_FUTURES,
             build_binance_okx_futures_data_preset,
         ),
+        (
+            PresetMarketProfile.BINANCE_BYBIT_OKX_FUTURES,
+            build_binance_bybit_okx_futures_data_preset,
+        ),
     ),
 )
 def test_editor_recognizes_every_approved_market_profile(
@@ -111,6 +116,9 @@ def test_profile_builder_matches_authoritative_identity(
         PresetMarketProfile.OKX_FUTURES: build_okx_futures_data_preset,
         PresetMarketProfile.BINANCE_OKX_FUTURES: (
             build_binance_okx_futures_data_preset
+        ),
+        PresetMarketProfile.BINANCE_BYBIT_OKX_FUTURES: (
+            build_binance_bybit_okx_futures_data_preset
         ),
     }[profile]
 

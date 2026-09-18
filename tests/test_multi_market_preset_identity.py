@@ -3,8 +3,10 @@ from __future__ import annotations
 from decimal import Decimal
 
 from l2shock.presets import (
+    build_binance_bybit_okx_futures_data_preset,
     build_binance_futures_data_preset,
     build_binance_okx_futures_data_preset,
+    build_bybit_data_preset,
     build_okx_futures_data_preset,
     component_data_presets,
 )
@@ -147,3 +149,94 @@ def test_canonical_decoder_rejects_noncanonical_market_order() -> None:
         match="not canonically encoded",
     ):
         liquidity_data_preset_from_canonical_dict(payload)
+
+
+def test_three_market_preset_contains_binance_bybit_and_okx() -> None:
+    preset = build_binance_bybit_okx_futures_data_preset(
+        base="BTC",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+
+    assert [
+        (
+            market.venue,
+            market.instrument,
+        )
+        for market in preset.eligible_markets
+    ] == [
+        (
+            "binance_futures",
+            "BTCUSDT",
+        ),
+        (
+            "bybit",
+            "BTCUSDT",
+        ),
+        (
+            "okx_futures",
+            "BTC-USDT-SWAP",
+        ),
+    ]
+
+
+def test_three_market_component_hashes_match_single_market_builders() -> None:
+    aggregate = build_binance_bybit_okx_futures_data_preset(
+        base="ETH",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+
+    components = component_data_presets(aggregate)
+
+    expected_binance = build_binance_futures_data_preset(
+        base="ETH",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+    expected_bybit = build_bybit_data_preset(
+        base="ETH",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+    expected_okx = build_okx_futures_data_preset(
+        base="ETH",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+
+    assert tuple(component.preset_hash for component in components) == (
+        expected_binance.preset_hash,
+        expected_bybit.preset_hash,
+        expected_okx.preset_hash,
+    )
+
+
+def test_three_market_aggregate_hash_differs_from_every_component() -> None:
+    aggregate = build_binance_bybit_okx_futures_data_preset(
+        base="BTC",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+    components = component_data_presets(aggregate)
+
+    assert aggregate.preset_hash not in {
+        component.preset_hash for component in components
+    }
+
+
+def test_three_market_preset_round_trips_through_canonical_decoder() -> None:
+    from l2shock.presets import (
+        liquidity_data_preset_from_canonical_dict,
+    )
+
+    preset = build_binance_bybit_okx_futures_data_preset(
+        base="BTC",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+
+    decoded = liquidity_data_preset_from_canonical_dict(preset.to_canonical_dict())
+
+    assert decoded == preset
+    assert decoded.preset_hash == preset.preset_hash

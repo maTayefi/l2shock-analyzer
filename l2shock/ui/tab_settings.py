@@ -140,10 +140,10 @@ def build_settings_tab() -> None:
             ui.label(
                 "The editor supports independently materialized Binance "
                 "Futures, Bybit, and OKX Futures single-market presets, plus "
-                "the existing analysis-time Binance + OKX aggregate preset. "
-                "A three-market aggregate is not enabled yet. Aggregate "
-                "presets do not combine raw events or create aggregate "
-                "PostgreSQL L2 rows."
+                "analysis-time Binance + OKX and Binance + Bybit + OKX "
+                "aggregate presets. Aggregate presets do not combine raw "
+                "events, replay frontiers, or checkpoints and do not create "
+                "aggregate PostgreSQL L2 rows."
             ).classes("text-xs text-blue-700")
 
             with ui.row().classes("w-full gap-3 flex-wrap items-end mt-3"):
@@ -158,16 +158,22 @@ def build_settings_tab() -> None:
                         PresetMarketProfile.BINANCE_FUTURES.value: (
                             PresetMarketProfile.BINANCE_FUTURES.label
                         ),
+                        PresetMarketProfile.BYBIT.value: (
+                            PresetMarketProfile.BYBIT.label
+                        ),
                         PresetMarketProfile.OKX_FUTURES.value: (
                             PresetMarketProfile.OKX_FUTURES.label
                         ),
                         PresetMarketProfile.BINANCE_OKX_FUTURES.value: (
                             PresetMarketProfile.BINANCE_OKX_FUTURES.label
                         ),
+                        PresetMarketProfile.BINANCE_BYBIT_OKX_FUTURES.value: (
+                            PresetMarketProfile.BINANCE_BYBIT_OKX_FUTURES.label
+                        ),
                     },
                     value=PresetMarketProfile.BINANCE_FUTURES.value,
                     label="Market composition",
-                ).classes("w-72")
+                ).classes("w-80")
 
                 preset_lower = (
                     ui.input(

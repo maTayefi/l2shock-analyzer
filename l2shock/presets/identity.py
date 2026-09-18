@@ -580,6 +580,71 @@ def build_binance_okx_futures_data_preset(
     )
 
 
+def build_binance_bybit_okx_futures_data_preset(
+    *,
+    base: str,
+    lower_fraction: Decimal,
+    upper_fraction: Decimal,
+) -> LiquidityDataPreset:
+    """Build the approved Binance+Bybit+OKX aggregate-liquidity preset.
+
+    The preset owns three independently reconstructed linear USDT perpetual
+    markets. It does not merge raw events, replay frontiers, snapshots, or
+    checkpoints and does not create a separately persisted aggregate L2 row.
+    """
+
+    normalized_base = _identity_text(
+        "base",
+        base,
+        uppercase=True,
+    )
+
+    instrument_by_venue_and_base = {
+        ("binance_futures", "BTC"): "BTCUSDT",
+        ("binance_futures", "ETH"): "ETHUSDT",
+        ("bybit", "BTC"): "BTCUSDT",
+        ("bybit", "ETH"): "ETHUSDT",
+        ("okx_futures", "BTC"): "BTC-USDT-SWAP",
+        ("okx_futures", "ETH"): "ETH-USDT-SWAP",
+    }
+
+    if normalized_base not in _APPROVED_BASE_ASSETS:
+        raise DataPresetError(
+            "Binance+Bybit+OKX Futures presets support only BTC or ETH"
+        )
+
+    markets = tuple(
+        EligibleMarket(
+            provider="cryptohftdata",
+            venue=venue,
+            instrument=instrument_by_venue_and_base[
+                (
+                    venue,
+                    normalized_base,
+                )
+            ],
+            base_asset=normalized_base,
+            quote_asset="USDT",
+            market_type=MarketType.PERPETUAL,
+            settlement_type=SettlementType.QUOTE,
+        )
+        for venue in (
+            "binance_futures",
+            "bybit",
+            "okx_futures",
+        )
+    )
+
+    return LiquidityDataPreset(
+        base=normalized_base,
+        band=DepthBand(
+            lower_fraction=lower_fraction,
+            upper_fraction=upper_fraction,
+        ),
+        eligible_markets=markets,
+    )
+
+
 def component_data_presets(
     preset: LiquidityDataPreset,
 ) -> tuple[LiquidityDataPreset, ...]:
@@ -790,6 +855,7 @@ __all__ = [
     "build_bybit_data_preset",
     "build_okx_futures_data_preset",
     "build_binance_okx_futures_data_preset",
+    "build_binance_bybit_okx_futures_data_preset",
     "component_data_presets",
     "liquidity_data_preset_from_canonical_dict",
 ]

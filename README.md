@@ -846,9 +846,14 @@ Bybit now has a strict isolated replay adapter and is included in local
 production acquisition, local processing, single-market preset management,
 Automatic Fetch completeness, and local source availability.
 
-Bybit remains excluded from the GitHub remote-worker matrix, Hugging Face
-publication/import planning, and multi-market aggregate presets until the
-remaining integration batches are complete.
+Bybit remains excluded from the GitHub remote-worker matrix and Hugging Face
+publication/import planning until the remaining remote integration batches are
+complete.
+
+Local Analysis now supports an approved Binance + Bybit + OKX aggregate preset.
+The aggregate resolves all three independently persisted component preset
+hashes and performs strict exact-second aggregation at verified Analysis load
+time.
 
 Bitget remains disabled for production replay until a separate adapter is
 established:
@@ -1020,7 +1025,7 @@ OKX trade files are not included in normal production acquisition merely
 because their schema is available. The OKX integration currently contributes
 single-market reconstructed L2 liquidity only.
 
-Manual Fetch and Automatic Fetch use the same six-file source universe.
+Manual Fetch and Automatic Fetch use the same eight-file local source universe.
 
 Downloaded processing routes order-book targets through exact venue-specific
 single-market presets:
@@ -1131,6 +1136,37 @@ themselves may remain valid.
 Cross-market overlap and aggregation never merge raw updates, replay
 frontiers, snapshots, or checkpoints.
 
+
+### Binance, Bybit, and OKX aggregate-liquidity identity
+
+The approved three-market aggregate preset contains:
+
+```text
+CryptoHFTData Binance Futures:
+    BTCUSDT or ETHUSDT
+
+CryptoHFTData Bybit:
+    BTCUSDT or ETHUSDT
+
+CryptoHFTData OKX Futures:
+    BTC-USDT-SWAP or ETH-USDT-SWAP
+```
+
+Each market remains independently reconstructed and persisted under its exact
+single-market component preset hash.
+
+The three-market aggregate owns no separately persisted aggregate L2 row.
+Verified Analysis loading derives its component hashes, loads each component
+through the ordinary codec and provenance verification boundary, and sums
+exact Bid and Ask Liquidity only after all components are verified.
+
+For the complete effective Analysis range, every expected market must
+contribute valid Bid and Ask Liquidity at every second. Missing Bybit, Binance,
+or OKX data is never represented as zero and is never forward-filled.
+
+The three-market aggregate therefore reduces dependence on one venue's local
+liquidity behavior without hiding missing-market coverage or allowing the set
+of contributors to change silently during one analysis.
 
 ### Strict aggregate analysis loading
 
@@ -1482,7 +1518,7 @@ newest release-eligible UTC hour. When a new hour becomes eligible, the cursor
 is ignored and the new hour receives first priority.
 
 The cursor records attempted order only. It never marks a source hour complete.
-Completeness continues to be derived from all six required durable source
+Completeness continues to be derived from all eight required local source
 identities.
 
 Only one incomplete UTC hour is requested per polling iteration.
@@ -4288,8 +4324,10 @@ The Settings editor supports the exact approved profiles:
 
 ```text
 Binance Futures single market
+Bybit single market
 OKX Futures single market
 Binance + OKX aggregate analysis identity
+Binance + Bybit + OKX aggregate analysis identity
 ```
 
 Unsupported or unrecognized market compositions remain read-only and must not

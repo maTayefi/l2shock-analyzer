@@ -142,3 +142,70 @@ def test_empty_aggregate_converts_to_explicit_invalid_second() -> None:
     assert converted[0].ask_liquidity is None
     assert converted[0].source_count == 0
     assert converted[0].coverage_degraded is False
+
+
+def test_three_market_partial_aggregate_is_rejected_before_analysis() -> None:
+    binance = _market(
+        "binance_futures",
+        "BTCUSDT",
+    )
+    bybit = _market(
+        "bybit",
+        "BTCUSDT",
+    )
+    okx = _market(
+        "okx_futures",
+        "BTC-USDT-SWAP",
+    )
+
+    aggregate = aggregate_market_l2_seconds(
+        expected_markets=(
+            binance,
+            bybit,
+            okx,
+        ),
+        market_series=(
+            AggregateMarketSeries(
+                market=binance,
+                component_preset_hash="a" * 64,
+                l2_content_sha256_by_hour={
+                    _start(): "b" * 64,
+                },
+                observations=(
+                    _valid(
+                        0,
+                        bid="100",
+                        ask="120",
+                    ),
+                ),
+            ),
+            AggregateMarketSeries(
+                market=bybit,
+                component_preset_hash="c" * 64,
+                l2_content_sha256_by_hour={},
+                observations=(),
+            ),
+            AggregateMarketSeries(
+                market=okx,
+                component_preset_hash="d" * 64,
+                l2_content_sha256_by_hour={
+                    _start(): "e" * 64,
+                },
+                observations=(
+                    _valid(
+                        0,
+                        bid="30",
+                        ask="40",
+                    ),
+                ),
+            ),
+        ),
+        start_utc=_start(),
+        end_utc=_start() + timedelta(seconds=1),
+    )
+
+    with pytest.raises(
+        AnalysisDatasetError,
+        match="every expected market",
+    ):
+        _aggregate_series_to_l2_seconds(aggregate)

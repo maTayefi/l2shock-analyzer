@@ -29,6 +29,7 @@ from l2shock.db.analytical_repository import (
 from l2shock.db.engine import session_scope
 from l2shock.presets.identity import (
     LiquidityDataPreset,
+    build_binance_bybit_okx_futures_data_preset,
     build_binance_futures_data_preset,
     build_binance_okx_futures_data_preset,
     build_bybit_data_preset,
@@ -48,6 +49,7 @@ class PresetMarketProfile(StrEnum):
     BYBIT = "bybit"
     OKX_FUTURES = "okx_futures"
     BINANCE_OKX_FUTURES = "binance_okx_futures"
+    BINANCE_BYBIT_OKX_FUTURES = "binance_bybit_okx_futures"
 
     @property
     def label(self) -> str:
@@ -57,6 +59,9 @@ class PresetMarketProfile(StrEnum):
             PresetMarketProfile.OKX_FUTURES: "OKX Futures",
             PresetMarketProfile.BINANCE_OKX_FUTURES: (
                 "Binance + OKX Futures aggregate"
+            ),
+            PresetMarketProfile.BINANCE_BYBIT_OKX_FUTURES: (
+                "Binance + Bybit + OKX Futures aggregate"
             ),
         }[self]
 
@@ -96,7 +101,8 @@ def _normalized_market_profile(
     except ValueError as exc:
         raise PresetManagementError(
             "market_profile must be binance_futures, bybit, "
-            "okx_futures, or binance_okx_futures"
+            "okx_futures, binance_okx_futures, or "
+            "binance_bybit_okx_futures"
         ) from exc
 
 
@@ -157,6 +163,13 @@ def _market_profile_from_config(
         ),
         PresetMarketProfile.BINANCE_OKX_FUTURES: (
             build_binance_okx_futures_data_preset(
+                base=normalized_base,
+                lower_fraction=lower,
+                upper_fraction=upper,
+            )
+        ),
+        PresetMarketProfile.BINANCE_BYBIT_OKX_FUTURES: (
+            build_binance_bybit_okx_futures_data_preset(
                 base=normalized_base,
                 lower_fraction=lower,
                 upper_fraction=upper,
@@ -395,6 +408,9 @@ def _preset(
         PresetMarketProfile.OKX_FUTURES: build_okx_futures_data_preset,
         PresetMarketProfile.BINANCE_OKX_FUTURES: (
             build_binance_okx_futures_data_preset
+        ),
+        PresetMarketProfile.BINANCE_BYBIT_OKX_FUTURES: (
+            build_binance_bybit_okx_futures_data_preset
         ),
     }[profile]
 

@@ -392,3 +392,65 @@ def test_aggregate_decimal_sum_is_independent_of_ambient_context() -> None:
     assert observation.bid_liquidity == Decimal("123456789.123456790")
     assert observation.ask_liquidity == Decimal("987654321.987654330")
     assert observation.total_liquidity == Decimal("1111111111.111111120")
+
+
+def test_three_expected_markets_produce_valid_exact_sum() -> None:
+    binance = _market(
+        "binance_futures",
+        "BTCUSDT",
+    )
+    bybit = _market(
+        "bybit",
+        "BTCUSDT",
+    )
+    okx = _market(
+        "okx_futures",
+        "BTC-USDT-SWAP",
+    )
+
+    result = aggregate_market_l2_seconds(
+        expected_markets=(
+            okx,
+            bybit,
+            binance,
+        ),
+        market_series=(
+            _series(
+                binance,
+                (_valid(0, bid="100.000000001", ask="120.000000001"),),
+                preset_character="a",
+                content_character="b",
+            ),
+            _series(
+                bybit,
+                (_valid(0, bid="30.000000002", ask="40.000000002"),),
+                preset_character="c",
+                content_character="d",
+            ),
+            _series(
+                okx,
+                (_valid(0, bid="5.000000003", ask="7.000000003"),),
+                preset_character="e",
+                content_character="f",
+            ),
+        ),
+        start_utc=_start(),
+        end_utc=_start() + timedelta(seconds=1),
+    )
+
+    observation = result.observations[0]
+
+    assert observation.quality_state is AggregateL2QualityState.VALID
+    assert observation.expected_market_count == 3
+    assert observation.contributing_market_count == 3
+    assert observation.source_count == 3
+
+    assert observation.bid_liquidity == Decimal("135.000000006")
+    assert observation.ask_liquidity == Decimal("167.000000006")
+    assert observation.total_liquidity == Decimal("302.000000012")
+
+    assert [contribution.market for contribution in observation.contributions] == [
+        binance,
+        bybit,
+        okx,
+    ]

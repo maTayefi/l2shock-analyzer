@@ -310,3 +310,15 @@ def test_fetch_tab_exposes_remote_default_and_local_fallback_profiles() -> None:
     assert "get_remote_import_runtime" in source
     assert "get_manual_fetch_runtime" in source
     assert "get_manual_processing_runtime" in source
+
+
+def test_settings_market_composition_includes_bybit_profiles() -> None:
+    source = Path(ui_tab_settings.__file__).read_text(
+        encoding="utf-8",
+    )
+
+    assert "PresetMarketProfile.BYBIT.value" in source
+    assert "PresetMarketProfile.BYBIT.label" in source
+
+    assert "PresetMarketProfile.BINANCE_BYBIT_OKX_FUTURES.value" in source
+    assert "PresetMarketProfile.BINANCE_BYBIT_OKX_FUTURES.label" in source
