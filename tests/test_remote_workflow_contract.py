@@ -13,16 +13,19 @@ def _workflow_text() -> str:
     )
 
 
-def test_scheduled_workflow_has_independent_binance_seed_gate() -> None:
+def test_scheduled_workflow_has_independent_seed_gates() -> None:
     source = _workflow_text()
 
     assert "L2SHOCK_REMOTE_PROCESSING_ENABLED" in source
     assert "L2SHOCK_BINANCE_SEEDS_READY" in source
+    assert "L2SHOCK_BYBIT_SEEDS_READY" in source
+
     assert 'BINANCE_SEEDS_READY}" != "true"' in source
+    assert 'BYBIT_SEEDS_READY}" != "true"' in source
     assert 'EVENT_NAME}" == "schedule"' in source
 
 
-def test_unseeded_scheduled_matrix_retains_both_okx_chains() -> None:
+def test_fully_unseeded_scheduled_matrix_retains_both_okx_chains() -> None:
     source = _workflow_text()
 
     assert (
@@ -66,3 +69,35 @@ def test_workflow_pins_supported_runner_and_node24_checkout() -> None:
     assert "runs-on: ubuntu-latest" not in source
 
     assert "actions/setup-python@v6" in source
+
+
+def test_manual_bybit_chain_choices_are_available() -> None:
+    source = _workflow_text()
+
+    assert "- bybit_btc" in source
+    assert "- bybit_eth" in source
+
+    assert ('{"chain":"bybit_btc","venue":"bybit",' '"instrument":"BTCUSDT"}') in source
+
+    assert ('{"chain":"bybit_eth","venue":"bybit",' '"instrument":"ETHUSDT"}') in source
+
+
+def test_all_chain_matrix_contains_six_independent_chains() -> None:
+    source = _workflow_text()
+
+    for chain in (
+        "binance_btc",
+        "binance_eth",
+        "bybit_btc",
+        "bybit_eth",
+        "okx_btc",
+        "okx_eth",
+    ):
+        assert f'"chain":"{chain}"' in source
+
+
+def test_remote_workflow_uses_extended_bootstrap_search_bound() -> None:
+    source = _workflow_text()
+
+    assert 'default: "336"' in source
+    assert "L2SHOCK_CATCH_UP_HOURS" in source

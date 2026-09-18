@@ -51,6 +51,7 @@ from l2shock.acquisition import (
 from l2shock.ingest import MAX_CHECKPOINT_PAYLOAD_BYTES
 from l2shock.presets import (
     build_binance_futures_data_preset,
+    build_bybit_data_preset,
     build_okx_futures_data_preset,
 )
 from l2shock.processing import (
@@ -217,6 +218,7 @@ def _preset_for_l2_target(
 ):
     builders = {
         "binance_futures": build_binance_futures_data_preset,
+        "bybit": build_bybit_data_preset,
         "okx_futures": build_okx_futures_data_preset,
     }
 

@@ -363,3 +363,29 @@ def test_cli_refuses_conflicting_external_manifest(
 
     # Manifest conflict is detected before writing the artifact.
     assert not artifact_path.exists()
+
+
+def test_remote_cli_builds_bybit_component_preset() -> None:
+    from l2shock.remote_cli import _preset_for_l2_target
+
+    target = SourceFileSpec(
+        provider="cryptohftdata",
+        venue="bybit",
+        symbol="BTCUSDT",
+        data_kind=SourceDataKind.ORDERBOOK,
+        hour_utc=_hour(),
+    )
+
+    preset = _preset_for_l2_target(
+        target,
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+
+    assert len(preset.eligible_markets) == 1
+
+    market = preset.eligible_markets[0]
+
+    assert market.provider == "cryptohftdata"
+    assert market.venue == "bybit"
+    assert market.instrument == "BTCUSDT"

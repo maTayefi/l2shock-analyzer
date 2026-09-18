@@ -86,6 +86,16 @@ def test_remote_worker_rejects_noncanonical_hour(
             True,
         ),
         (
+            "bybit",
+            "BTCUSDT",
+            False,
+        ),
+        (
+            "bybit",
+            "ETHUSDT",
+            False,
+        ),
+        (
             "okx_futures",
             "BTC-USDT-SWAP",
             False,
@@ -118,7 +128,7 @@ def test_remote_worker_rejects_unproven_venue() -> None:
         match="Unsupported remote processing chain",
     ):
         _normalized_chain(
-            "bybit",
+            "bitget_futures",
             "BTCUSDT",
         )
 
@@ -253,6 +263,30 @@ def test_okx_without_existing_frontier_selects_oldest_bounded_hour() -> None:
         ),
         price_required=False,
     )
+    assert selected == _hour(0)
+
+
+def test_bybit_without_existing_frontier_selects_oldest_for_strict_attempt() -> None:
+    selected = _catch_up_target_from_observations(
+        venue="bybit",
+        latest_eligible_hour_utc=_hour(2),
+        observations=(
+            _observation(
+                2,
+                l2_exists=False,
+            ),
+            _observation(
+                1,
+                l2_exists=False,
+            ),
+            _observation(
+                0,
+                l2_exists=False,
+            ),
+        ),
+        price_required=False,
+    )
+
     assert selected == _hour(0)
 
 

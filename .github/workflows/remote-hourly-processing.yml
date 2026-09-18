@@ -15,6 +15,8 @@ on:
           - all
           - binance_btc
           - binance_eth
+          - bybit_btc
+          - bybit_eth
           - okx_btc
           - okx_eth
 
@@ -27,7 +29,7 @@ on:
       catch_up_hours:
         description: "Bounded HF chain-frontier search when hour is omitted"
         required: true
-        default: "72"
+        default: "336"
         type: string
 
       max_hours_per_run:
@@ -69,14 +71,22 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           SELECTED_CHAIN: ${{ inputs.chain || 'all' }}
           BINANCE_SEEDS_READY: ${{ vars.L2SHOCK_BINANCE_SEEDS_READY || 'false' }}
+          BYBIT_SEEDS_READY: ${{ vars.L2SHOCK_BYBIT_SEEDS_READY || 'false' }}
         run: |
           case "${SELECTED_CHAIN}" in
             all)
               if [[ "${EVENT_NAME}" == "schedule" ]] \
-                 && [[ "${BINANCE_SEEDS_READY}" != "true" ]]; then
+                 && [[ "${BINANCE_SEEDS_READY}" != "true" ]] \
+                 && [[ "${BYBIT_SEEDS_READY}" != "true" ]]; then
                 matrix='{"include":[{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP"},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP"}]}'
-              else
+              elif [[ "${EVENT_NAME}" == "schedule" ]] \
+                   && [[ "${BINANCE_SEEDS_READY}" != "true" ]]; then
+                matrix='{"include":[{"chain":"bybit_btc","venue":"bybit","instrument":"BTCUSDT"},{"chain":"bybit_eth","venue":"bybit","instrument":"ETHUSDT"},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP"},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP"}]}'
+              elif [[ "${EVENT_NAME}" == "schedule" ]] \
+                   && [[ "${BYBIT_SEEDS_READY}" != "true" ]]; then
                 matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT"},{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT"},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP"},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP"}]}'
+              else
+                matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT"},{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT"},{"chain":"bybit_btc","venue":"bybit","instrument":"BTCUSDT"},{"chain":"bybit_eth","venue":"bybit","instrument":"ETHUSDT"},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP"},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP"}]}'
               fi
               ;;
             binance_btc)
@@ -84,6 +94,12 @@ jobs:
               ;;
             binance_eth)
               matrix='{"include":[{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT"}]}'
+              ;;
+            bybit_btc)
+              matrix='{"include":[{"chain":"bybit_btc","venue":"bybit","instrument":"BTCUSDT"}]}'
+              ;;
+            bybit_eth)
+              matrix='{"include":[{"chain":"bybit_eth","venue":"bybit","instrument":"ETHUSDT"}]}'
               ;;
             okx_btc)
               matrix='{"include":[{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP"}]}'
@@ -120,7 +136,7 @@ jobs:
       L2SHOCK_HF_REPO_ID: ${{ vars.L2SHOCK_HF_REPO_ID }}
       L2SHOCK_HF_REVISION: ${{ vars.L2SHOCK_HF_REVISION || 'main' }}
       TARGET_HOUR: ${{ inputs.hour || '' }}
-      CATCH_UP_HOURS: ${{ inputs.catch_up_hours || '72' }}
+      CATCH_UP_HOURS: ${{ inputs.catch_up_hours || vars.L2SHOCK_CATCH_UP_HOURS || '336' }}
       MAX_HOURS_PER_RUN: ${{ inputs.max_hours_per_run || vars.L2SHOCK_MAX_HOURS_PER_RUN || '4' }}
       MAX_RUNTIME_MINUTES: ${{ inputs.max_runtime_minutes || vars.L2SHOCK_MAX_RUNTIME_MINUTES || '240' }}
       DEPTH_LOWER: ${{ vars.L2SHOCK_DEPTH_LOWER || '0' }}

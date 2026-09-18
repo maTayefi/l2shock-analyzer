@@ -92,6 +92,8 @@ def test_health_snapshot_reports_foundation_status(
     assert implemented["okx_sequence_adapter"] is True
     assert implemented["bybit_orderbook_acquisition"] is True
     assert implemented["bybit_l2_processing"] is True
+    assert implemented["bybit_remote_worker"] is True
+    assert implemented["bybit_hf_publication"] is True
     assert implemented["okx_orderbook_acquisition"] is True
     assert implemented["okx_l2_processing"] is True
     assert implemented["checkpoint_codec"] is True

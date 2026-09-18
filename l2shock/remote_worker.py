@@ -54,6 +54,7 @@ from l2shock.config import CryptoHFTConfig
 from l2shock.presets import (
     LiquidityDataPreset,
     build_binance_futures_data_preset,
+    build_bybit_data_preset,
     build_okx_futures_data_preset,
 )
 from l2shock.processing import (
@@ -373,6 +374,8 @@ class _RemoteCatchUpObservation:
 _SUPPORTED_CHAINS: Final[dict[tuple[str, str], bool]] = {
     ("binance_futures", "BTCUSDT"): True,
     ("binance_futures", "ETHUSDT"): True,
+    ("bybit", "BTCUSDT"): False,
+    ("bybit", "ETHUSDT"): False,
     ("okx_futures", "BTC-USDT-SWAP"): False,
     ("okx_futures", "ETH-USDT-SWAP"): False,
 }
@@ -487,10 +490,18 @@ def _preset_for_chain(
 
     builders = {
         "binance_futures": build_binance_futures_data_preset,
+        "bybit": build_bybit_data_preset,
         "okx_futures": build_okx_futures_data_preset,
     }
 
-    preset = builders[venue](
+    try:
+        builder = builders[venue]
+    except KeyError as exc:
+        raise RemoteWorkerError(
+            f"No remote L2 preset builder exists for venue {venue!r}"
+        ) from exc
+
+    preset = builder(
         base=source.base,
         lower_fraction=lower_fraction,
         upper_fraction=upper_fraction,
@@ -576,12 +587,18 @@ def _catch_up_target_from_observations(
     - absence of a frontier fails closed because update-only archives cannot
       initialize a fresh book.
 
-    For OKX:
+    For independently initializing source attempts:
 
-    - the same existing-frontier behavior is used when a frontier exists;
-    - when no artifact exists in the bounded window, the oldest inspected hour
-      is selected because the approved OKX source contract requires an opening
-      complete snapshot in the target archive.
+    - OKX must establish its approved complete snapshot contract;
+    - Binance may initialize only from a proven complete source snapshot;
+    - Bybit may initialize only from a native snapshot with a non-null replay
+      frontier;
+    - a Bybit frontier-less boundary snapshot still requires an immediately
+      preceding verified checkpoint.
+
+    When no artifact exists in the bounded window, the oldest inspected hour is
+    selected for a strict initialization attempt. Headless replay must produce
+    a usable output checkpoint before any L2 artifact is published.
 
     Returning the latest already-complete hour is an idempotent no-work probe.
     ``process_remote_hour`` will verify and reuse its existing artifacts.
@@ -659,13 +676,15 @@ def _catch_up_target_from_observations(
             )
 
         if normalized_venue in {
-            "okx_futures",
             "binance_futures",
+            "bybit",
+            "okx_futures",
         }:
             log.info(
                 "No remote L2 artifact exists in the bounded window for "
-                "venue=%s. Selecting the oldest inspected hour for strict "
-                "self-initialization from its source snapshot.",
+                "venue=%s. Selecting the oldest inspected hour for a strict "
+                "source-owned initialization attempt. Publication remains "
+                "blocked unless replay produces a usable output checkpoint.",
                 normalized_venue,
             )
             return values[-1].hour_utc
@@ -1245,6 +1264,23 @@ async def process_remote_hour(
         price_key=target_price_key,
     )
 
+    log.info(
+        "REMOTE EXISTING STATE: venue=%s instrument=%s hour=%s "
+        "pinned_revision=%s l2_exists=%s l2_checkpoint_exists=%s "
+        "price_required=%s price_exists=%s",
+        normalized_venue,
+        normalized_instrument,
+        target_hour.isoformat(),
+        existing.pinned_revision,
+        existing.l2_artifact is not None,
+        bool(
+            existing.l2_artifact is not None
+            and existing.l2_artifact.output_checkpoint is not None
+        ),
+        price_required,
+        existing.price_artifact is not None,
+    )
+
     if (
         existing.l2_artifact is not None
         and existing.l2_artifact.output_checkpoint is None
@@ -1291,6 +1327,17 @@ async def process_remote_hour(
             predecessor_required=False,
         )
 
+        log.info(
+            "REMOTE L2 INITIALIZATION INPUT: venue=%s instrument=%s "
+            "hour=%s predecessor_checkpoint_available=%s "
+            "checkpoint_bytes=%d",
+            normalized_venue,
+            normalized_instrument,
+            target_hour.isoformat(),
+            checkpoint_bytes is not None,
+            len(checkpoint_bytes) if checkpoint_bytes is not None else 0,
+        )
+
     requested_specs: list[SourceFileSpec] = []
 
     if l2_missing:
@@ -1313,12 +1360,47 @@ async def process_remote_hour(
             )
         )
 
+    log.info(
+        "REMOTE SOURCE PLAN: venue=%s instrument=%s hour=%s sources=%s",
+        normalized_venue,
+        normalized_instrument,
+        target_hour.isoformat(),
+        [
+            {
+                "venue": spec.venue,
+                "instrument": spec.symbol,
+                "data_kind": spec.data_kind.value,
+                "remote_path": spec.remote_path,
+            }
+            for spec in requested_specs
+        ],
+    )
+
     acquisition = await acquire_remote_worker_archives(
         tuple(requested_specs),
         cryptohft=cryptohft,
         workspace=workspace,
         latest_eligible_hour_utc=latest_eligible,
         use_api_key=use_api_key,
+    )
+
+    log.info(
+        "REMOTE SOURCE ACQUISITION COMPLETE: venue=%s instrument=%s "
+        "hour=%s source_count=%d downloaded=%d reused=%d sources=%s",
+        normalized_venue,
+        normalized_instrument,
+        target_hour.isoformat(),
+        acquisition.source_count,
+        acquisition.downloaded_count,
+        acquisition.reused_count,
+        [
+            {
+                "remote_path": archive.spec.remote_path,
+                "file_size_bytes": archive.file_size_bytes,
+                "content_sha256": archive.content_sha256,
+            }
+            for archive in acquisition.processing_archives
+        ],
     )
 
     l2_output = None
@@ -1337,6 +1419,26 @@ async def process_remote_hour(
             input_checkpoint_bytes=checkpoint_bytes,
             producer_git_commit=producer_git_commit,
             batch_size=batch_size,
+        )
+
+        log.info(
+            "REMOTE L2 PROCESSING RESULT: venue=%s instrument=%s hour=%s "
+            "events=%d snapshots=%d continuity_mismatches=%d "
+            "valid_seconds=%s degraded_seconds=%s invalid_seconds=%s "
+            "input_checkpoint_sha256=%s output_checkpoint_sha256=%s "
+            "analytical_content_sha256=%s",
+            normalized_venue,
+            normalized_instrument,
+            target_hour.isoformat(),
+            l2_output.replay_event_count,
+            l2_output.replay_snapshot_count,
+            l2_output.replay_continuity_mismatch_count,
+            l2_output.quality_summary.get("valid_count"),
+            l2_output.quality_summary.get("degraded_count"),
+            l2_output.quality_summary.get("invalid_count"),
+            l2_output.artifact.manifest.input_checkpoint_content_sha256,
+            l2_output.artifact.manifest.output_checkpoint_content_sha256,
+            l2_output.artifact.manifest.content_sha256,
         )
 
         if l2_output.artifact.output_checkpoint is None:
@@ -1368,10 +1470,37 @@ async def process_remote_hour(
             l2_output.artifact,
         )
 
+        log.info(
+            "REMOTE HF L2 PUBLICATION: venue=%s instrument=%s hour=%s "
+            "created=%s revision=%s concurrent_commit_observed=%s "
+            "artifact_path=%s manifest_path=%s",
+            normalized_venue,
+            normalized_instrument,
+            target_hour.isoformat(),
+            l2_publication.created,
+            l2_publication.revision,
+            l2_publication.concurrent_commit_observed,
+            l2_output.artifact.manifest.key.relative_path,
+            l2_output.artifact.manifest.key.manifest_relative_path,
+        )
+
     if price_output is not None:
         price_publication = await asyncio.to_thread(
             repository.publish_artifact,
             price_output.artifact,
+        )
+
+        log.info(
+            "REMOTE HF PRICE PUBLICATION: instrument=%s hour=%s "
+            "created=%s revision=%s concurrent_commit_observed=%s "
+            "artifact_path=%s manifest_path=%s",
+            normalized_instrument,
+            target_hour.isoformat(),
+            price_publication.created,
+            price_publication.revision,
+            price_publication.concurrent_commit_observed,
+            price_output.artifact.manifest.key.relative_path,
+            price_output.artifact.manifest.key.manifest_relative_path,
         )
 
     if l2_output is not None:
@@ -1462,6 +1591,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         choices=(
             "binance_futures",
+            "bybit",
             "okx_futures",
         ),
     )

@@ -846,11 +846,13 @@ Bybit now has a strict isolated replay adapter and is included in local
 production acquisition, local processing, single-market preset management,
 Automatic Fetch completeness, and local source availability.
 
-Bybit remains excluded from the GitHub remote-worker matrix and Hugging Face
-publication/import planning until the remaining remote integration batches are
-complete.
+Bybit is included in the GitHub remote-worker matrix and private Hugging Face
+publication path behind its independent scheduled seed gate.
 
-Local Analysis now supports an approved Binance + Bybit + OKX aggregate preset.
+Bybit remains excluded only from local Hugging Face range-import planning until
+the next integration batch is complete.
+
+Local Analysis supports an approved Binance + Bybit + OKX aggregate preset.
 The aggregate resolves all three independently persisted component preset
 hashes and performs strict exact-second aggregation at verified Analysis load
 time.
@@ -1000,8 +1002,13 @@ Bybit BTCUSDT orderbook
 Bybit ETHUSDT orderbook
 ```
 
-This batch does not yet add Bybit to the GitHub remote-worker matrix, Hugging
-Face publication/import planning, or a Binance+OKX+Bybit aggregate preset.
+Bybit is now included in the GitHub remote-worker matrix and Hugging Face
+publication path. Local Hugging Face import planning is completed in the next
+integration batch.
+
+The Binance + Bybit + OKX aggregate preset is already available locally and
+continues to resolve independently persisted component rows at Analysis load
+time.
 
 ### OKX production integration
 
@@ -4342,11 +4349,17 @@ The Settings editor supports these exact market compositions:
 Binance Futures:
     BTCUSDT or ETHUSDT
 
+Bybit:
+    BTCUSDT or ETHUSDT
+
 OKX Futures:
     BTC-USDT-SWAP or ETH-USDT-SWAP
 
 Binance + OKX Futures aggregate:
     both independently reconstructed component markets
+
+Binance + Bybit + OKX Futures aggregate:
+    all three independently reconstructed component markets
 ```
 
 Changing market composition is a semantic preset edit. It creates a new
