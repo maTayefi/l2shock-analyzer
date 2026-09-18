@@ -398,10 +398,11 @@ class StreamedTradeOHLCResult:
     def __post_init__(self) -> None:
         if not self.reader_reports:
             raise TradeOHLCError("A streamed trade OHLC result requires reader reports")
-
         rows_read = sum(report.rows_read for report in self.reader_reports)
-
-        if rows_read != self.block.input_trade_count:
+        skipped_zero_price = sum(
+            report.skipped_zero_price_row_count for report in self.reader_reports
+        )
+        if rows_read - skipped_zero_price != self.block.input_trade_count:
             raise TradeOHLCError(
                 "Reader row counts do not match OHLC input trade count"
             )

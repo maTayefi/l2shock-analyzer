@@ -398,16 +398,15 @@ class _Clock:
         return self._last
 
 
-def test_bounded_catch_up_processes_contiguous_hours_until_caught_up(
+def test_bounded_catch_up_replans_each_hour_until_caught_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    selected = _hour(1)
     latest = _hour(3)
     observed: list[datetime] = []
 
     async def fake_select(**kwargs: object) -> datetime:
         del kwargs
-        return selected
+        return _hour(len(observed) + 1)
 
     async def fake_process(**kwargs: object) -> RemoteWorkerResult:
         hour = kwargs["hour_utc"]
@@ -463,7 +462,7 @@ def test_bounded_catch_up_stops_at_max_hours_per_run(
 
     async def fake_select(**kwargs: object) -> datetime:
         del kwargs
-        return _hour(0)
+        return _hour(len(observed))
 
     async def fake_process(**kwargs: object) -> RemoteWorkerResult:
         hour = kwargs["hour_utc"]
@@ -565,10 +564,15 @@ def test_bounded_catch_up_never_skips_failed_hour(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[datetime] = []
+    select_call_count = [0]
 
     async def fake_select(**kwargs: object) -> datetime:
         del kwargs
-        return _hour(0)
+        call_index = select_call_count[0]
+        select_call_count[0] += 1
+        if call_index == 0:
+            return _hour(0)
+        return _hour(1)
 
     async def fake_process(**kwargs: object) -> RemoteWorkerResult:
         hour = kwargs["hour_utc"]
@@ -716,3 +720,64 @@ def test_caught_up_result_requires_latest_completed_hour() -> None:
             max_runtime_minutes=240,
             stop_reason="caught_up",
         )
+
+
+def test_catch_up_replanning_skips_immutable_blocked_hour(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[datetime] = []
+    selected_hours = iter(
+        (
+            _hour(0),
+            _hour(2),
+        )
+    )
+
+    async def fake_select(**kwargs: object) -> datetime:
+        del kwargs
+        return next(selected_hours)
+
+    async def fake_process(**kwargs: object) -> RemoteWorkerResult:
+        hour = kwargs["hour_utc"]
+        assert isinstance(hour, datetime)
+        observed.append(hour)
+
+        return _worker_result(hour)
+
+    monkeypatch.setattr(
+        remote_worker_module,
+        "select_remote_catch_up_hour",
+        fake_select,
+    )
+    monkeypatch.setattr(
+        remote_worker_module,
+        "process_remote_hour",
+        fake_process,
+    )
+
+    result = asyncio.run(
+        process_remote_catch_up(
+            repository=object(),  # type: ignore[arg-type]
+            cryptohft=object(),  # type: ignore[arg-type]
+            workspace=object(),  # type: ignore[arg-type]
+            venue="okx_futures",
+            instrument="BTC-USDT-SWAP",
+            latest_eligible_hour_utc=_hour(2),
+            lower_fraction=Decimal("0"),
+            upper_fraction=Decimal("0.01"),
+            search_hours=72,
+            max_hours_per_run=4,
+            max_runtime_minutes=240,
+            producer_git_commit=None,
+            _monotonic=_Clock(0.0),
+        )
+    )
+
+    assert observed == [
+        _hour(0),
+        _hour(2),
+    ]
+    assert result.stop_reason == "caught_up"
+    assert result.completed_hour_count == 2
+    assert result.first_hour_utc == _hour(0)
+    assert result.last_hour_utc == _hour(2)

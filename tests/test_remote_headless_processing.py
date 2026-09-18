@@ -558,3 +558,76 @@ def test_headless_price_normalizes_processing_cancellation(
             cancellation_check_interval_rows=1,
             cancellation_check_interval_records=1,
         )
+
+
+def test_headless_price_skips_exact_binance_zero_price_trade_rows(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    path = tmp_path / "BTCUSDT_trades.parquet"
+
+    first_trade_time_ms = _epoch_ms(_hour() + timedelta(milliseconds=50))
+    valid_trade_time_ms = _epoch_ms(_hour() + timedelta(milliseconds=100))
+
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "received_time": first_trade_time_ms * 1_000_000,
+                    "event_time": first_trade_time_ms,
+                    "symbol": "BTCUSDT",
+                    "trade_id": "zero-price-sentinel",
+                    "price": "0",
+                    "quantity": "1",
+                    "trade_time": first_trade_time_ms,
+                    "is_buyer_maker": False,
+                    "order_type": "market",
+                },
+                {
+                    "received_time": valid_trade_time_ms * 1_000_000,
+                    "event_time": valid_trade_time_ms,
+                    "symbol": "BTCUSDT",
+                    "trade_id": "valid-trade",
+                    "price": "100.25",
+                    "quantity": "2",
+                    "trade_time": valid_trade_time_ms,
+                    "is_buyer_maker": True,
+                    "order_type": "market",
+                },
+            ]
+        ),
+        path,
+        compression="zstd",
+        row_group_size=1,
+    )
+
+    caplog.set_level(
+        "WARNING",
+        logger="l2shock.ingest.parquet_reader",
+    )
+
+    output = process_price_archives_headlessly(
+        _price_spec(),
+        (
+            _archive(
+                path,
+                _price_spec(),
+            ),
+        ),
+        batch_size=1,
+    )
+
+    decoded = decode_hourly_trade_ohlc_blocks(output.artifact.encoded)
+
+    assert output.input_trade_count == 1
+    assert output.accepted_trade_count == 1
+    assert decoded.valid_count == 1
+    assert decoded.invalid_count == 3_599
+    assert decoded.open[0] == Decimal("100.25")
+    assert decoded.high[0] == Decimal("100.25")
+    assert decoded.low[0] == Decimal("100.25")
+    assert decoded.close[0] == Decimal("100.25")
+    assert decoded.trade_count[0] == 1
+
+    assert "BINANCE ZERO-PRICE TRADE ROW SKIPPED" in caplog.text
+    assert "skipped_zero_price_rows=1" in caplog.text

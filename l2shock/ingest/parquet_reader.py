@@ -260,16 +260,14 @@ class TradeReadReport:
     path: Path
     symbol: str
     rows_read: int
-
     first_received_time_ns: int | None
     last_received_time_ns: int | None
     first_trade_time_ms: int | None
     last_trade_time_ms: int | None
-
     received_time_regression_count: int
     trade_time_regression_count: int
     adjacent_duplicate_trade_id_count: int
-
+    skipped_zero_price_row_count: int
     retained_issues: tuple[StreamOrderingIssue, ...]
     retained_issue_limit: int
     batch_size: int
@@ -1390,6 +1388,7 @@ def read_trade_file(
     received_regressions = 0
     trade_time_regressions = 0
     adjacent_duplicate_ids = 0
+    skipped_zero_price_rows = 0
     issues: list[StreamOrderingIssue] = []
 
     previous: TradeRecord | None = None
@@ -1453,6 +1452,46 @@ def read_trade_file(
                 row_number=row_number,
             )
 
+            parsed_price = _decimal_string(
+                raw_price,
+                field_name="price",
+                path=source,
+                row_number=row_number,
+                allow_zero=True,
+            )
+
+            # CryptoHFTData Binance Futures trade archives can contain exact
+            # zero-price sentinel rows. Such rows cannot own real-trade OHLC
+            # and are excluded from price construction.
+            #
+            # This normalization is intentionally restricted to:
+            #
+            #     venue == binance_futures
+            #     and parsed price == 0
+            #
+            # Negative, malformed, non-finite, and non-string prices remain
+            # strict source-contract errors. Zero quantity on a positive-price
+            # trade also remains a strict error.
+            if spec.venue == "binance_futures" and parsed_price == 0:
+                rows_read += 1
+                skipped_zero_price_rows += 1
+
+                if skipped_zero_price_rows <= 10:
+                    _integer_log.warning(
+                        "BINANCE ZERO-PRICE TRADE ROW SKIPPED: "
+                        "file=%s row=%d symbol=%s trade_id=%r "
+                        "raw_price=%r raw_quantity=%r trade_time=%r",
+                        source.name,
+                        row_number,
+                        symbol,
+                        raw_trade_id,
+                        raw_price,
+                        raw_quantity,
+                        raw_trade_time,
+                    )
+
+                continue
+
             record = TradeRecord(
                 symbol=symbol,
                 trade_id=_trade_id(
@@ -1460,13 +1499,7 @@ def read_trade_file(
                     path=source,
                     row_number=row_number,
                 ),
-                price=_decimal_string(
-                    raw_price,
-                    field_name="price",
-                    path=source,
-                    row_number=row_number,
-                    allow_zero=False,
-                ),
+                price=parsed_price,
                 quantity=_decimal_string(
                     raw_quantity,
                     field_name="quantity",
@@ -1569,6 +1602,18 @@ def read_trade_file(
             path=source,
         )
 
+    if skipped_zero_price_rows:
+        _integer_log.warning(
+            "BINANCE ZERO-PRICE TRADE SUMMARY: file=%s symbol=%s "
+            "physical_rows=%d skipped_zero_price_rows=%d "
+            "accepted_trade_rows=%d",
+            source.name,
+            spec.symbol,
+            rows_read,
+            skipped_zero_price_rows,
+            rows_read - skipped_zero_price_rows,
+        )
+
     return TradeReadReport(
         path=source,
         symbol=spec.symbol,
@@ -1580,6 +1625,7 @@ def read_trade_file(
         received_time_regression_count=received_regressions,
         trade_time_regression_count=trade_time_regressions,
         adjacent_duplicate_trade_id_count=adjacent_duplicate_ids,
+        skipped_zero_price_row_count=skipped_zero_price_rows,
         retained_issues=tuple(issues),
         retained_issue_limit=MAX_RETAINED_DIAGNOSTIC_ISSUES,
         batch_size=batch_size,

@@ -245,7 +245,7 @@ class RemoteCatchUpRunResult:
                 "one hour result"
             )
 
-        expected_hour: datetime | None = None
+        previous_hour: datetime | None = None
 
         for result in results:
             if not isinstance(result, RemoteWorkerResult):
@@ -256,10 +256,10 @@ class RemoteCatchUpRunResult:
                     "Catch-up results must belong to one remote chain"
                 )
 
-            if expected_hour is not None and result.hour_utc != expected_hour:
+            if previous_hour is not None and result.hour_utc <= previous_hour:
                 raise RemoteWorkerError(
-                    "Catch-up results must be contiguous and ordered "
-                    "oldest to newest"
+                    "Catch-up results must be strictly ordered "
+                    "oldest to newest without duplicate hours"
                 )
 
             if result.hour_utc > latest:
@@ -267,7 +267,7 @@ class RemoteCatchUpRunResult:
                     "Catch-up result exceeds the release-eligible boundary"
                 )
 
-            expected_hour = result.hour_utc + timedelta(hours=1)
+            previous_hour = result.hour_utc
 
         if len(results) > self.max_hours_per_run:
             raise RemoteWorkerError("Catch-up result exceeds max_hours_per_run")
@@ -959,14 +959,19 @@ async def process_remote_catch_up(
     batch_size: int = 131_072,
     _monotonic: Callable[[], float] | None = None,
 ) -> RemoteCatchUpRunResult:
-    """Process a bounded contiguous sequence for one remote chain.
+    """Process a bounded ascending sequence for one remote chain.
 
-    Frontier discovery is performed once. Every subsequent target is exactly
-    one hour after the previously completed target.
+    Target selection is repeated after every successful operation against a
+    fresh pinned Hugging Face revision. This permits the planner to:
 
-    ``process_remote_hour`` refreshes the HF repository revision and verifies
-    existing target/predecessor state for every hour, so this loop does not
-    reuse stale publication state.
+    - observe a newly repaired same-hour price artifact;
+    - advance from the newly verified frontier;
+    - skip immutable L2 artifacts that have no output checkpoint;
+    - select the first later missing L2 hour.
+
+    Successfully processed result hours remain strictly increasing, but they
+    need not be contiguous when an immutable unusable artifact occupies an
+    intermediate hour.
 
     The runtime budget is cooperative. It prevents admission of another hour
     after the budget expires; it does not interrupt an hour that is already
@@ -1081,16 +1086,44 @@ async def process_remote_catch_up(
             stop_reason = "runtime_budget"
             break
 
-        next_hour = target_hour + timedelta(hours=1)
+        # Refresh Hugging Face state after every successful operation.
+        #
+        # This is required when the completed operation repaired price at an
+        # older usable L2 frontier. The refreshed planner can then skip an
+        # immutable checkpoint-less L2 artifact and select the first later
+        # missing hour instead of mechanically attempting the blocked hour.
+        next_target_hour = await select_remote_catch_up_hour(
+            repository=repository,
+            venue=normalized_venue,
+            instrument=normalized_instrument,
+            latest_eligible_hour_utc=latest,
+            lower_fraction=lower_fraction,
+            upper_fraction=upper_fraction,
+            search_hours=search_hours,
+        )
 
-        if next_hour > latest:
+        if next_target_hour > latest:
             raise RemoteWorkerError(
-                "Remote catch-up attempted to exceed its eligible boundary"
+                "Catch-up planner selected an hour after the eligible boundary"
             )
 
-        # No gap skipping is permitted. process_remote_hour will pin current
-        # HF state and validate the immediate predecessor for this exact hour.
-        target_hour = next_hour
+        if next_target_hour <= target_hour:
+            raise RemoteWorkerError(
+                "Catch-up replanning did not advance after a successful "
+                "operation; "
+                f"completed_hour={target_hour.isoformat()} "
+                f"selected_hour={next_target_hour.isoformat()}"
+            )
+
+        log.info(
+            "CATCH-UP REPLANNED AFTER SUCCESS: completed=%s next_target=%s "
+            "skipped_hours=%d",
+            target_hour.isoformat(),
+            next_target_hour.isoformat(),
+            int((next_target_hour - target_hour).total_seconds() // 3_600) - 1,
+        )
+
+        target_hour = next_target_hour
 
     return RemoteCatchUpRunResult(
         venue=normalized_venue,
