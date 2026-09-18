@@ -418,7 +418,18 @@ class ReplayArchiveReport:
 
     @property
     def independently_initialized(self) -> bool:
-        return self.snapshots_applied > 0
+        """Return whether this archive established state without carry input.
+
+        Applying a snapshot does not imply independent initialization when the
+        archive began from a checkpoint or carried replay state. In particular,
+        a Bybit frontier-less archive-boundary snapshot may be applied only
+        because the immediately preceding replay frontier already exists.
+        """
+
+        return bool(
+            self.snapshots_applied > 0
+            and self.initial_state is not BookInitializationState.CARRIED
+        )
 
     @property
     def required_carried_state(self) -> bool:

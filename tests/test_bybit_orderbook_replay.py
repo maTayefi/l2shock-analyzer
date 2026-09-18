@@ -216,6 +216,9 @@ def test_bybit_native_snapshot_initializes_final_id_frontier(
 
     archive = report.archives[0]
 
+    assert archive.initial_state is BookInitializationState.UNINITIALIZED
+    assert archive.independently_initialized is True
+    assert archive.required_carried_state is False
     assert archive.snapshots_applied == 1
     assert archive.updates_applied == 1
     assert archive.invalidation_count == 0
@@ -350,6 +353,7 @@ def test_bybit_boundary_snapshot_replaces_carried_book_and_preserves_frontier(
 
     assert second.initial_state is BookInitializationState.CARRIED
     assert second.required_carried_state is True
+    assert second.independently_initialized is False
     assert second.snapshots_applied == 1
     assert second.updates_applied == 1
     assert second.invalidation_count == 0
@@ -416,6 +420,8 @@ def test_bybit_boundary_snapshot_cannot_initialize_without_carried_frontier(
 
     archive = report.archives[0]
 
+    assert archive.independently_initialized is False
+    assert archive.required_carried_state is False
     assert archive.snapshots_applied == 0
     assert archive.updates_applied == 0
     assert archive.updates_skipped_uninitialized == 1
