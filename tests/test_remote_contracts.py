@@ -256,3 +256,20 @@ def test_remote_l2_manifest_rejects_missing_preset_content() -> None:
             source_hours=(_orderbook_source(),),
             content_sha256="d" * 64,
         )
+
+
+def test_remote_manifest_rejects_boolean_schema_version() -> None:
+    manifest = RemoteArtifactManifest(
+        key=_l2_key(),
+        source_hours=(_orderbook_source(),),
+        content_sha256="d" * 64,
+        l2_preset=_l2_preset(),
+    )
+    payload = manifest.to_canonical_dict()
+    payload["schema_version"] = True
+
+    with pytest.raises(
+        RemoteContractError,
+        match="schema version",
+    ):
+        RemoteArtifactManifest.from_canonical_dict(payload)

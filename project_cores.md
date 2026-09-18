@@ -112,7 +112,7 @@ l2shock/remote/headless_processing.py
 l2shock/remote/hf_repository.py
 l2shock/remote/importer.py
 l2shock/remote/source_acquisition.py
-l2shock/remote/worker.py
+l2shock/remote_worker.py
 l2shock/remote_cli.py
 l2shock/timeutils.py
 l2shock/ui/__init__.py
@@ -747,7 +747,7 @@ l2shock/remote/headless_processing.py
 l2shock/remote/hf_repository.py
 l2shock/remote/importer.py
 l2shock/remote/source_acquisition.py
-l2shock/remote/worker.py
+l2shock/remote_worker.py
 l2shock/remote_cli.py
 l2shock/ui/remote_import_runtime.py
 ```
@@ -1067,7 +1067,7 @@ The available package manifest appeared slightly behind the newest source export
 
 ```text
 l2shock/remote/importer.py
-l2shock/remote/worker.py
+l2shock/remote_worker.py
 l2shock/ui/remote_import_runtime.py
 tests/test_bybit_orderbook_replay.py
 tests/test_remote_bybit_processing.py
@@ -1105,7 +1105,7 @@ required = (
     "# Ranked dual-core combinations",
     "# Ranked triple-core combinations",
     "l2shock/remote/importer.py",
-    "l2shock/remote/worker.py",
+    "l2shock/remote_worker.py",
     "l2shock/ui/remote_import_runtime.py",
     "tests/test_remote_import_runtime.py",
     "tests/test_remote_workflow_contract.py",

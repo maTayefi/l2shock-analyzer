@@ -475,3 +475,38 @@ def test_analysis_identity_owns_boundary_extremeness_ranking_version() -> None:
         "schema_version": 2,
         "algorithm_version": ("population-primary-recall-boundary-extremeness-v2"),
     }
+
+
+def test_cancellation_during_completed_publication_removes_cached_result() -> None:
+    dataset = _dataset(
+        (
+            "100",
+            "110",
+            "108",
+            "120",
+            "116",
+        )
+    )
+    config = _bid_only_config()
+    cache = LiquidityMovementAnalysisCache()
+    cancelled = False
+
+    def progress_sink(event) -> None:
+        nonlocal cancelled
+
+        if event.phase is LiquidityMovementAnalysisProgressPhase.COMPLETED:
+            cancelled = True
+
+    with pytest.raises(
+        LiquidityMovementAnalysisCancelledError,
+        match="cancelled",
+    ):
+        execute_liquidity_movement_analysis(
+            dataset,
+            config=config,
+            cache=cache,
+            cancellation_probe=lambda: cancelled,
+            progress_sink=progress_sink,
+        )
+
+    assert len(cache) == 0

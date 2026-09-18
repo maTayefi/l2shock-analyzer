@@ -607,3 +607,17 @@ def test_depth_hot_loop_does_not_enter_decimal_localcontexts() -> None:
     assert "_exact_multiply(" not in source
     assert "_exact_add(" not in source
     assert "_exact_product_parts(" in source
+
+
+def test_exact_subtraction_ignores_low_ambient_decimal_precision() -> None:
+    left = Decimal("123456789.123456789")
+    right = Decimal("123456788.987654321")
+    expected = Decimal("0.135802468")
+
+    with localcontext(Context(prec=6)):
+        observed = depth_module._exact_subtract(
+            left,
+            right,
+        )
+
+    assert observed == expected

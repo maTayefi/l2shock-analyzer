@@ -558,7 +558,11 @@ class RemoteArtifactManifest:
         if self.schema != REMOTE_ARTIFACT_SCHEMA:
             raise RemoteContractError("Unsupported remote artifact schema identity")
 
-        if self.schema_version != REMOTE_ARTIFACT_SCHEMA_VERSION:
+        if (
+            isinstance(self.schema_version, bool)
+            or not isinstance(self.schema_version, int)
+            or self.schema_version != REMOTE_ARTIFACT_SCHEMA_VERSION
+        ):
             raise RemoteContractError("Unsupported remote artifact schema version")
 
         if self.key.schema_version != self.schema_version:

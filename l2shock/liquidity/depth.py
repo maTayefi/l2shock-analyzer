@@ -319,7 +319,29 @@ def _exact_add(left: Decimal, right: Decimal) -> Decimal:
 
 
 def _exact_subtract(left: Decimal, right: Decimal) -> Decimal:
-    return _exact_add(left, -right)
+    """Subtract finite Decimals exactly without unary context rounding."""
+
+    left_coefficient, left_exponent = _decimal_coefficient_and_exponent(
+        left,
+        field_name="left subtraction operand",
+    )
+    right_coefficient, right_exponent = _decimal_coefficient_and_exponent(
+        right,
+        field_name="right subtraction operand",
+    )
+
+    common_exponent = min(
+        left_exponent,
+        right_exponent,
+    )
+    difference_coefficient = left_coefficient * (
+        10 ** (left_exponent - common_exponent)
+    ) - right_coefficient * (10 ** (right_exponent - common_exponent))
+
+    return _decimal_from_coefficient(
+        difference_coefficient,
+        common_exponent,
+    )
 
 
 def depth_price_intervals(

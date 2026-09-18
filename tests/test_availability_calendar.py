@@ -313,3 +313,29 @@ def test_hour_tooltip_reports_component_market_coverage() -> None:
 
     assert "L2 markets materialized=1/2" in tooltip
     assert "L2 markets valid=1/2" in tooltip
+
+
+def test_partial_multi_market_validity_can_keep_strict_handoff_seconds_zero() -> None:
+    item = HourAvailability(
+        base="BTC",
+        hour_utc=_hour(),
+        preset_hash="e" * 64,
+        orderbook_status="partial",
+        trades_status="processed",
+        orderbook_local=False,
+        trades_local=True,
+        l2_materialized=True,
+        price_materialized=True,
+        l2_valid_seconds=0,
+        price_valid_seconds=3_600,
+        state=HourAvailabilityState.PARTIAL,
+        expected_l2_market_count=3,
+        materialized_l2_market_count=2,
+        valid_l2_market_count=1,
+    )
+
+    assert item.analyzable is False
+    assert item.l2_valid_seconds == 0
+    assert item.valid_l2_market_count == 1
+    assert item.l2_market_coverage_degraded is True
+    assert item.l2_valid_market_coverage_degraded is True

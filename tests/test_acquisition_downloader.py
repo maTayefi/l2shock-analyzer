@@ -14,6 +14,7 @@ from pydantic import SecretStr
 from l2shock.acquisition import (
     AcquisitionCancelledError,
     CryptoHFTDownloader,
+    DownloadConflictError,
     DownloadDisposition,
     InsufficientDiskSpaceError,
     ParquetValidationError,
@@ -454,3 +455,48 @@ def test_published_archive_survives_temporary_cleanup_failure(
         temporary,
         missing_ok=True,
     )
+
+
+@pytest.mark.asyncio
+async def test_existing_symlink_destination_is_rejected_before_reuse(
+    tmp_path: Path,
+) -> None:
+    content = _orderbook_bytes(tmp_path)
+    spec = _spec()
+    storage = _storage(tmp_path)
+    destination = spec.local_path(storage.raw_path)
+    target = tmp_path / "external-source.parquet"
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(content)
+
+    try:
+        destination.symlink_to(target)
+    except OSError:
+        pytest.skip("File symlinks are unavailable on this platform")
+
+    request_count = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(500)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        async with CryptoHFTDownloader(
+            cryptohft=_cryptohft(),
+            storage=storage,
+            client=client,
+            free_bytes_provider=lambda _path: 10 * 1024**3,
+        ) as downloader:
+            with pytest.raises(
+                DownloadConflictError,
+                match="symbolic link",
+            ):
+                await downloader.download(spec)
+
+    assert request_count == 0
+    assert destination.is_symlink()
+    assert target.read_bytes() == content

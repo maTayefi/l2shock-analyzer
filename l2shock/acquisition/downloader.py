@@ -297,6 +297,15 @@ class CryptoHFTDownloader:
         spec: SourceFileSpec,
         destination: Path,
     ) -> DownloadArtifact | None:
+        # Inspect the canonical directory entry before any operation which
+        # follows symbolic links. Acquisition must own a real regular file at
+        # the exact destination, not an externally mutable link target.
+        if destination.is_symlink():
+            raise DownloadConflictError(
+                "Raw archive destination cannot be a symbolic link: "
+                f"{destination.name!r}"
+            )
+
         if not destination.exists():
             return None
 

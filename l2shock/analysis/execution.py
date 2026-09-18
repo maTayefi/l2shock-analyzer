@@ -927,19 +927,37 @@ def execute_liquidity_movement_analysis(
         ranking_batch=ranking_batch,
     )
 
+    # Final publication boundary. Cancellation requested while slices or the
+    # immutable result were being constructed must be observed before cache
+    # insertion.
+    _check_cancellation(cancellation_probe)
+
     if cache is not None:
         cache.put(result)
 
-    _emit_progress(
-        progress_sink,
-        LiquidityMovementAnalysisProgress(
-            analysis_id=analysis_id,
-            phase=(LiquidityMovementAnalysisProgressPhase.COMPLETED),
-            message="Liquidity Movement analysis completed.",
-            completed_units=total_units,
-            total_units=total_units,
-        ),
-    )
+    try:
+        _emit_progress(
+            progress_sink,
+            LiquidityMovementAnalysisProgress(
+                analysis_id=analysis_id,
+                phase=(LiquidityMovementAnalysisProgressPhase.COMPLETED),
+                message="Liquidity Movement analysis completed.",
+                completed_units=total_units,
+                total_units=total_units,
+            ),
+        )
+
+        # A progress callback may synchronously trigger Stop Analysis. Do not
+        # return or retain a successful cached result after that cancellation.
+        _check_cancellation(cancellation_probe)
+
+    except LiquidityMovementAnalysisCancelledError:
+        if cache is not None:
+            cache.discard(
+                analysis_id,
+                expected=result,
+            )
+        raise
 
     return result
 
@@ -1004,6 +1022,39 @@ class LiquidityMovementAnalysisCache:
 
             while len(self._entries) > self._maximum_entries:
                 self._entries.popitem(last=False)
+
+    def discard(
+        self,
+        analysis_id: str,
+        *,
+        expected: LiquidityMovementAnalysisResult | None = None,
+    ) -> bool:
+        """Remove one cache entry without deleting a newer replacement."""
+
+        digest = _canonical_sha256(
+            "analysis_id",
+            analysis_id,
+        )
+
+        if expected is not None and not isinstance(
+            expected,
+            LiquidityMovementAnalysisResult,
+        ):
+            raise TypeError(
+                "expected must be LiquidityMovementAnalysisResult or null"
+            )
+
+        with self._lock:
+            current = self._entries.get(digest)
+
+            if current is None:
+                return False
+
+            if expected is not None and current is not expected:
+                return False
+
+            del self._entries[digest]
+            return True
 
     def clear(self) -> None:
         with self._lock:

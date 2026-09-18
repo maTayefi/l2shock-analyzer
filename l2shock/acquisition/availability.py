@@ -230,9 +230,19 @@ class HourAvailability:
                 "l2_materialized does not match materialized market coverage"
             )
 
-        if (self.l2_valid_seconds > 0) != (valid_market_count > 0):
+        # For one market, l2_valid_seconds and valid market coverage describe
+        # the same fact. For an aggregate preset they intentionally differ:
+        #
+        # - valid_market_count reports partial component diagnostics;
+        # - l2_valid_seconds remains zero until every expected market has
+        #   complete 3,600-second coverage suitable for Analysis handoff.
+        if (
+            expected_market_count == 1
+            and (self.l2_valid_seconds > 0) != (valid_market_count > 0)
+        ):
             raise AvailabilityError(
-                "l2_valid_seconds does not match valid market coverage"
+                "Single-market l2_valid_seconds does not match "
+                "valid market coverage"
             )
 
         object.__setattr__(
