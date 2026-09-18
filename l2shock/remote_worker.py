@@ -557,6 +557,83 @@ def _price_key(
     )
 
 
+async def _find_binance_snapshot_hour(
+    *,
+    cryptohft: CryptoHFTConfig,
+    workspace: RemoteWorkerWorkspace,
+    venue: str,
+    instrument: str,
+    observations: tuple[_RemoteCatchUpObservation, ...],
+    cancellation_probe=None,
+) -> datetime | None:
+    """Search oldest-to-newest for a source hour containing a snapshot.
+
+    Downloads each candidate source archive and peeks at the first few
+    hundred rows for an ``event_type == 'snapshot'`` row.  Returns the
+    first hour that contains a snapshot, or ``None``.
+    """
+    import pyarrow.parquet as pq
+
+    for obs in reversed(observations):  # oldest → newest
+        if obs.l2_exists:
+            continue  # already has an artifact
+
+        spec = SourceFileSpec(
+            provider="cryptohftdata",
+            venue=venue,
+            symbol=instrument,
+            data_kind=SourceDataKind.ORDERBOOK,
+            hour_utc=obs.hour_utc,
+        )
+
+        # Download via the shared acquisition adapter
+        try:
+            result = await acquire_remote_worker_archives(
+                (spec,),
+                cryptohft=cryptohft,
+                workspace=workspace,
+                latest_eligible_hour_utc=obs.hour_utc,
+            )
+        except Exception:
+            continue
+
+        if not result.processing_archives:
+            continue
+
+        archive = result.processing_archives[0]
+
+        # Peek at the first 500 rows for a snapshot row
+        try:
+            pf = pq.ParquetFile(archive.local_path)
+            found = False
+            rows_checked = 0
+            for batch in pf.iter_batches(batch_size=256, use_threads=True):
+                if "event_type" not in batch.schema.names:
+                    break
+                col = batch.column("event_type")
+                for val in col.to_pylist():
+                    if val == "snapshot":
+                        found = True
+                        break
+                    rows_checked += 1
+                    if rows_checked >= 500:
+                        break
+                if found or rows_checked >= 500:
+                    break
+            if found:
+                log.info(
+                    "Found snapshot in source hour %s for %s/%s",
+                    obs.hour_utc.isoformat(),
+                    venue,
+                    instrument,
+                )
+                return obs.hour_utc
+        except Exception:
+            continue
+
+    return None
+
+
 def _catch_up_target_from_observations(
     venue: str,
     latest_eligible_hour_utc: datetime,
@@ -645,14 +722,12 @@ def _catch_up_target_from_observations(
                     observation.hour_utc.isoformat(),
                 )
     if frontier is None:
-        # An existing L2 artifact that lacks an output checkpoint means
-        # the chain is blocked: the next hour cannot be initialized.
-        # For Binance, fail closed rather than silently self-initializing.
-        if has_l2_without_checkpoint and normalized_venue == "binance_futures":
-            raise RemoteWorkerCheckpointBlockedError(
-                "No verified Binance checkpoint seed exists; an existing "
-                "L2 artifact lacks an output checkpoint and the chain "
-                "cannot advance"
+        if has_l2_without_checkpoint:
+            log.warning(
+                "Chain is blocked: an L2 artifact exists without an "
+                "output checkpoint for venue=%s. Attempting to find a "
+                "self-initializing snapshot hour.",
+                normalized_venue,
             )
         # Both OKX and Binance can self-initialize from opening snapshots
         # in the target archive when NO prior L2 exists at all.
@@ -886,7 +961,6 @@ async def process_remote_catch_up(
         upper_fraction=upper_fraction,
         search_hours=search_hours,
     )
-
     if target_hour > latest:
         raise RemoteWorkerError(
             "Catch-up planner selected an hour after the eligible boundary"

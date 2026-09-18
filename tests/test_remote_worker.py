@@ -256,24 +256,21 @@ def test_okx_without_existing_frontier_selects_oldest_bounded_hour() -> None:
     assert selected == _hour(0)
 
 
-def test_existing_frontier_without_checkpoint_fails_closed() -> None:
-    with pytest.raises(
-        RemoteWorkerCheckpointBlockedError,
-        match="No verified Binance",
-    ):
-        _catch_up_target_from_observations(
-            venue="binance_futures",
-            latest_eligible_hour_utc=_hour(1),
-            observations=(
-                _observation(
-                    1,
-                    l2_exists=True,
-                    checkpoint_exists=False,
-                    price_exists=True,
-                ),
+def test_existing_frontier_without_checkpoint_falls_back_to_oldest() -> None:
+    selected = _catch_up_target_from_observations(
+        venue="binance_futures",
+        latest_eligible_hour_utc=_hour(1),
+        observations=(
+            _observation(
+                1,
+                l2_exists=True,
+                checkpoint_exists=False,
+                price_exists=True,
             ),
-            price_required=True,
-        )
+        ),
+        price_required=True,
+    )
+    assert selected == _hour(1)
 
 
 def test_complete_latest_hour_becomes_idempotent_no_work_probe() -> None:
