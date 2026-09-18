@@ -27,6 +27,8 @@ _PROVIDER: Final[str] = "cryptohftdata"
 _SUPPORTED_MARKETS: Final[dict[tuple[str, str], str]] = {
     ("binance_futures", "BTCUSDT"): "BTC",
     ("binance_futures", "ETHUSDT"): "ETH",
+    ("bybit", "BTCUSDT"): "BTC",
+    ("bybit", "ETHUSDT"): "ETH",
     ("okx_futures", "BTC-USDT-SWAP"): "BTC",
     ("okx_futures", "ETH-USDT-SWAP"): "ETH",
 }

@@ -11,6 +11,7 @@ Usage:
     py -3.14 inspect_bybit_contract.py --venue-path bybit --symbol BTCUSDT --date 2026-01-15 --hours 3
     py -3.14 inspect_bybit_contract.py --venue-path bybit --symbol ETHUSDT --date 2026-01-15 --hours 2 --output-dir cache_bybit
 """
+
 from __future__ import annotations
 
 import argparse
@@ -166,14 +167,24 @@ def inspect_parquet_deep(path: Path) -> dict:
             )
             if event_key != current_event_key:
                 if current_event_rows:
-                    events.append({
-                        "type": current_event_type,
-                        "row_count": len(current_event_rows),
-                        "first_update_id": current_event_rows[0].get("first_update_id"),
-                        "final_update_id": current_event_rows[0].get("final_update_id"),
-                        "prev_final_update_id": current_event_rows[0].get("prev_final_update_id"),
-                        "last_update_id": current_event_rows[0].get("last_update_id"),
-                    })
+                    events.append(
+                        {
+                            "type": current_event_type,
+                            "row_count": len(current_event_rows),
+                            "first_update_id": current_event_rows[0].get(
+                                "first_update_id"
+                            ),
+                            "final_update_id": current_event_rows[0].get(
+                                "final_update_id"
+                            ),
+                            "prev_final_update_id": current_event_rows[0].get(
+                                "prev_final_update_id"
+                            ),
+                            "last_update_id": current_event_rows[0].get(
+                                "last_update_id"
+                            ),
+                        }
+                    )
                 current_event_key = event_key
                 current_event_type = et
                 current_event_rows = [dict(row)]
@@ -182,14 +193,18 @@ def inspect_parquet_deep(path: Path) -> dict:
 
     # Final event
     if current_event_rows:
-        events.append({
-            "type": current_event_type,
-            "row_count": len(current_event_rows),
-            "first_update_id": current_event_rows[0].get("first_update_id"),
-            "final_update_id": current_event_rows[0].get("final_update_id"),
-            "prev_final_update_id": current_event_rows[0].get("prev_final_update_id"),
-            "last_update_id": current_event_rows[0].get("last_update_id"),
-        })
+        events.append(
+            {
+                "type": current_event_type,
+                "row_count": len(current_event_rows),
+                "first_update_id": current_event_rows[0].get("first_update_id"),
+                "final_update_id": current_event_rows[0].get("final_update_id"),
+                "prev_final_update_id": current_event_rows[0].get(
+                    "prev_final_update_id"
+                ),
+                "last_update_id": current_event_rows[0].get("last_update_id"),
+            }
+        )
 
     # Final ID continuity analysis
     final_id_increment_patterns = Counter()
@@ -202,12 +217,14 @@ def inspect_parquet_deep(path: Path) -> dict:
         elif diff > 1:
             final_id_increment_patterns[f"increment_by_{min(diff, 100)}"] += 1
             if len(final_id_gaps) < 10:
-                final_id_gaps.append({
-                    "index": i,
-                    "prev": final_update_ids[i - 1],
-                    "curr": final_update_ids[i],
-                    "gap": diff,
-                })
+                final_id_gaps.append(
+                    {
+                        "index": i,
+                        "prev": final_update_ids[i - 1],
+                        "curr": final_update_ids[i],
+                        "gap": diff,
+                    }
+                )
         else:
             final_id_increment_patterns["negative/regression"] += 1
 
@@ -356,7 +373,10 @@ def main():
     for h in range(hours):
         hour = start_hour + h
         remote_path = f"{venue_path}/{date_str}/{hour:02d}/{symbol}_orderbook.parquet"
-        local_path = output_dir / f"{venue_path}_{date_str}_{hour:02d}_{symbol}_orderbook.parquet"
+        local_path = (
+            output_dir
+            / f"{venue_path}_{date_str}_{hour:02d}_{symbol}_orderbook.parquet"
+        )
 
         print(f"  Hour {hour:02d}: {remote_path}")
 
@@ -380,7 +400,9 @@ def main():
             seq = result["sequence_analysis"]
             print(f"    first_update_id present: {seq['first_update_id_count']}")
             print(f"    final_update_id present: {seq['final_update_id_count']}")
-            print(f"    prev_final_update_id present: {seq['prev_final_update_id_count']}")
+            print(
+                f"    prev_final_update_id present: {seq['prev_final_update_id_count']}"
+            )
             print(f"    last_update_id present: {seq['last_update_id_count']}")
             print(f"    transaction_time present: {seq['transaction_time_count']}")
             print(f"    ID patterns: {seq['final_id_increment_patterns']}")
@@ -432,8 +454,14 @@ def main():
         print()
         print("  Field nullability:")
         for field, info in first_file.get("field_summary", {}).items():
-            status = "ALWAYS NULL" if info["always_null"] else (
-                "NEVER NULL" if info["never_null"] else f"{info['null_percent']}% null"
+            status = (
+                "ALWAYS NULL"
+                if info["always_null"]
+                else (
+                    "NEVER NULL"
+                    if info["never_null"]
+                    else f"{info['null_percent']}% null"
+                )
             )
             print(f"    {field}: {status}")
         print()
@@ -443,11 +471,17 @@ def main():
             print(f"    {pattern}: {count}")
         print()
         print("  Continuity checks:")
-        print(f"    prev_final matches previous final: {seq.get('prev_final_matches_final', 0)}")
+        print(
+            f"    prev_final matches previous final: {seq.get('prev_final_matches_final', 0)}"
+        )
         print(f"    prev_final mismatches: {seq.get('prev_final_mismatches', 0)}")
-        print(f"    last_update_id matches previous final: {seq.get('last_id_matches_final', 0)}")
+        print(
+            f"    last_update_id matches previous final: {seq.get('last_id_matches_final', 0)}"
+        )
         print(f"    last_update_id mismatches: {seq.get('last_id_mismatches', 0)}")
-        print(f"    received_time regressions: {seq.get('received_time_regressions', 0)}")
+        print(
+            f"    received_time regressions: {seq.get('received_time_regressions', 0)}"
+        )
 
         print()
         if first_file.get("has_snapshot"):

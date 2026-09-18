@@ -304,3 +304,25 @@ def test_production_plan_does_not_use_okx_trades_for_price() -> None:
         item.venue == "okx_futures" and item.data_kind is SourceDataKind.TRADES
         for item in plan
     )
+
+
+def test_bybit_source_identity_and_remote_path_are_supported() -> None:
+    spec = SourceFileSpec(
+        venue="bybit",
+        symbol="BTCUSDT",
+        data_kind=SourceDataKind.ORDERBOOK,
+        hour_utc=_utc(2026, 9, 4, 6),
+    )
+
+    assert spec.base == "BTC"
+    assert spec.remote_path == ("bybit/2026-09-04/06/BTCUSDT_orderbook.parquet")
+
+
+def test_bybit_is_not_yet_in_production_acquisition_plan() -> None:
+    plan = plan_production_source_files(
+        _utc(2026, 9, 4, 6),
+        _utc(2026, 9, 4, 7),
+    )
+
+    assert not any(item.venue == "bybit" for item in plan)
+    assert len(plan) == 6

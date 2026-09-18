@@ -68,9 +68,7 @@ def _canonical_utc_hour(value: str) -> datetime:
     text = str(value or "").strip()
 
     if not text.endswith("Z"):
-        raise argparse.ArgumentTypeError(
-            "hour must use canonical UTC text ending in Z"
-        )
+        raise argparse.ArgumentTypeError("hour must use canonical UTC text ending in Z")
 
     try:
         parsed = datetime.fromisoformat(text[:-1] + "+00:00")
@@ -85,16 +83,12 @@ def _canonical_utc_hour(value: str) -> datetime:
         or parsed.second
         or parsed.microsecond
     ):
-        raise argparse.ArgumentTypeError(
-            "hour must identify an exact UTC hour"
-        )
+        raise argparse.ArgumentTypeError("hour must identify an exact UTC hour")
 
     canonical = parsed.isoformat().replace("+00:00", "Z")
 
     if canonical != text:
-        raise argparse.ArgumentTypeError(
-            "hour is valid but not canonically encoded"
-        )
+        raise argparse.ArgumentTypeError("hour is valid but not canonically encoded")
 
     return parsed
 
@@ -108,10 +102,7 @@ def _remote_path(
     symbol: str,
     hour_utc: datetime,
 ) -> str:
-    return (
-        f"bybit/{hour_utc:%Y-%m-%d}/{hour_utc:%H}/"
-        f"{symbol}_orderbook.parquet"
-    )
+    return f"bybit/{hour_utc:%Y-%m-%d}/{hour_utc:%H}/" f"{symbol}_orderbook.parquet"
 
 
 def _download(
@@ -161,9 +152,7 @@ def _download(
             follow_redirects=True,
         ) as response:
             if response.status_code == 404:
-                raise FileNotFoundError(
-                    f"Bybit archive is unavailable: {remote_path}"
-                )
+                raise FileNotFoundError(f"Bybit archive is unavailable: {remote_path}")
 
             if response.status_code < 200 or response.status_code >= 300:
                 raise RuntimeError(
@@ -179,9 +168,7 @@ def _download(
                         handle.write(chunk)
 
         if not temporary.is_file() or temporary.stat().st_size <= 0:
-            raise RuntimeError(
-                f"Downloaded diagnostic archive is empty: {remote_path}"
-            )
+            raise RuntimeError(f"Downloaded diagnostic archive is empty: {remote_path}")
 
         temporary.replace(destination)
 
@@ -327,14 +314,9 @@ def inspect_archive(
     missing = sorted(set(_COLUMNS) - set(schema.names))
 
     if missing:
-        raise ValueError(
-            f"{source.name} is missing required columns: {missing}"
-        )
+        raise ValueError(f"{source.name} is missing required columns: {missing}")
 
-    schema_types = {
-        field.name: str(field.type)
-        for field in schema
-    }
+    schema_types = {field.name: str(field.type) for field in schema}
 
     row_count = 0
     event_count = 0
@@ -353,6 +335,12 @@ def inspect_archive(
         "last_vs_previous_last": Counter(),
         "current_last_vs_previous_final": Counter(),
         "current_final_vs_previous_last": Counter(),
+    }
+    snapshot_to_next_update_relations: dict[str, Counter[str]] = {
+        "update_final_vs_snapshot_final": Counter(),
+        "update_last_vs_snapshot_last": Counter(),
+        "update_final_vs_snapshot_last": Counter(),
+        "update_last_vs_snapshot_final": Counter(),
     }
 
     first_events: list[dict[str, Any]] = []
@@ -373,6 +361,7 @@ def inspect_archive(
 
     previous_event: dict[str, Any] | None = None
     previous_update: dict[str, Any] | None = None
+    pending_snapshot: dict[str, Any] | None = None
 
     def finish_event(last_row: int) -> None:
         nonlocal current_key
@@ -391,6 +380,7 @@ def inspect_archive(
         nonlocal received_time_regression_count
         nonlocal previous_event
         nonlocal previous_update
+        nonlocal pending_snapshot
 
         if current_key is None:
             return
@@ -428,12 +418,8 @@ def inspect_archive(
         last_events.append(event)
 
         if previous_event is not None:
-            previous_received = _optional_int(
-                previous_event["received_time"]
-            )
-            current_received = _optional_int(
-                event["received_time"]
-            )
+            previous_received = _optional_int(previous_event["received_time"])
+            current_received = _optional_int(event["received_time"])
 
             if (
                 previous_received is not None
@@ -452,6 +438,7 @@ def inspect_archive(
                 snapshot_events.append(event)
 
             previous_update = None
+            pending_snapshot = event
 
         elif event_type == "update":
             update_event_count += 1
@@ -459,35 +446,51 @@ def inspect_archive(
             if len(first_updates) < 5:
                 first_updates.append(event)
 
+            if pending_snapshot is not None:
+                snapshot_final = _optional_int(pending_snapshot["final_update_id"])
+                snapshot_last = _optional_int(pending_snapshot["last_update_id"])
+                current_final = _optional_int(event["final_update_id"])
+                current_last = _optional_int(event["last_update_id"])
+
+                snapshot_to_next_update_relations["update_final_vs_snapshot_final"][
+                    _relation(current_final, snapshot_final)
+                ] += 1
+
+                snapshot_to_next_update_relations["update_last_vs_snapshot_last"][
+                    _relation(current_last, snapshot_last)
+                ] += 1
+
+                snapshot_to_next_update_relations["update_final_vs_snapshot_last"][
+                    _relation(current_final, snapshot_last)
+                ] += 1
+
+                snapshot_to_next_update_relations["update_last_vs_snapshot_final"][
+                    _relation(current_last, snapshot_final)
+                ] += 1
+
+                pending_snapshot = None
+
             if previous_update is not None:
-                previous_final = _optional_int(
-                    previous_update["final_update_id"]
-                )
-                previous_last = _optional_int(
-                    previous_update["last_update_id"]
-                )
-                current_final = _optional_int(
-                    event["final_update_id"]
-                )
-                current_last = _optional_int(
-                    event["last_update_id"]
-                )
+                previous_final = _optional_int(previous_update["final_update_id"])
+                previous_last = _optional_int(previous_update["last_update_id"])
+                current_final = _optional_int(event["final_update_id"])
+                current_last = _optional_int(event["last_update_id"])
 
-                adjacent_update_relations[
-                    "final_vs_previous_final"
-                ][_relation(current_final, previous_final)] += 1
+                adjacent_update_relations["final_vs_previous_final"][
+                    _relation(current_final, previous_final)
+                ] += 1
 
-                adjacent_update_relations[
-                    "last_vs_previous_last"
-                ][_relation(current_last, previous_last)] += 1
+                adjacent_update_relations["last_vs_previous_last"][
+                    _relation(current_last, previous_last)
+                ] += 1
 
-                adjacent_update_relations[
-                    "current_last_vs_previous_final"
-                ][_relation(current_last, previous_final)] += 1
+                adjacent_update_relations["current_last_vs_previous_final"][
+                    _relation(current_last, previous_final)
+                ] += 1
 
-                adjacent_update_relations[
-                    "current_final_vs_previous_last"
-                ][_relation(current_final, previous_last)] += 1
+                adjacent_update_relations["current_final_vs_previous_last"][
+                    _relation(current_final, previous_last)
+                ] += 1
 
             previous_update = event
 
@@ -577,23 +580,14 @@ def inspect_archive(
         "row_count": row_count,
         "event_count": event_count,
         "schema_types": schema_types,
-        "event_type_row_counts": dict(
-            sorted(event_type_row_counts.items())
-        ),
-        "event_type_event_counts": dict(
-            sorted(event_type_event_counts.items())
-        ),
+        "event_type_row_counts": dict(sorted(event_type_row_counts.items())),
+        "event_type_event_counts": dict(sorted(event_type_event_counts.items())),
         "snapshot_event_count": snapshot_event_count,
-        "complete_snapshot_candidate_count": (
-            complete_snapshot_candidate_count
-        ),
+        "complete_snapshot_candidate_count": (complete_snapshot_candidate_count),
         "update_event_count": update_event_count,
-        "received_time_regression_count": (
-            received_time_regression_count
-        ),
+        "received_time_regression_count": (received_time_regression_count),
         "field_null_counts": {
-            field_name: int(field_null_counts[field_name])
-            for field_name in _COLUMNS
+            field_name: int(field_null_counts[field_name]) for field_name in _COLUMNS
         },
         "field_null_percentages": {
             field_name: round(
@@ -621,6 +615,10 @@ def inspect_archive(
             name: dict(sorted(counter.items()))
             for name, counter in adjacent_update_relations.items()
         },
+        "snapshot_to_next_update_relations": {
+            name: dict(sorted(counter.items()))
+            for name, counter in snapshot_to_next_update_relations.items()
+        },
         "first_events": first_events,
         "first_updates": first_updates,
         "last_events": list(last_events),
@@ -633,19 +631,13 @@ def _cross_hour_boundary(
     current: dict[str, Any],
 ) -> dict[str, Any]:
     previous_last_event = (
-        previous["last_events"][-1]
-        if previous["last_events"]
-        else None
+        previous["last_events"][-1] if previous["last_events"] else None
     )
     current_first_event = (
-        current["first_events"][0]
-        if current["first_events"]
-        else None
+        current["first_events"][0] if current["first_events"] else None
     )
     current_first_update = (
-        current["first_updates"][0]
-        if current["first_updates"]
-        else None
+        current["first_updates"][0] if current["first_updates"] else None
     )
 
     def field(
@@ -724,27 +716,20 @@ def build_report(
         )
     ]
 
-    snapshot_event_count = sum(
-        int(item["snapshot_event_count"])
-        for item in ordered
-    )
+    snapshot_event_count = sum(int(item["snapshot_event_count"]) for item in ordered)
     complete_snapshot_count = sum(
-        int(item["complete_snapshot_candidate_count"])
-        for item in ordered
+        int(item["complete_snapshot_candidate_count"]) for item in ordered
     )
 
     return {
         "schema": "l2shock.bybit_contract_diagnostics",
         "schema_version": 1,
-        "warning": (
-            "Diagnostic hypotheses are not a production sequence contract."
-        ),
+        "warning": ("Diagnostic hypotheses are not a production sequence contract."),
         "archive_count": len(ordered),
         "snapshot_event_count": snapshot_event_count,
         "complete_snapshot_candidate_count": complete_snapshot_count,
         "all_received_times_monotonic": all(
-            int(item["received_time_regression_count"]) == 0
-            for item in ordered
+            int(item["received_time_regression_count"]) == 0 for item in ordered
         ),
         "archives": ordered,
         "cross_hour_boundaries": boundaries,
@@ -753,9 +738,7 @@ def build_report(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description=(
-            "Download and inspect two adjacent Bybit order-book hours."
-        )
+        description=("Download and inspect two adjacent Bybit order-book hours.")
     )
     parser.add_argument(
         "--profile",
@@ -786,14 +769,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.profile == "bybit_btc":
         symbol = "BTCUSDT"
-        default_first = _canonical_utc_hour(
-            "2026-09-04T06:00:00Z"
-        )
+        default_first = _canonical_utc_hour("2026-09-04T06:00:00Z")
     else:
         symbol = "ETHUSDT"
-        default_first = _canonical_utc_hour(
-            "2026-09-04T05:00:00Z"
-        )
+        default_first = _canonical_utc_hour("2026-09-04T05:00:00Z")
 
     first_hour = args.first_hour or default_first
     hours = (
@@ -803,10 +782,7 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(
         level=logging.INFO,
-        format=(
-            "%(asctime)s | %(levelname)-8s | "
-            "%(name)s | %(message)s"
-        ),
+        format=("%(asctime)s | %(levelname)-8s | " "%(name)s | %(message)s"),
         stream=sys.stdout,
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -878,6 +854,19 @@ def main(argv: list[str] | None = None) -> int:
             )
 
             log.info(
+                "BYBIT SNAPSHOT-TO-UPDATE RELATIONS: " "symbol=%s hour=%s relations=%s",
+                symbol,
+                report["hour_utc"],
+                json.dumps(
+                    report["snapshot_to_next_update_relations"],
+                    ensure_ascii=True,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
+
+            log.info(
                 "BYBIT SNAPSHOT EVENTS: symbol=%s hour=%s snapshots=%s",
                 symbol,
                 report["hour_utc"],
@@ -931,9 +920,7 @@ def main(argv: list[str] | None = None) -> int:
                 "profile": args.profile,
                 "symbol": symbol,
                 "archive_count": payload["archive_count"],
-                "snapshot_event_count": (
-                    payload["snapshot_event_count"]
-                ),
+                "snapshot_event_count": (payload["snapshot_event_count"]),
                 "complete_snapshot_candidate_count": (
                     payload["complete_snapshot_candidate_count"]
                 ),

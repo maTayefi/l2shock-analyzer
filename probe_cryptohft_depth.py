@@ -59,10 +59,7 @@ def check_exists(
         # The API does not support HEAD requests (returns 404).
         # Use a GET request with a Range header to check existence efficiently.
         resp = client.get(
-            url,
-            headers={"Range": "bytes=0-1023"},
-            timeout=10.0,
-            follow_redirects=True
+            url, headers={"Range": "bytes=0-1023"}, timeout=10.0, follow_redirects=True
         )
         # 200 (OK) or 206 (Partial Content) means the file exists
         if resp.status_code in (200, 206):

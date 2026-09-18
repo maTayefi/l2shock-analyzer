@@ -9,6 +9,7 @@ Usage:
     py -3.14 inspect_bybit_latest.py
     py -3.14 inspect_bybit_latest.py --venue bybit --symbol BTCUSDT --hours-back 72
 """
+
 from __future__ import annotations
 
 import argparse
@@ -91,8 +92,10 @@ def inspect_parquet(path: Path) -> dict:
 
     # Sequence ID ranges
     id_fields = [
-        "first_update_id", "final_update_id",
-        "prev_final_update_id", "last_update_id",
+        "first_update_id",
+        "final_update_id",
+        "prev_final_update_id",
+        "last_update_id",
     ]
     id_ranges = {f: {"min": None, "max": None, "count": 0} for f in id_fields}
 
@@ -152,12 +155,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--venue", default="bybit")
     ap.add_argument("--symbol", default="BTCUSDT")
-    ap.add_argument("--hours-back", type=int, default=72,
-                    help="How many hours back to scan (default 72 = retention window).")
+    ap.add_argument(
+        "--hours-back",
+        type=int,
+        default=72,
+        help="How many hours back to scan (default 72 = retention window).",
+    )
     args = ap.parse_args()
 
     CACHE_DIR.mkdir(exist_ok=True)
-    print(f"=== Probing LAST {args.hours_back} hours for {args.venue}/{args.symbol} ===\n")
+    print(
+        f"=== Probing LAST {args.hours_back} hours for {args.venue}/{args.symbol} ===\n"
+    )
 
     client = httpx.Client()
     date_str, hour_str, remote_path = find_latest_hour(
@@ -165,8 +174,7 @@ def main():
     )
 
     if remote_path is None:
-        print("\nNO Bybit data found in the last "
-              f"{args.hours_back} hours.")
+        print("\nNO Bybit data found in the last " f"{args.hours_back} hours.")
         print("Possible reasons:")
         print("  1. CryptoHFTData does not currently host Bybit data.")
         print("  2. The venue path name is different.")
@@ -175,7 +183,10 @@ def main():
         return
 
     # Download the newest available hour
-    local = CACHE_DIR / f"{args.venue}_{date_str}_{hour_str}_{args.symbol}_orderbook.parquet"
+    local = (
+        CACHE_DIR
+        / f"{args.venue}_{date_str}_{hour_str}_{args.symbol}_orderbook.parquet"
+    )
     print(f"\nDownloading: {remote_path}")
     ok = download_file(client, remote_path, local)
     if not ok:
@@ -206,8 +217,7 @@ def main():
 
     print("\n  Sequence ID ranges:")
     for f, r in info["id_ranges"].items():
-        print(f"    {f:<24} count={r['count']:,}  "
-              f"min={r['min']}  max={r['max']}")
+        print(f"    {f:<24} count={r['count']:,}  " f"min={r['min']}  max={r['max']}")
 
     if info["has_snapshot"]:
         print("\n  SNAPSHOT ROW SAMPLE:")

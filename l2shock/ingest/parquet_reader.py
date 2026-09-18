@@ -794,7 +794,7 @@ def _build_event_row(
         field_name="transaction_time",
         path=path,
         row_number=row_number,
-        nullable=not sequence_contract.transaction_time_required,
+        nullable=not sequence_contract.transaction_time_is_required(event_type.value),
     )
 
     first_update_id = _integer(

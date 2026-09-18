@@ -86,6 +86,7 @@ from l2shock.ingest.sampling import (
 )
 from l2shock.ingest.venue_adapter import (
     BINANCE_FUTURES_SEQUENCE_CONTRACT,
+    BYBIT_SEQUENCE_CONTRACT,
     OKX_FUTURES_SEQUENCE_CONTRACT,
     OrderBookSequenceContract,
     VenueSequenceContractError,
@@ -95,6 +96,7 @@ from l2shock.ingest.venue_adapter import (
 
 __all__ = [
     "BINANCE_FUTURES_SEQUENCE_CONTRACT",
+    "BYBIT_SEQUENCE_CONTRACT",
     "OKX_FUTURES_SEQUENCE_CONTRACT",
     "OrderBookSequenceContract",
     "VenueSequenceContractError",

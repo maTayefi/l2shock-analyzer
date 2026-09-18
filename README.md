@@ -842,15 +842,28 @@ preceding hour was initially available.
 This adapter is strict and venue-specific. It does not alter the Binance
 Futures contract.
 
-Bybit and Bitget remain disabled for production replay until separate adapters
-are established:
+Bybit now has a strict isolated replay adapter, but remains excluded from the
+normal production acquisition, processing, remote-worker, Hugging Face import,
+preset, and UI universes until the remaining integration batches are complete.
+
+Bitget remains disabled for production replay until a separate adapter is
+established:
 
 ```text
 Bybit:
-    first_update_id and prev_final_update_id may be null
-    final_update_id and last_update_id have distinct meanings
-    snapshot rows have now been observed in multiple archived hours
-    snapshot-row presence alone does not establish a replay contract
+    venue path = bybit
+    BTC/ETH instruments = BTCUSDT / ETHUSDT
+    first_update_id and prev_final_update_id are null in inspected streams
+    order_count is null in inspected streams
+    final_update_id is the update replay frontier
+    adjacent update final_update_id values increment by exactly one
+    the same final_update_id + 1 relation crosses inspected UTC-hour boundaries
+    last_update_id is a separate increasing sequence/ordering identity
+    complete 50-bid / 50-ask snapshot events occur inside archived hours
+    native snapshots with final_update_id initialize that replay frontier
+    archive-boundary snapshots may omit final_update_id and transaction_time
+    a frontier-less boundary snapshot may replace only valid carried state
+    a frontier-less snapshot cannot independently initialize replay
 
 Bitget:
     first_update_id, prev_final_update_id, last_update_id, and
@@ -899,7 +912,24 @@ no malformed quantity
 no duplicate side/price identity
 ```
 
-This classification is evidence only. It does not enable replay.
+The initial diagnostic classification was evidence only. The dedicated Bybit
+sequence adapter now uses `final_update_id` as its replay frontier and requires
+every update to satisfy:
+
+```text
+current.final_update_id == previous replay frontier + 1
+```
+
+`last_update_id` remains a distinct provider sequence identity and is not used
+as the replay frontier.
+
+A Bybit snapshot with a non-null `final_update_id` replaces the local book and
+sets the replay frontier to that value.
+
+A complete archive-boundary snapshot with null `final_update_id` may replace
+book levels only when replay already owns a valid carried/checkpoint frontier.
+In that case the existing frontier is preserved. Without carried state, such a
+snapshot is rejected rather than deriving a frontier from a later update.
 
 Official Bybit terminology distinguishes:
 

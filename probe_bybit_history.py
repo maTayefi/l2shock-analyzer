@@ -8,6 +8,7 @@ Usage:
     py -3.14 probe_bybit_history.py --days-back 90 --venue bybit --symbol BTCUSDT
     py -3.14 probe_bybit_history.py --days-back 30 --venue bybit --hours-per-day 4
 """
+
 from __future__ import annotations
 
 import argparse
@@ -146,9 +147,7 @@ def main():
         current_date = start_date - timedelta(days=day_offset)
         date_str = current_date.strftime("%Y-%m-%d")
 
-        day_result = probe_date(
-            client, venue_paths, symbol, date_str, hours_to_check
-        )
+        day_result = probe_date(client, venue_paths, symbol, date_str, hours_to_check)
 
         if day_result:
             found_data = True
@@ -163,20 +162,24 @@ def main():
                 newest_found = date_str
 
             print(f"  [FOUND] {date_str}: hours {hours_found}")
-            report["results"].append({
-                "date": date_str,
-                "venue_path": working_venue_path,
-                "hours_found": hours_found,
-            })
+            report["results"].append(
+                {
+                    "date": date_str,
+                    "venue_path": working_venue_path,
+                    "hours_found": hours_found,
+                }
+            )
         else:
             if found_data:
                 # Found data before, now hitting gap — keep going a bit more
                 print(f"  [GAP]   {date_str}: no data (continuing search)")
-                report["results"].append({
-                    "date": date_str,
-                    "venue_path": None,
-                    "hours_found": [],
-                })
+                report["results"].append(
+                    {
+                        "date": date_str,
+                        "venue_path": None,
+                        "hours_found": [],
+                    }
+                )
             else:
                 print(f"  [MISS]  {date_str}: no data")
 

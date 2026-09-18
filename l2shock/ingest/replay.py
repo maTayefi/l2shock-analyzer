@@ -988,6 +988,22 @@ class OrderBookReplayState:
                 message=str(exc),
             )
 
+        if snapshot_frontier is None:
+            if not self._valid or self._last_update_id is None:
+                return self._invalidate(
+                    event=event,
+                    hour_utc=hour_utc,
+                    kind="snapshot_missing_replay_frontier",
+                    message=(
+                        "A snapshot without its venue replay frontier may "
+                        "replace only an already valid carried/checkpoint "
+                        "state. The replay frontier must not be inferred "
+                        "from a later update."
+                    ),
+                )
+
+            snapshot_frontier = self._last_update_id
+
         new_bids: dict[Decimal, _LevelPayload] = {}
         new_asks: dict[Decimal, _LevelPayload] = {}
 
@@ -1100,8 +1116,8 @@ class OrderBookReplayState:
                 hour_utc=hour_utc,
                 kind="conflicting_replayed_update",
                 message=(
-                    "An update reused the current final_update_id without "
-                    "matching the immediately preceding applied event"
+                    "An update reused the current venue replay frontier "
+                    "without matching the immediately preceding applied event"
                 ),
             )
 
@@ -1109,10 +1125,10 @@ class OrderBookReplayState:
             return self._invalidate(
                 event=event,
                 hour_utc=hour_utc,
-                kind="final_update_id_regression",
+                kind="update_frontier_regression",
                 message=(
-                    "An update final_update_id regressed behind the current "
-                    "valid replay frontier"
+                    "An update resulting frontier regressed behind the "
+                    "current valid venue replay frontier"
                 ),
             )
 
@@ -1122,8 +1138,8 @@ class OrderBookReplayState:
                 hour_utc=hour_utc,
                 kind="update_continuity_mismatch",
                 message=(
-                    "Update prev_final_update_id does not match the current "
-                    "valid replay frontier"
+                    "The update's venue-specific predecessor frontier does "
+                    "not match the current valid replay frontier"
                 ),
             )
 

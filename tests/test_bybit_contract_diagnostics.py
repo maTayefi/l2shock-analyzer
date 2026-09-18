@@ -16,9 +16,7 @@ _SPEC = importlib.util.spec_from_file_location(
 )
 
 if _SPEC is None or _SPEC.loader is None:
-    raise RuntimeError(
-        "Could not load tools/diagnose_bybit_contract.py"
-    )
+    raise RuntimeError("Could not load tools/diagnose_bybit_contract.py")
 
 diagnostic = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(diagnostic)
@@ -61,10 +59,7 @@ def _row(
     final_update_id: int,
     last_update_id: int,
 ) -> dict[str, object]:
-    received_time = (
-        _epoch_ns(_hour(hour_offset))
-        + milliseconds * 1_000_000
-    )
+    received_time = _epoch_ns(_hour(hour_offset)) + milliseconds * 1_000_000
     event_time = received_time // 1_000_000
 
     return {
@@ -163,6 +158,17 @@ def test_snapshot_rows_are_grouped_into_one_complete_event(
     assert snapshot["positive_bid_row_count"] == 1
     assert snapshot["positive_ask_row_count"] == 1
     assert snapshot["snapshot_complete_candidate"] is True
+
+    assert report["snapshot_to_next_update_relations"][
+        "update_final_vs_snapshot_final"
+    ] == {
+        "increment_by_one": 1,
+    }
+    assert report["snapshot_to_next_update_relations"][
+        "update_last_vs_snapshot_last"
+    ] == {
+        "increment_by_one": 1,
+    }
 
 
 def test_update_relationships_are_counted_by_logical_event(
@@ -292,13 +298,11 @@ def test_cross_hour_report_keeps_sequence_hypotheses_explicit(
     )
     boundary = report["cross_hour_boundaries"][0]
 
-    assert boundary["relations"][
-        "current_final_vs_previous_final"
-    ] == "increment_by_one"
+    assert (
+        boundary["relations"]["current_final_vs_previous_final"] == "increment_by_one"
+    )
 
-    assert boundary["relations"][
-        "current_last_vs_previous_last"
-    ] == "forward_gap"
+    assert boundary["relations"]["current_last_vs_previous_last"] == "forward_gap"
 
     assert report["warning"] == (
         "Diagnostic hypotheses are not a production sequence contract."
