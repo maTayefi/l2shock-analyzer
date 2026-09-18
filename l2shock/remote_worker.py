@@ -1451,6 +1451,31 @@ async def process_remote_hour(
             price_output.artifact,
         )
 
+    if l2_output is not None:
+        l2_manifest = l2_output.artifact.manifest
+
+        log.info(
+            "REMOTE L2 PROVENANCE: venue=%s instrument=%s hour=%s "
+            "source_hours=%s input_checkpoint_sha256=%s "
+            "output_checkpoint_sha256=%s analytical_content_sha256=%s "
+            "manifest_sha256=%s producer_git_commit=%s",
+            normalized_venue,
+            normalized_instrument,
+            target_hour.isoformat(),
+            [
+                {
+                    "hour_utc": source.hour_utc.isoformat(),
+                    "content_sha256": source.content_sha256,
+                }
+                for source in l2_manifest.source_hours
+            ],
+            l2_manifest.input_checkpoint_content_sha256,
+            l2_manifest.output_checkpoint_content_sha256,
+            l2_manifest.content_sha256,
+            l2_manifest.manifest_sha256,
+            l2_manifest.producer_git_commit,
+        )
+
     result = RemoteWorkerResult(
         venue=normalized_venue,
         instrument=normalized_instrument,

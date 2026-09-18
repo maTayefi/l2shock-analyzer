@@ -55,7 +55,7 @@ jobs:
         || vars.L2SHOCK_REMOTE_PROCESSING_ENABLED == 'true'
       }}
 
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
 
     outputs:
@@ -103,7 +103,7 @@ jobs:
     name: ${{ matrix.chain }}
     needs: prepare
 
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 350
 
     strategy:
@@ -128,7 +128,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python 3.14
         uses: actions/setup-python@v6

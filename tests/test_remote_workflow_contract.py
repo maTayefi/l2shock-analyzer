@@ -54,3 +54,15 @@ def test_checkpoint_dependent_jobs_are_never_cancelled_in_progress() -> None:
     assert "cancel-in-progress: false" in source
     assert "queue: single" in source
     assert "cancel-in-progress: true" not in source
+
+
+def test_workflow_pins_supported_runner_and_node24_checkout() -> None:
+    source = _workflow_text()
+
+    assert "actions/checkout@v5" in source
+    assert "actions/checkout@v4" not in source
+
+    assert "runs-on: ubuntu-24.04" in source
+    assert "runs-on: ubuntu-latest" not in source
+
+    assert "actions/setup-python@v6" in source
