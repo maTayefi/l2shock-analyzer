@@ -255,7 +255,7 @@ def test_okx_without_existing_frontier_selects_oldest_bounded_hour() -> None:
 def test_existing_frontier_without_checkpoint_fails_closed() -> None:
     with pytest.raises(
         RemoteWorkerCheckpointBlockedError,
-        match="no usable output checkpoint",
+        match="No verified Binance",
     ):
         _catch_up_target_from_observations(
             venue="binance_futures",

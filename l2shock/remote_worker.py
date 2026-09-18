@@ -609,58 +609,64 @@ def _catch_up_target_from_observations(
         latest_eligible_hour_utc,
     )
     values = tuple(observations)
-
     if not values:
         raise RemoteWorkerError(
             "Remote catch-up planning requires at least one inspected hour"
         )
-
     if not isinstance(price_required, bool):
         raise TypeError("price_required must be bool")
-
     expected_hour = latest
-
     for observation in values:
         if not isinstance(observation, _RemoteCatchUpObservation):
             raise TypeError(
                 "observations must contain _RemoteCatchUpObservation objects"
             )
-
         if observation.hour_utc != expected_hour:
             raise RemoteWorkerError(
                 "Remote catch-up observations must be contiguous and ordered "
                 "newest to oldest"
             )
-
         expected_hour -= timedelta(hours=1)
 
-    frontier = next(
-        (observation for observation in values if observation.l2_exists),
-        None,
-    )
+    # Find the newest frontier with a USABLE output checkpoint.
+    # Skip any L2 artifacts that exist but produced no checkpoint
+    # (e.g., hours where replay failed and no checkpoint was emitted).
+    frontier = None
+    for observation in values:
+        if observation.l2_exists:
+            if observation.output_checkpoint_exists:
+                frontier = observation
+                break
+            else:
+                log.warning(
+                    "Skipping hour %s: L2 exists but has no output "
+                    "checkpoint. Looking further back.",
+                    observation.hour_utc.isoformat(),
+                )
 
     if frontier is None:
+        # OKX can self-initialize from its own opening snapshot in the
+        # target archive, so fall back to the oldest inspected hour.
         if normalized_venue == "okx_futures":
+            log.info(
+                "No valid checkpoint frontier found for venue=%s. "
+                "Falling back to oldest hour for self-initialization.",
+                normalized_venue,
+            )
             return values[-1].hour_utc
-
+        # Binance update-only archives cannot self-initialize.
+        # Without a verified predecessor checkpoint, the chain is blocked.
         raise RemoteWorkerCheckpointBlockedError(
             "No verified Binance L2/checkpoint seed exists inside the bounded "
             "remote catch-up search window"
-        )
-
-    if not frontier.output_checkpoint_exists:
-        raise RemoteWorkerCheckpointBlockedError(
-            "The newest remote L2 frontier has no usable output checkpoint"
         )
 
     if price_required and not frontier.price_exists:
         return frontier.hour_utc
 
     next_hour = frontier.hour_utc + timedelta(hours=1)
-
     if next_hour <= latest:
         return next_hour
-
     return frontier.hour_utc
 
 

@@ -507,17 +507,18 @@ def _integer(
             row_number=row_number,
         )
     if nonnegative and parsed < 0:
-        # --- DIAGNOSTIC LOGGING: capture overflow details for CI ---
-        _integer_log.error(
-            "NEGATIVE INTEGER DETECTED: field=%s value=%r type=%s "
-            "row=%d path=%s — this likely indicates int32 overflow "
-            "in the source Parquet file (OKX sequence IDs exceed 2^31)",
-            field_name,
-            value,
-            type(value).__name__,
-            row_number,
-            path.name,
-        )
+        if nullable:
+            # Negative values (e.g. -1) are exchange sentinel values
+            # meaning "no sequence ID". Treat as null for nullable fields.
+            _integer_log.debug(
+                "Negative sentinel treated as null: field=%s value=%r "
+                "row=%d path=%s",
+                field_name,
+                value,
+                row_number,
+                path.name,
+            )
+            return None
         raise StreamedParquetReadError(
             f"{field_name} cannot be negative "
             f"(raw_value={value!r}, row={row_number}, "
