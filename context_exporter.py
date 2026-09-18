@@ -1741,11 +1741,11 @@ def write_full_random_bundles(
         ordered_entries = list(entries)
         random.Random(version_seed).shuffle(ordered_entries)
         version_prefix = f"{prefix}_{version_index + 1:02d}"
-        
+
         # Create a dedicated subfolder for each seed to avoid mixing files
         seed_dir = out_dir / str(version_seed)
         seed_dir.mkdir(parents=True, exist_ok=True)
-        
+
         version_outputs = write_segmented_ordered_bundle(
             ordered_entries,
             seed_dir,

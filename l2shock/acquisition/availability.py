@@ -236,13 +236,11 @@ class HourAvailability:
         # - valid_market_count reports partial component diagnostics;
         # - l2_valid_seconds remains zero until every expected market has
         #   complete 3,600-second coverage suitable for Analysis handoff.
-        if (
-            expected_market_count == 1
-            and (self.l2_valid_seconds > 0) != (valid_market_count > 0)
+        if expected_market_count == 1 and (self.l2_valid_seconds > 0) != (
+            valid_market_count > 0
         ):
             raise AvailabilityError(
-                "Single-market l2_valid_seconds does not match "
-                "valid market coverage"
+                "Single-market l2_valid_seconds does not match " "valid market coverage"
             )
 
         object.__setattr__(

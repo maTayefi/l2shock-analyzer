@@ -38,11 +38,13 @@ included in exceptions, logs, manifests, artifacts, or object representations.
 
 from __future__ import annotations
 
+import email.utils
+import random
 import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Protocol
@@ -72,6 +74,99 @@ from l2shock.remote.contracts import (
 
 _REPO_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/" r"[A-Za-z0-9][A-Za-z0-9._-]*$")
 _COMMIT_SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+
+_MINIMUM_CONFLICT_RETRY_SECONDS = 5.0
+_MAXIMUM_CONFLICT_RETRY_SECONDS = 60.0
+_MAXIMUM_RATE_LIMIT_RETRY_SECONDS = 3_900.0
+_DEFAULT_RATE_LIMIT_RETRY_SECONDS = 3_600.0
+
+
+def _http_status_code(exc: HfHubHTTPError) -> int | None:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+
+    if isinstance(status_code, bool) or not isinstance(status_code, int):
+        return None
+
+    return status_code
+
+
+def _retry_after_seconds(
+    exc: HfHubHTTPError,
+    *,
+    now: datetime | None = None,
+) -> float | None:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+
+    if headers is None:
+        return None
+
+    raw = str(headers.get("Retry-After", "") or "").strip()
+
+    if not raw:
+        return None
+
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = None
+
+    if seconds is not None:
+        if seconds < 0:
+            return None
+
+        return min(
+            seconds,
+            _MAXIMUM_RATE_LIMIT_RETRY_SECONDS,
+        )
+
+    try:
+        retry_at = email.utils.parsedate_to_datetime(raw)
+    except TypeError, ValueError, OverflowError:
+        return None
+
+    if retry_at.tzinfo is None or retry_at.utcoffset() is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+
+    current = now or datetime.now(timezone.utc)
+    delay = (
+        retry_at.astimezone(timezone.utc) - current.astimezone(timezone.utc)
+    ).total_seconds()
+
+    return min(
+        max(0.0, delay),
+        _MAXIMUM_RATE_LIMIT_RETRY_SECONDS,
+    )
+
+
+def _publication_retry_delay(
+    *,
+    attempt: int,
+    rate_limited: bool,
+    retry_after_seconds: float | None,
+) -> float:
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt <= 0:
+        raise ValueError("attempt must be a positive integer")
+
+    if rate_limited:
+        base = (
+            retry_after_seconds
+            if retry_after_seconds is not None
+            else _DEFAULT_RATE_LIMIT_RETRY_SECONDS
+        )
+        jitter_limit = min(30.0, max(1.0, base * 0.05))
+    else:
+        base = min(
+            _MAXIMUM_CONFLICT_RETRY_SECONDS,
+            _MINIMUM_CONFLICT_RETRY_SECONDS * (2 ** (attempt - 1)),
+        )
+        jitter_limit = min(5.0, base * 0.25)
+
+    return max(
+        0.0,
+        base + random.uniform(0.0, jitter_limit),
+    )
 
 
 class HuggingFaceRepositoryError(RuntimeError):
@@ -563,7 +658,7 @@ class HuggingFaceDatasetRepository:
         self,
         artifact: RemoteProcessedArtifact,
         *,
-        maximum_attempts: int = 3,
+        maximum_attempts: int = 8,
     ) -> HuggingFacePublicationResult:
         """Publish artifact and manifest with optimistic branch concurrency."""
 
@@ -656,60 +751,77 @@ class HuggingFaceDatasetRepository:
                         "Hugging Face rejected the publication request"
                     ) from exc
                 except HfHubHTTPError as exc:
-                    # The public API does not promise a dedicated stale-parent
-                    # exception. Determine whether this was a concurrency
-                    # conflict by observing the branch again.
+                    # Hugging Face may reject publication for three distinct
+                    # retryable reasons:
+                    #
+                    # 1. the observed parent commit became stale;
+                    # 2. another commit operation currently owns the repo;
+                    # 3. the repository commit-rate limit was exhausted.
+                    #
+                    # A 409 does not always advance the branch head. Another
+                    # commit can still be in progress while repo_info reports
+                    # the same visible head. A 429 likewise leaves the branch
+                    # unchanged and must honor Retry-After rather than being
+                    # misclassified as a permanent publication failure.
+                    status_code = _http_status_code(exc)
+                    retry_after = _retry_after_seconds(exc)
                     latest_revision = self.current_revision()
 
-                    status_code = getattr(
-                        getattr(exc, "response", None),
-                        "status_code",
-                        None,
-                    )
-
-                    if latest_revision == expected_parent and status_code == 409:
-                        if attempt >= maximum_attempts:
-                            raise HuggingFacePublicationError(
-                                "Hugging Face publication failed after "
-                                f"{maximum_attempts} attempts due to "
-                                "concurrent commit conflicts"
-                            ) from exc
+                    if latest_revision != expected_parent:
                         concurrent_commit_observed = True
 
-                        time.sleep(10)
-                        # The next loop iteration reads the head again and
-                        # retries the commit against the current branch head.
-                        continue
-
-                    if latest_revision == expected_parent:
-                        raise HuggingFacePublicationError(
-                            "Hugging Face publication failed without an "
-                            "observable branch-head change"
-                        ) from exc
-
-                    concurrent_commit_observed = True
-
-                    concurrent_existing = self._existing_matches(
-                        artifact,
-                        revision=latest_revision,
-                    )
-
-                    if concurrent_existing is not None:
-                        return HuggingFacePublicationResult(
+                        concurrent_existing = self._existing_matches(
+                            artifact,
                             revision=latest_revision,
-                            artifact=artifact,
-                            created=False,
-                            concurrent_commit_observed=True,
                         )
 
-                    if attempt >= maximum_attempts:
+                        if concurrent_existing is not None:
+                            return HuggingFacePublicationResult(
+                                revision=latest_revision,
+                                artifact=artifact,
+                                created=False,
+                                concurrent_commit_observed=True,
+                            )
+
+                    retryable_conflict = status_code == 409
+                    retryable_rate_limit = status_code == 429
+
+                    if not (
+                        retryable_conflict
+                        or retryable_rate_limit
+                        or latest_revision != expected_parent
+                    ):
                         raise HuggingFacePublicationError(
-                            "Hugging Face branch changed concurrently and "
-                            "the bounded retry budget was exhausted"
+                            "Hugging Face publication failed without a "
+                            "retryable conflict, rate limit, or branch-head "
+                            "change"
                         ) from exc
 
-                    # The next loop iteration reads the head again. Never
-                    # blindly reuse expected_parent after a conflict.
+                    if attempt >= maximum_attempts:
+                        if retryable_rate_limit:
+                            reason = "repository commit-rate limits"
+                        elif retryable_conflict:
+                            reason = "concurrent commit conflicts"
+                        else:
+                            reason = "concurrent branch changes"
+
+                        raise HuggingFacePublicationError(
+                            "Hugging Face publication failed after "
+                            f"{maximum_attempts} attempts due to {reason}"
+                        ) from exc
+
+                    if retryable_conflict:
+                        concurrent_commit_observed = True
+
+                    delay = _publication_retry_delay(
+                        attempt=attempt,
+                        rate_limited=retryable_rate_limit,
+                        retry_after_seconds=retry_after,
+                    )
+                    time.sleep(delay)
+
+                    # The next loop iteration resolves the branch again and
+                    # never blindly reuses the previous parent commit.
                     continue
 
             raw_commit_revision = getattr(

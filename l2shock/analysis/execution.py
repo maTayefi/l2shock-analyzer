@@ -1040,9 +1040,7 @@ class LiquidityMovementAnalysisCache:
             expected,
             LiquidityMovementAnalysisResult,
         ):
-            raise TypeError(
-                "expected must be LiquidityMovementAnalysisResult or null"
-            )
+            raise TypeError("expected must be LiquidityMovementAnalysisResult or null")
 
         with self._lock:
             current = self._entries.get(digest)

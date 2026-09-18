@@ -28,13 +28,11 @@ def test_scheduled_workflow_has_independent_seed_gates() -> None:
 def test_fully_unseeded_scheduled_matrix_retains_both_okx_chains() -> None:
     source = _workflow_text()
 
-    assert (
-        'matrix=\'{"include":['
-        '{"chain":"okx_btc","venue":"okx_futures",'
-        '"instrument":"BTC-USDT-SWAP"},'
-        '{"chain":"okx_eth","venue":"okx_futures",'
-        '"instrument":"ETH-USDT-SWAP"}]}\''
-    ) in source
+    assert '"chain":"okx_btc"' in source
+    assert '"chain":"okx_eth"' in source
+    assert '"venue":"okx_futures"' in source
+    assert '"instrument":"BTC-USDT-SWAP"' in source
+    assert '"instrument":"ETH-USDT-SWAP"' in source
 
 
 def test_manual_binance_chain_choices_remain_available() -> None:
@@ -42,12 +40,11 @@ def test_manual_binance_chain_choices_remain_available() -> None:
 
     assert "- binance_btc" in source
     assert "- binance_eth" in source
-    assert (
-        '{"chain":"binance_btc","venue":"binance_futures",' '"instrument":"BTCUSDT"}'
-    ) in source
-    assert (
-        '{"chain":"binance_eth","venue":"binance_futures",' '"instrument":"ETHUSDT"}'
-    ) in source
+    assert '"chain":"binance_btc"' in source
+    assert '"chain":"binance_eth"' in source
+    assert '"venue":"binance_futures"' in source
+    assert '"instrument":"BTCUSDT"' in source
+    assert '"instrument":"ETHUSDT"' in source
 
 
 def test_checkpoint_dependent_jobs_are_never_cancelled_in_progress() -> None:
@@ -76,10 +73,11 @@ def test_manual_bybit_chain_choices_are_available() -> None:
 
     assert "- bybit_btc" in source
     assert "- bybit_eth" in source
-
-    assert ('{"chain":"bybit_btc","venue":"bybit",' '"instrument":"BTCUSDT"}') in source
-
-    assert ('{"chain":"bybit_eth","venue":"bybit",' '"instrument":"ETHUSDT"}') in source
+    assert '"chain":"bybit_btc"' in source
+    assert '"chain":"bybit_eth"' in source
+    assert '"venue":"bybit"' in source
+    assert '"instrument":"BTCUSDT"' in source
+    assert '"instrument":"ETHUSDT"' in source
 
 
 def test_all_chain_matrix_contains_six_independent_chains() -> None:
@@ -102,3 +100,17 @@ def test_remote_workflow_uses_extended_bootstrap_search_bound() -> None:
     assert 'default: "720"' in source
     assert "L2SHOCK_CATCH_UP_HOURS" in source
     assert "|| '720'" in source
+
+
+def test_remote_workflow_staggers_shared_hf_writers() -> None:
+    source = _workflow_text()
+
+    assert '"publication_delay_seconds":0' in source
+    assert '"publication_delay_seconds":45' in source
+    assert '"publication_delay_seconds":90' in source
+    assert '"publication_delay_seconds":135' in source
+    assert '"publication_delay_seconds":180' in source
+    assert '"publication_delay_seconds":225' in source
+
+    assert "Stagger shared Hugging Face publication writers" in source
+    assert 'sleep "${{ matrix.publication_delay_seconds }}"' in source

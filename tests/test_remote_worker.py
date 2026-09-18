@@ -836,3 +836,12 @@ def test_remote_worker_default_search_reaches_historical_seeds() -> None:
     assert args.catch_up_hours == 720
     assert args.max_hours_per_run == 4
     assert args.max_runtime_minutes == 240
+
+
+def test_remote_worker_refuses_all_invalid_l2_publication() -> None:
+    source = Path(remote_worker_module.__file__).read_text(
+        encoding="utf-8",
+    )
+
+    assert 'l2_output.quality_summary.get("valid_count")' in source
+    assert "no analytically valid" in source

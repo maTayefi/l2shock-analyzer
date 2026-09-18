@@ -1447,6 +1447,19 @@ async def process_remote_hour(
                 "checkpoint; no remote artifact was published"
             )
 
+        valid_l2_seconds = l2_output.quality_summary.get("valid_count")
+
+        if (
+            isinstance(valid_l2_seconds, bool)
+            or not isinstance(valid_l2_seconds, int)
+            or valid_l2_seconds <= 0
+        ):
+            raise RemoteWorkerCheckpointBlockedError(
+                "Target L2 processing produced no analytically valid "
+                "one-second observations; no remote artifact or checkpoint "
+                "was published"
+            )
+
     if price_missing:
         trade_archive = _archive_by_kind(
             acquisition.processing_archives,
