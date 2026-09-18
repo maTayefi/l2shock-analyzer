@@ -57,7 +57,13 @@ from l2shock.processing import (
 from l2shock.remote.artifact_codec import (
     RemoteL2ProcessedArtifact,
     RemotePriceProcessedArtifact,
+    read_remote_artifact_file,
+    write_remote_artifact_file,
 )
+
+import logging
+
+log = logging.getLogger(__name__)
 from l2shock.remote.contracts import (
     RemoteArtifactKey,
     RemoteArtifactKind,
@@ -228,6 +234,15 @@ def process_l2_archive_headlessly(
     cancellation_check_interval_levels: int = 1_024,
     imbalance_decimal_precision: int = 34,
 ) -> HeadlessL2ProcessingOutput:
+    log.info(
+        "HEADLESS L2 PROCESSING START: venue=%s symbol=%s hour=%s "
+        "has_input_checkpoint=%s local_path=%s",
+        target_archive.spec.venue,
+        target_archive.spec.symbol,
+        target_archive.spec.hour_utc.isoformat(),
+        input_checkpoint_bytes is not None,
+        target_archive.local_path,
+    )
     """Process one explicit local order-book archive without PostgreSQL.
 
     The optional checkpoint must belong to the immediately preceding UTC hour
@@ -281,22 +296,31 @@ def process_l2_archive_headlessly(
         ).content_sha256
 
     try:
-        sampled = sample_liquidity_archives(
-            (
-                (
-                    target_archive.local_path,
-                    target,
-                ),
-            ),
-            preset.band,
-            initial_checkpoint=input_checkpoint,
-            batch_size=batch_size,
-            final_source_content_sha256=target_archive.content_sha256,
-            cancellation_probe=cancellation_probe,
-            cancellation_check_interval_rows=(cancellation_check_interval_rows),
-            cancellation_check_interval_levels=(cancellation_check_interval_levels),
-            imbalance_decimal_precision=imbalance_decimal_precision,
-        )
+        try:
+            sampled = sample_liquidity_archives(
+                ((target_archive.local_path, target_archive.spec),),
+                preset.band,
+                initial_checkpoint=input_checkpoint,
+                batch_size=batch_size,
+                final_source_content_sha256=target_archive.content_sha256,
+                cancellation_probe=cancellation_probe,
+                cancellation_check_interval_rows=(cancellation_check_interval_rows),
+                cancellation_check_interval_levels=(cancellation_check_interval_levels),
+                imbalance_decimal_precision=imbalance_decimal_precision,
+            )
+        except Exception as exc:
+            log.error(
+                "HEADLESS L2 REPLAY FAILED: venue=%s symbol=%s hour=%s "
+                "file=%s error_type=%s error_msg=%s",
+                target_archive.spec.venue,
+                target_archive.spec.symbol,
+                target_archive.spec.hour_utc.isoformat(),
+                target_archive.local_path.name,
+                type(exc).__name__,
+                str(exc),
+                exc_info=True,
+            )
+            raise
     except StreamedParquetReadError as exc:
         if isinstance(exc, StreamedParquetReadCancelled) or isinstance(
             exc.__cause__,
@@ -366,6 +390,22 @@ def process_l2_archive_headlessly(
     )
 
     report = sampled.replay_report.archives[0]
+
+    log.info(
+        "HEADLESS L2 PROCESSING COMPLETE: venue=%s symbol=%s hour=%s "
+        "finally_valid=%s has_output_checkpoint=%s events=%s snapshots=%s "
+        "continuity_mismatches=%s valid_seconds=%s invalid_seconds=%s",
+        target_archive.spec.venue,
+        target_archive.spec.symbol,
+        target_archive.spec.hour_utc.isoformat(),
+        report.finally_valid,
+        artifact.output_checkpoint is not None,
+        report.events_seen,
+        report.reader_report.snapshot_event_count,
+        report.reader_report.continuity_mismatch_count,
+        sum(1 for obs in block.observations if obs.quality.value == "VALID"),
+        sum(1 for obs in block.observations if obs.quality.value == "INVALID"),
+    )
 
     return HeadlessL2ProcessingOutput(
         artifact=artifact,

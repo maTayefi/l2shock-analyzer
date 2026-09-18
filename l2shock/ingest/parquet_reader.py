@@ -67,6 +67,11 @@ _TRADE_COLUMNS: Final[tuple[str, ...]] = (
     "order_type",
 )
 
+# Required-column sets used by _validate_projected_columns.
+# _ORDERBOOK_REQUIRED_COLUMNS was referenced but never defined.
+_ORDERBOOK_REQUIRED_COLUMNS: Final[frozenset[str]] = frozenset(_ORDERBOOK_COLUMNS)
+_TRADES_REQUIRED_COLUMNS: Final[frozenset[str]] = frozenset(_TRADE_COLUMNS)
+
 
 class OrderBookEventType(StrEnum):
     """Normalized event types currently accepted from order-book archives."""
@@ -454,6 +459,11 @@ def _nullable_text(
     return normalized
 
 
+import logging as _logging  # add at top of file if not already imported
+
+_integer_log = _logging.getLogger(__name__)
+
+
 def _integer(
     value: object,
     *,
@@ -466,35 +476,29 @@ def _integer(
     if value is None:
         if nullable:
             return None
-
         raise StreamedParquetReadError(
             f"{field_name} cannot be null",
             path=path,
             row_number=row_number,
         )
-
     if isinstance(value, bool):
         raise StreamedParquetReadError(
             f"{field_name} must be an integer, not boolean",
             path=path,
             row_number=row_number,
         )
-
     parsed: int
-
     if isinstance(value, int):
         parsed = value
     elif isinstance(value, float):
         if math.isnan(value) and nullable:
             return None
-
         if not math.isfinite(value) or not value.is_integer():
             raise StreamedParquetReadError(
                 f"{field_name} must be an exact integer",
                 path=path,
                 row_number=row_number,
             )
-
         parsed = int(value)
     else:
         raise StreamedParquetReadError(
@@ -502,14 +506,25 @@ def _integer(
             path=path,
             row_number=row_number,
         )
-
     if nonnegative and parsed < 0:
+        # --- DIAGNOSTIC LOGGING: capture overflow details for CI ---
+        _integer_log.error(
+            "NEGATIVE INTEGER DETECTED: field=%s value=%r type=%s "
+            "row=%d path=%s — this likely indicates int32 overflow "
+            "in the source Parquet file (OKX sequence IDs exceed 2^31)",
+            field_name,
+            value,
+            type(value).__name__,
+            row_number,
+            path.name,
+        )
         raise StreamedParquetReadError(
-            f"{field_name} cannot be negative",
+            f"{field_name} cannot be negative "
+            f"(raw_value={value!r}, row={row_number}, "
+            f"file={path.name})",
             path=path,
             row_number=row_number,
         )
-
     return parsed
 
 
@@ -972,9 +987,35 @@ def read_orderbook_file(
 
     _validate_projected_columns(
         parquet_file,
-        required_columns=_ORDERBOOK_COLUMNS,
+        required_columns=_ORDERBOOK_REQUIRED_COLUMNS,
         path=source,
     )
+
+    # --- DIAGNOSTIC: log Parquet schema types for CI debugging ---
+    try:
+        schema_names = parquet_file.schema_arrow.names
+        schema_types = {
+            parquet_file.schema_arrow.field(i).name: str(
+                parquet_file.schema_arrow.field(i).type
+            )
+            for i in range(len(schema_names))
+        }
+        _integer_log.info(
+            "PARQUET SCHEMA for %s: venue=%s symbol=%s hour=%s "
+            "last_update_id_type=%s first_update_id_type=%s "
+            "final_update_id_type=%s prev_final_update_id_type=%s",
+            source.name,
+            spec.venue,
+            spec.symbol,
+            spec.hour_utc.isoformat(),
+            schema_types.get("last_update_id", "MISSING"),
+            schema_types.get("first_update_id", "MISSING"),
+            schema_types.get("final_update_id", "MISSING"),
+            schema_types.get("prev_final_update_id", "MISSING"),
+        )
+    except Exception:
+        _integer_log.warning("Could not log Parquet schema for %s", source.name)
+
     sequence_contract = orderbook_sequence_contract(spec.venue)
 
     rows_read = 0

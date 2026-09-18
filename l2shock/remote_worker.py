@@ -77,6 +77,10 @@ from l2shock.remote import (
 )
 from l2shock.timeutils import now_utc, require_utc_hour
 
+import logging
+
+log = logging.getLogger(__name__)
+
 
 class RemoteWorkerExitStatus(IntEnum):
     OK = 0
@@ -583,7 +587,22 @@ def _catch_up_target_from_observations(
     Returning the latest already-complete hour is an idempotent no-work probe.
     ``process_remote_hour`` will verify and reuse its existing artifacts.
     """
-
+    log.info(
+        "CATCH-UP TARGET SELECTION: venue=%s latest_eligible=%s "
+        "observations=%d price_required=%s",
+        venue,
+        latest_eligible_hour_utc.isoformat(),
+        len(observations),
+        price_required,
+    )
+    for obs in observations:
+        log.info(
+            "  hour=%s l2_exists=%s checkpoint_exists=%s price_exists=%s",
+            obs.hour_utc.isoformat(),
+            obs.l2_exists,
+            obs.output_checkpoint_exists,
+            obs.price_exists,
+        )
     normalized_venue = str(venue or "").strip().lower()
     latest = require_utc_hour(
         "latest_eligible_hour_utc",
@@ -865,20 +884,33 @@ async def process_remote_catch_up(
             stop_reason = "runtime_budget"
             break
 
-        result = await process_remote_hour(
-            repository=repository,
-            cryptohft=cryptohft,
-            workspace=workspace,
-            venue=normalized_venue,
-            instrument=normalized_instrument,
-            hour_utc=target_hour,
-            latest_eligible_hour_utc=latest,
-            lower_fraction=lower_fraction,
-            upper_fraction=upper_fraction,
-            producer_git_commit=producer_git_commit,
-            use_api_key=use_api_key,
-            batch_size=batch_size,
-        )
+        try:
+            result = await process_remote_hour(
+                repository=repository,
+                cryptohft=cryptohft,
+                workspace=workspace,
+                venue=normalized_venue,
+                instrument=normalized_instrument,
+                hour_utc=target_hour,
+                latest_eligible_hour_utc=latest,
+                lower_fraction=lower_fraction,
+                upper_fraction=upper_fraction,
+                producer_git_commit=producer_git_commit,
+                use_api_key=use_api_key,
+                batch_size=batch_size,
+            )
+        except Exception as exc:
+            log.error(
+                "=== PROCESSING HOUR FAILED === venue=%s instrument=%s "
+                "hour=%s error_type=%s error_msg=%s",
+                normalized_venue,
+                normalized_instrument,
+                target_hour.isoformat(),
+                type(exc).__name__,
+                str(exc),
+                exc_info=True,
+            )
+            raise
         completed.append(result)
 
         # No later target exists.
@@ -1038,6 +1070,12 @@ async def process_remote_hour(
     use_api_key: bool = False,
     batch_size: int = 131_072,
 ) -> RemoteWorkerResult:
+    log.info(
+        "=== PROCESSING HOUR START === venue=%s instrument=%s hour=%s",
+        venue,
+        instrument,
+        hour_utc.isoformat(),
+    )
     """Acquire, process, and publish one completed remote source hour."""
 
     if not isinstance(
@@ -1228,7 +1266,7 @@ async def process_remote_hour(
             price_output.artifact,
         )
 
-    return RemoteWorkerResult(
+    result = RemoteWorkerResult(
         venue=normalized_venue,
         instrument=normalized_instrument,
         hour_utc=target_hour,
@@ -1266,6 +1304,17 @@ async def process_remote_hour(
         source_downloaded_count=acquisition.downloaded_count,
         source_reused_count=acquisition.reused_count,
     )
+    log.info(
+        "=== PROCESSING HOUR COMPLETE === venue=%s instrument=%s hour=%s "
+        "l2_created=%s price_created=%s sources_downloaded=%s",
+        result.venue,
+        result.instrument,
+        result.hour_utc.isoformat(),
+        result.l2_created,
+        result.price_created,
+        result.source_downloaded_count,
+    )
+    return result
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1464,6 +1513,14 @@ async def _run_from_arguments(
 
 
 def main(argv: list[str] | None = None) -> int:
+    import logging
+    import sys
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(name)s %(message)s",
+        stream=sys.stdout,
+    )
     parser = build_parser()
     args = parser.parse_args(argv)
 
