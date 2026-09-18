@@ -459,7 +459,7 @@ def _nullable_text(
     return normalized
 
 
-import logging as _logging  # add at top of file if not already imported
+import logging as _logging
 
 _integer_log = _logging.getLogger(__name__)
 
@@ -476,29 +476,35 @@ def _integer(
     if value is None:
         if nullable:
             return None
+
         raise StreamedParquetReadError(
             f"{field_name} cannot be null",
             path=path,
             row_number=row_number,
         )
+
     if isinstance(value, bool):
         raise StreamedParquetReadError(
             f"{field_name} must be an integer, not boolean",
             path=path,
             row_number=row_number,
         )
+
     parsed: int
+
     if isinstance(value, int):
         parsed = value
     elif isinstance(value, float):
         if math.isnan(value) and nullable:
             return None
+
         if not math.isfinite(value) or not value.is_integer():
             raise StreamedParquetReadError(
                 f"{field_name} must be an exact integer",
                 path=path,
                 row_number=row_number,
             )
+
         parsed = int(value)
     else:
         raise StreamedParquetReadError(
@@ -506,26 +512,14 @@ def _integer(
             path=path,
             row_number=row_number,
         )
+
     if nonnegative and parsed < 0:
-        if nullable:
-            # Negative values (e.g. -1) are exchange sentinel values
-            # meaning "no sequence ID". Treat as null for nullable fields.
-            _integer_log.debug(
-                "Negative sentinel treated as null: field=%s value=%r "
-                "row=%d path=%s",
-                field_name,
-                value,
-                row_number,
-                path.name,
-            )
-            return None
         raise StreamedParquetReadError(
-            f"{field_name} cannot be negative "
-            f"(raw_value={value!r}, row={row_number}, "
-            f"file={path.name})",
+            f"{field_name} cannot be negative; raw_value={value!r}",
             path=path,
             row_number=row_number,
         )
+
     return parsed
 
 
@@ -826,8 +820,27 @@ def _build_event_row(
         row_number=row_number,
         nullable=True,
     )
+
+    normalized_last_update_id = raw_last_update_id
+    okx_snapshot_reset_normalized = False
+
+    # OKX reset/reconnect snapshots may expose the provider's predecessor
+    # sequence sentinel as last_update_id=-1. A snapshot does not continue the
+    # preceding update chain; its authoritative resulting frontier is
+    # final_update_id.
+    #
+    # Normalize only this exact venue/event/sentinel combination. Negative
+    # update frontiers and arbitrary negative values remain strict errors.
+    if (
+        spec.venue == "okx_futures"
+        and event_type is OrderBookEventType.SNAPSHOT
+        and raw_last_update_id == -1
+    ):
+        normalized_last_update_id = raw_final_update_id
+        okx_snapshot_reset_normalized = True
+
     last_update_id = _integer(
-        raw_last_update_id,
+        normalized_last_update_id,
         field_name="last_update_id",
         path=path,
         row_number=row_number,
@@ -871,6 +884,8 @@ def _build_event_row(
         "final_update_id": final_update_id,
         "prev_final_update_id": prev_final_update_id,
         "last_update_id": last_update_id,
+        "_okx_snapshot_reset_normalized": okx_snapshot_reset_normalized,
+        "_raw_last_update_id": raw_last_update_id,
     }
 
     key = (
@@ -911,6 +926,18 @@ def _validate_orderbook_event_values(
             "Internal order-book event type is invalid",
             path=path,
             row_number=row_number,
+        )
+
+    if event_values.get("_okx_snapshot_reset_normalized") is True:
+        _integer_log.warning(
+            "OKX SNAPSHOT RESET NORMALIZED: file=%s row=%d "
+            "raw_last_update_id=%r final_update_id=%r "
+            "normalized_snapshot_frontier=%r",
+            path.name,
+            row_number,
+            event_values.get("_raw_last_update_id"),
+            event_values.get("final_update_id"),
+            event_values.get("last_update_id"),
         )
 
     try:

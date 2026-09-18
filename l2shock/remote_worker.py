@@ -704,54 +704,104 @@ def _catch_up_target_from_observations(
             )
         expected_hour -= timedelta(hours=1)
 
-    # Find the newest frontier with a USABLE output checkpoint.
-    # Skip any L2 artifacts that exist but produced no checkpoint
-    # (e.g., hours where replay failed and no checkpoint was emitted).
-    frontier = None
-    has_l2_without_checkpoint = False
+    # Find the newest existing L2 artifact with a usable output checkpoint.
+    # An artifact without a checkpoint is a permanent blocked marker at its
+    # immutable path and must never be treated as the chain frontier.
+    frontier: _RemoteCatchUpObservation | None = None
+    blocked_hours: list[datetime] = []
+
     for observation in values:
-        if observation.l2_exists:
-            if observation.output_checkpoint_exists:
-                frontier = observation
-                break
-            else:
-                has_l2_without_checkpoint = True
-                log.warning(
-                    "Skipping hour %s: L2 exists but has no output "
-                    "checkpoint. Looking further back.",
-                    observation.hour_utc.isoformat(),
-                )
+        if not observation.l2_exists:
+            continue
+
+        if observation.output_checkpoint_exists:
+            frontier = observation
+            break
+
+        blocked_hours.append(observation.hour_utc)
+        log.warning(
+            "Skipping unusable remote L2 artifact: hour=%s venue=%s "
+            "reason=missing_output_checkpoint",
+            observation.hour_utc.isoformat(),
+            normalized_venue,
+        )
+
     if frontier is None:
-        if has_l2_without_checkpoint:
-            log.warning(
-                "Chain is blocked: an L2 artifact exists without an "
-                "output checkpoint for venue=%s. Attempting to find a "
-                "self-initializing snapshot hour.",
-                normalized_venue,
+        if blocked_hours:
+            raise RemoteWorkerCheckpointBlockedError(
+                "Remote L2 artifacts without output checkpoints exist, but "
+                "no older usable checkpoint frontier was found inside the "
+                f"bounded search window; blocked_hours="
+                f"{[hour.isoformat() for hour in blocked_hours]}"
             )
-        # Both OKX and Binance can self-initialize from opening snapshots
-        # in the target archive when NO prior L2 exists at all.
-        # Fall back to the oldest inspected hour.
-        if normalized_venue in ("okx_futures", "binance_futures"):
+
+        if normalized_venue in {
+            "okx_futures",
+            "binance_futures",
+        }:
             log.info(
-                "No valid checkpoint frontier found for venue=%s. "
-                "Falling back to oldest hour for self-initialization "
-                "from opening snapshot.",
+                "No remote L2 artifact exists in the bounded window for "
+                "venue=%s. Selecting the oldest inspected hour for strict "
+                "self-initialization from its source snapshot.",
                 normalized_venue,
             )
             return values[-1].hour_utc
-        # Unknown venues cannot self-initialize.
+
         raise RemoteWorkerCheckpointBlockedError(
-            f"No verified L2/checkpoint seed exists inside the bounded "
+            "No verified L2/checkpoint seed exists inside the bounded "
             f"remote catch-up search window for venue={normalized_venue}"
         )
 
     if price_required and not frontier.price_exists:
         return frontier.hour_utc
 
-    next_hour = frontier.hour_utc + timedelta(hours=1)
-    if next_hour <= latest:
-        return next_hour
+    observation_by_hour = {observation.hour_utc: observation for observation in values}
+
+    candidate_hour = frontier.hour_utc + timedelta(hours=1)
+
+    while candidate_hour <= latest:
+        candidate = observation_by_hour.get(candidate_hour)
+
+        if candidate is None:
+            raise RemoteWorkerError(
+                "Catch-up planning lacks an observation for candidate hour "
+                f"{candidate_hour.isoformat()}"
+            )
+
+        if not candidate.l2_exists:
+            log.info(
+                "Selected first missing L2 hour after usable frontier: "
+                "frontier=%s target=%s skipped_blocked_hours=%s",
+                frontier.hour_utc.isoformat(),
+                candidate_hour.isoformat(),
+                [
+                    hour.isoformat()
+                    for hour in blocked_hours
+                    if frontier.hour_utc < hour < candidate_hour
+                ],
+            )
+            return candidate_hour
+
+        if candidate.output_checkpoint_exists:
+            raise RemoteWorkerError(
+                "A newer usable checkpoint was observed after the selected "
+                "frontier; catch-up observations are inconsistent"
+            )
+
+        log.warning(
+            "Advancing past immutable unusable L2 artifact: hour=%s "
+            "venue=%s reason=missing_output_checkpoint",
+            candidate_hour.isoformat(),
+            normalized_venue,
+        )
+        candidate_hour += timedelta(hours=1)
+
+    if blocked_hours:
+        raise RemoteWorkerCheckpointBlockedError(
+            "The newest eligible remote hour is occupied by an unusable L2 "
+            "artifact without an output checkpoint, and no later missing hour "
+            "is available yet"
+        )
 
     return frontier.hour_utc
 
@@ -857,20 +907,31 @@ async def select_remote_catch_up_hour(
 
                 price_exists = True
 
+        has_output_checkpoint = downloaded_l2.artifact.output_checkpoint is not None
+
         observations.append(
             _RemoteCatchUpObservation(
                 hour_utc=hour,
                 l2_exists=True,
-                output_checkpoint_exists=(
-                    downloaded_l2.artifact.output_checkpoint is not None
-                ),
+                output_checkpoint_exists=has_output_checkpoint,
                 price_exists=price_exists,
             )
         )
 
-        # The newest existing L2 artifact is the only frontier needed for the
-        # next safe chain transition. Older artifacts cannot supersede it.
-        break
+        if has_output_checkpoint:
+            # The newest existing L2 artifact with a usable output checkpoint
+            # is the valid chain frontier. An L2 artifact without a checkpoint
+            # is a blocked marker, not a frontier, so continue scanning older
+            # hours until a usable checkpoint is found or the bound is reached.
+            break
+
+        log.warning(
+            "Remote L2 artifact has no output checkpoint; continuing bounded "
+            "frontier scan past hour=%s venue=%s instrument=%s",
+            hour.isoformat(),
+            normalized_venue,
+            normalized_instrument,
+        )
 
     return _catch_up_target_from_observations(
         venue=normalized_venue,
@@ -1612,6 +1673,10 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)-8s %(name)s %(message)s",
         stream=sys.stdout,
     )
+
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     parser = build_parser()
     args = parser.parse_args(argv)
 

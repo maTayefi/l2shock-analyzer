@@ -281,3 +281,74 @@ def test_okx_continuity_failure_invalidates_state(
         if hasattr(report.archives[0], "final_book_structure")
         else True
     )
+
+
+def test_okx_reset_snapshot_minus_one_predecessor_uses_final_frontier(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "okx-reset-snapshot.parquet"
+
+    hour_ns = 1_788_955_200_000_000_000
+    hour_ms = 1_788_955_200_000
+
+    rows = [
+        _row(
+            received_time=hour_ns,
+            event_time=hour_ms,
+            event_type="snapshot",
+            side="bid",
+            price="100",
+            quantity="2",
+            final_update_id=500,
+            last_update_id=-1,
+        ),
+        _row(
+            received_time=hour_ns,
+            event_time=hour_ms,
+            event_type="snapshot",
+            side="ask",
+            price="101",
+            quantity="3",
+            final_update_id=500,
+            last_update_id=-1,
+        ),
+        _row(
+            received_time=hour_ns + 100_000_000,
+            event_time=hour_ms + 100,
+            event_type="update",
+            side="bid",
+            price="100.5",
+            quantity="4",
+            final_update_id=510,
+            last_update_id=500,
+        ),
+    ]
+
+    pq.write_table(
+        pa.Table.from_pylist(rows),
+        path,
+        compression="zstd",
+        row_group_size=1,
+    )
+
+    report = replay_orderbook_archives(
+        (
+            (
+                path,
+                _spec(),
+            ),
+        ),
+        batch_size=1,
+    )
+
+    assert report.finally_valid is True
+    assert report.final_checkpoint is not None
+    assert report.final_checkpoint.last_update_id == 510
+
+    archive = report.archives[0]
+
+    assert archive.snapshots_applied == 1
+    assert archive.updates_applied == 1
+    assert archive.invalidation_count == 0
+    assert archive.reader_report.snapshot_event_count == 1
+    assert archive.reader_report.continuity_mismatch_count == 0

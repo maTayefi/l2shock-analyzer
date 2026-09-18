@@ -256,21 +256,56 @@ def test_okx_without_existing_frontier_selects_oldest_bounded_hour() -> None:
     assert selected == _hour(0)
 
 
-def test_existing_frontier_without_checkpoint_falls_back_to_oldest() -> None:
+def test_existing_artifact_without_any_usable_frontier_is_blocked() -> None:
+    with pytest.raises(
+        RemoteWorkerCheckpointBlockedError,
+        match="no older usable checkpoint frontier",
+    ):
+        _catch_up_target_from_observations(
+            venue="binance_futures",
+            latest_eligible_hour_utc=_hour(1),
+            observations=(
+                _observation(
+                    1,
+                    l2_exists=True,
+                    checkpoint_exists=False,
+                    price_exists=True,
+                ),
+            ),
+            price_required=True,
+        )
+
+
+def test_blocked_artifact_is_skipped_after_usable_frontier() -> None:
     selected = _catch_up_target_from_observations(
         venue="binance_futures",
-        latest_eligible_hour_utc=_hour(1),
+        latest_eligible_hour_utc=_hour(3),
         observations=(
+            _observation(
+                3,
+                l2_exists=False,
+            ),
+            _observation(
+                2,
+                l2_exists=False,
+            ),
             _observation(
                 1,
                 l2_exists=True,
                 checkpoint_exists=False,
+                price_exists=False,
+            ),
+            _observation(
+                0,
+                l2_exists=True,
+                checkpoint_exists=True,
                 price_exists=True,
             ),
         ),
         price_required=True,
     )
-    assert selected == _hour(1)
+
+    assert selected == _hour(2)
 
 
 def test_complete_latest_hour_becomes_idempotent_no_work_probe() -> None:
