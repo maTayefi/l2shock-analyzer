@@ -203,30 +203,34 @@ def test_binance_repairs_missing_frontier_price_before_advancing() -> None:
     assert selected == _hour(2)
 
 
-def test_binance_without_bounded_seed_fails_closed() -> None:
-    with pytest.raises(
-        RemoteWorkerCheckpointBlockedError,
-        match="No verified Binance",
-    ):
-        _catch_up_target_from_observations(
-            venue="binance_futures",
-            latest_eligible_hour_utc=_hour(2),
-            observations=(
-                _observation(
-                    2,
-                    l2_exists=False,
-                ),
-                _observation(
-                    1,
-                    l2_exists=False,
-                ),
-                _observation(
-                    0,
-                    l2_exists=False,
-                ),
+def test_binance_without_bounded_seed_falls_back_to_oldest_for_self_init() -> None:
+    selected = _catch_up_target_from_observations(
+        venue="binance_futures",
+        latest_eligible_hour_utc=_hour(2),
+        observations=(
+            _observation(
+                2,
+                l2_exists=False,
+                checkpoint_exists=False,
+                price_exists=False,
             ),
-            price_required=True,
-        )
+            _observation(
+                1,
+                l2_exists=False,
+                checkpoint_exists=False,
+                price_exists=False,
+            ),
+            _observation(
+                0,
+                l2_exists=False,
+                checkpoint_exists=False,
+                price_exists=False,
+            ),
+        ),
+        price_required=True,
+    )
+    assert selected == _hour(0)
+    assert selected == _hour(0)
 
 
 def test_okx_without_existing_frontier_selects_oldest_bounded_hour() -> None:

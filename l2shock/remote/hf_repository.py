@@ -39,6 +39,7 @@ included in exceptions, logs, manifests, artifacts, or object representations.
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
@@ -659,6 +660,26 @@ class HuggingFaceDatasetRepository:
                     # exception. Determine whether this was a concurrency
                     # conflict by observing the branch again.
                     latest_revision = self.current_revision()
+
+                    status_code = getattr(
+                        getattr(exc, "response", None),
+                        "status_code",
+                        None,
+                    )
+
+                    if latest_revision == expected_parent and status_code == 409:
+                        if attempt >= maximum_attempts:
+                            raise HuggingFacePublicationError(
+                                "Hugging Face publication failed after "
+                                f"{maximum_attempts} attempts due to "
+                                "concurrent commit conflicts"
+                            ) from exc
+                        concurrent_commit_observed = True
+
+                        time.sleep(10)
+                        # The next loop iteration reads the head again and
+                        # retries the commit against the current branch head.
+                        continue
 
                     if latest_revision == expected_parent:
                         raise HuggingFacePublicationError(

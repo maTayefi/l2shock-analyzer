@@ -558,7 +558,6 @@ def _price_key(
 
 
 def _catch_up_target_from_observations(
-    *,
     venue: str,
     latest_eligible_hour_utc: datetime,
     observations: tuple[_RemoteCatchUpObservation, ...],
@@ -623,8 +622,8 @@ def _catch_up_target_from_observations(
             )
         if observation.hour_utc != expected_hour:
             raise RemoteWorkerError(
-                "Remote catch-up observations must be contiguous and ordered "
-                "newest to oldest"
+                "Remote catch-up observations must be contiguous "
+                "and ordered newest to oldest"
             )
         expected_hour -= timedelta(hours=1)
 
@@ -632,33 +631,44 @@ def _catch_up_target_from_observations(
     # Skip any L2 artifacts that exist but produced no checkpoint
     # (e.g., hours where replay failed and no checkpoint was emitted).
     frontier = None
+    has_l2_without_checkpoint = False
     for observation in values:
         if observation.l2_exists:
             if observation.output_checkpoint_exists:
                 frontier = observation
                 break
             else:
+                has_l2_without_checkpoint = True
                 log.warning(
                     "Skipping hour %s: L2 exists but has no output "
                     "checkpoint. Looking further back.",
                     observation.hour_utc.isoformat(),
                 )
-
     if frontier is None:
-        # OKX can self-initialize from its own opening snapshot in the
-        # target archive, so fall back to the oldest inspected hour.
-        if normalized_venue == "okx_futures":
+        # An existing L2 artifact that lacks an output checkpoint means
+        # the chain is blocked: the next hour cannot be initialized.
+        # For Binance, fail closed rather than silently self-initializing.
+        if has_l2_without_checkpoint and normalized_venue == "binance_futures":
+            raise RemoteWorkerCheckpointBlockedError(
+                "No verified Binance checkpoint seed exists; an existing "
+                "L2 artifact lacks an output checkpoint and the chain "
+                "cannot advance"
+            )
+        # Both OKX and Binance can self-initialize from opening snapshots
+        # in the target archive when NO prior L2 exists at all.
+        # Fall back to the oldest inspected hour.
+        if normalized_venue in ("okx_futures", "binance_futures"):
             log.info(
                 "No valid checkpoint frontier found for venue=%s. "
-                "Falling back to oldest hour for self-initialization.",
+                "Falling back to oldest hour for self-initialization "
+                "from opening snapshot.",
                 normalized_venue,
             )
             return values[-1].hour_utc
-        # Binance update-only archives cannot self-initialize.
-        # Without a verified predecessor checkpoint, the chain is blocked.
+        # Unknown venues cannot self-initialize.
         raise RemoteWorkerCheckpointBlockedError(
-            "No verified Binance L2/checkpoint seed exists inside the bounded "
-            "remote catch-up search window"
+            f"No verified L2/checkpoint seed exists inside the bounded "
+            f"remote catch-up search window for venue={normalized_venue}"
         )
 
     if price_required and not frontier.price_exists:
@@ -667,6 +677,7 @@ def _catch_up_target_from_observations(
     next_hour = frontier.hour_utc + timedelta(hours=1)
     if next_hour <= latest:
         return next_hour
+
     return frontier.hour_utc
 
 
@@ -1076,13 +1087,13 @@ async def process_remote_hour(
     use_api_key: bool = False,
     batch_size: int = 131_072,
 ) -> RemoteWorkerResult:
+    """Acquire, process, and publish one completed remote source hour."""
     log.info(
         "=== PROCESSING HOUR START === venue=%s instrument=%s hour=%s",
         venue,
         instrument,
         hour_utc.isoformat(),
     )
-    """Acquire, process, and publish one completed remote source hour."""
 
     if not isinstance(
         repository,
