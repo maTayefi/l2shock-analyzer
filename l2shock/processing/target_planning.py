@@ -40,6 +40,7 @@ from l2shock.db.models import (
 from l2shock.presets import (
     LiquidityDataPreset,
     build_binance_futures_data_preset,
+    build_bybit_data_preset,
     build_okx_futures_data_preset,
 )
 from l2shock.timeutils import require_aware_utc
@@ -119,6 +120,7 @@ def _single_market_preset_for_target(
 
     builders = {
         "binance_futures": build_binance_futures_data_preset,
+        "bybit": build_bybit_data_preset,
         "okx_futures": build_okx_futures_data_preset,
     }
 

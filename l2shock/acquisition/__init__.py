@@ -68,6 +68,7 @@ from l2shock.acquisition.persistence import (
 from l2shock.acquisition.planning import (
     intersecting_utc_hours,
     plan_binance_futures_files,
+    plan_bybit_files,
     plan_okx_futures_files,
     plan_production_source_files,
 )
@@ -149,6 +150,7 @@ __all__ = [
     "normalize_source_hour_status",
     "parse_retry_after_seconds",
     "plan_binance_futures_files",
+    "plan_bybit_files",
     "plan_okx_futures_files",
     "plan_production_source_files",
     "quarantine_file",

@@ -349,6 +349,7 @@ def test_bybit_boundary_snapshot_replaces_carried_book_and_preserves_frontier(
     assert first.final_update_id == 501
 
     assert second.initial_state is BookInitializationState.CARRIED
+    assert second.required_carried_state is True
     assert second.snapshots_applied == 1
     assert second.updates_applied == 1
     assert second.invalidation_count == 0

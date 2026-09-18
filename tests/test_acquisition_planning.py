@@ -10,6 +10,7 @@ from l2shock.acquisition import (
     SourceFileSpec,
     intersecting_utc_hours,
     plan_binance_futures_files,
+    plan_bybit_files,
     plan_production_source_files,
 )
 
@@ -247,7 +248,7 @@ def test_wrong_symbol_for_supported_venue_is_rejected() -> None:
         )
 
 
-def test_production_plan_contains_six_files_per_hour() -> None:
+def test_production_plan_contains_eight_files_per_hour() -> None:
     plan = plan_production_source_files(
         _utc(2026, 9, 9, 12),
         _utc(2026, 9, 9, 13),
@@ -291,6 +292,16 @@ def test_production_plan_contains_six_files_per_hour() -> None:
             "ETH-USDT-SWAP",
             "orderbook",
         ),
+        (
+            "bybit",
+            "BTCUSDT",
+            "orderbook",
+        ),
+        (
+            "bybit",
+            "ETHUSDT",
+            "orderbook",
+        ),
     ]
 
 
@@ -318,11 +329,63 @@ def test_bybit_source_identity_and_remote_path_are_supported() -> None:
     assert spec.remote_path == ("bybit/2026-09-04/06/BTCUSDT_orderbook.parquet")
 
 
-def test_bybit_is_not_yet_in_production_acquisition_plan() -> None:
+def test_bybit_orderbooks_are_in_production_acquisition_plan() -> None:
     plan = plan_production_source_files(
         _utc(2026, 9, 4, 6),
         _utc(2026, 9, 4, 7),
     )
 
-    assert not any(item.venue == "bybit" for item in plan)
-    assert len(plan) == 6
+    bybit = tuple(item for item in plan if item.venue == "bybit")
+
+    assert [
+        (
+            item.symbol,
+            item.data_kind.value,
+            item.remote_path,
+        )
+        for item in bybit
+    ] == [
+        (
+            "BTCUSDT",
+            "orderbook",
+            "bybit/2026-09-04/06/BTCUSDT_orderbook.parquet",
+        ),
+        (
+            "ETHUSDT",
+            "orderbook",
+            "bybit/2026-09-04/06/ETHUSDT_orderbook.parquet",
+        ),
+    ]
+
+    assert not any(
+        item.venue == "bybit" and item.data_kind is SourceDataKind.TRADES
+        for item in plan
+    )
+    assert len(plan) == 8
+
+
+def test_bybit_planner_defaults_to_orderbooks_only() -> None:
+    plan = plan_bybit_files(
+        _utc(2026, 9, 4, 6),
+        _utc(2026, 9, 4, 7),
+    )
+
+    assert [
+        (
+            item.venue,
+            item.symbol,
+            item.data_kind,
+        )
+        for item in plan
+    ] == [
+        (
+            "bybit",
+            "BTCUSDT",
+            SourceDataKind.ORDERBOOK,
+        ),
+        (
+            "bybit",
+            "ETHUSDT",
+            SourceDataKind.ORDERBOOK,
+        ),
+    ]

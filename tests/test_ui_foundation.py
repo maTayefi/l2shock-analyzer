@@ -88,7 +88,10 @@ def test_health_snapshot_reports_foundation_status(
     assert implemented["parquet_event_reader"] is True
     assert implemented["replay_engine"] is True
     assert implemented["binance_sequence_adapter"] is True
+    assert implemented["bybit_sequence_adapter"] is True
     assert implemented["okx_sequence_adapter"] is True
+    assert implemented["bybit_orderbook_acquisition"] is True
+    assert implemented["bybit_l2_processing"] is True
     assert implemented["okx_orderbook_acquisition"] is True
     assert implemented["okx_l2_processing"] is True
     assert implemented["checkpoint_codec"] is True

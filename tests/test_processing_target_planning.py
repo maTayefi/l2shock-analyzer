@@ -140,6 +140,14 @@ def test_target_specific_preset_hashes_match_venue_builders() -> None:
         lower_depth_fraction=Decimal("0"),
         upper_depth_fraction=Decimal("0.01"),
     )
+    bybit = _single_market_preset_for_target(
+        _orderbook_target(
+            venue="bybit",
+            symbol="BTCUSDT",
+        ),
+        lower_depth_fraction=Decimal("0"),
+        upper_depth_fraction=Decimal("0.01"),
+    )
     okx = _single_market_preset_for_target(
         _orderbook_target(
             venue="okx_futures",
@@ -149,9 +157,20 @@ def test_target_specific_preset_hashes_match_venue_builders() -> None:
         upper_depth_fraction=Decimal("0.01"),
     )
 
-    assert binance.eligible_markets[0].venue == ("binance_futures")
+    assert binance.eligible_markets[0].venue == "binance_futures"
+    assert bybit.eligible_markets[0].venue == "bybit"
     assert okx.eligible_markets[0].venue == "okx_futures"
-    assert binance.preset_hash != okx.preset_hash
+
+    assert (
+        len(
+            {
+                binance.preset_hash,
+                bybit.preset_hash,
+                okx.preset_hash,
+            }
+        )
+        == 3
+    )
 
 
 def test_semantic_depth_change_changes_processing_preset_hash() -> None:

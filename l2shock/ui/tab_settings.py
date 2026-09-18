@@ -139,9 +139,11 @@ def build_settings_tab() -> None:
 
             ui.label(
                 "The editor supports independently materialized Binance "
-                "Futures, OKX Futures, and analysis-time Binance + OKX "
-                "aggregate presets. Aggregate presets do not combine raw "
-                "events and do not create aggregate PostgreSQL L2 rows."
+                "Futures, Bybit, and OKX Futures single-market presets, plus "
+                "the existing analysis-time Binance + OKX aggregate preset. "
+                "A three-market aggregate is not enabled yet. Aggregate "
+                "presets do not combine raw events or create aggregate "
+                "PostgreSQL L2 rows."
             ).classes("text-xs text-blue-700")
 
             with ui.row().classes("w-full gap-3 flex-wrap items-end mt-3"):

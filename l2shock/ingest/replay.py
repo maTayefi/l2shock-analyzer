@@ -422,10 +422,15 @@ class ReplayArchiveReport:
 
     @property
     def required_carried_state(self) -> bool:
-        return (
-            self.initial_state is BookInitializationState.CARRIED
-            and self.snapshots_applied == 0
-        )
+        """Return whether the archive began from carried/checkpoint state.
+
+        A later snapshot does not erase the fact that the archive began with
+        carried state. This is especially important for Bybit archive-boundary
+        snapshots whose native replay frontier is null: those snapshots can
+        replace levels only because the carried frontier already exists.
+        """
+
+        return self.initial_state is BookInitializationState.CARRIED
 
     @property
     def structure_count_map(

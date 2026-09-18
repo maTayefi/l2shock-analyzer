@@ -341,8 +341,8 @@ def build_fetch_tab(
         with ui.card().classes("w-full") as local_fetch_card:
             ui.label(
                 "Manual Fetch downloads BTC and ETH Binance Futures "
-                "order-book/trade archives plus empirically supported "
-                "OKX Futures order-book archives."
+                "order-book/trade archives plus empirically supported Bybit "
+                "and OKX Futures order-book archives."
             ).classes("font-semibold")
 
             ui.label(
@@ -479,9 +479,9 @@ def build_fetch_tab(
             ui.label("Processing").classes("text-lg font-semibold")
 
             ui.label(
-                "Process downloaded Binance and OKX Futures order books into "
-                "single-market compact L2 series, and Binance Futures trades "
-                "into the fixed real-price series."
+                "Process downloaded Binance, Bybit, and OKX Futures order "
+                "books into independent single-market compact L2 series, and "
+                "Binance Futures trades into the fixed real-price series."
             ).classes("text-sm text-gray-600")
 
             ui.label(

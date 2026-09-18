@@ -18,6 +18,7 @@ from l2shock.presets import (
     MarketType,
     SettlementType,
     build_binance_futures_data_preset,
+    build_bybit_data_preset,
 )
 
 
@@ -295,3 +296,56 @@ def test_okx_and_binance_presets_have_distinct_hashes() -> None:
     )
 
     assert okx.preset_hash != binance.preset_hash
+
+
+def test_bybit_linear_perpetual_preset_identity() -> None:
+    preset = build_bybit_data_preset(
+        base="BTC",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+
+    assert preset.base == "BTC"
+    assert len(preset.eligible_markets) == 1
+
+    market = preset.eligible_markets[0]
+
+    assert market.provider == "cryptohftdata"
+    assert market.venue == "bybit"
+    assert market.instrument == "BTCUSDT"
+    assert market.base_asset == "BTC"
+    assert market.quote_asset == "USDT"
+    assert market.market_type is MarketType.PERPETUAL
+    assert market.settlement_type is SettlementType.QUOTE
+
+
+def test_bybit_binance_and_okx_component_hashes_are_distinct() -> None:
+    binance = build_binance_futures_data_preset(
+        base="ETH",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+    bybit = build_bybit_data_preset(
+        base="ETH",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+
+    from l2shock.presets import build_okx_futures_data_preset
+
+    okx = build_okx_futures_data_preset(
+        base="ETH",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+
+    assert (
+        len(
+            {
+                binance.preset_hash,
+                bybit.preset_hash,
+                okx.preset_hash,
+            }
+        )
+        == 3
+    )

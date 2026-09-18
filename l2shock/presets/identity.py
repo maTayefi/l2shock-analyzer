@@ -432,6 +432,50 @@ def build_binance_futures_data_preset(
     )
 
 
+def build_bybit_data_preset(
+    *,
+    base: str,
+    lower_fraction: Decimal,
+    upper_fraction: Decimal,
+) -> LiquidityDataPreset:
+    """Build one empirically supported Bybit linear USDT perpetual preset."""
+
+    normalized_base = _identity_text(
+        "base",
+        base,
+        uppercase=True,
+    )
+
+    symbol_by_base = {
+        "BTC": "BTCUSDT",
+        "ETH": "ETHUSDT",
+    }
+
+    try:
+        instrument = symbol_by_base[normalized_base]
+    except KeyError as exc:
+        raise DataPresetError("Bybit presets support only BTC or ETH") from exc
+
+    return LiquidityDataPreset(
+        base=normalized_base,
+        band=DepthBand(
+            lower_fraction=lower_fraction,
+            upper_fraction=upper_fraction,
+        ),
+        eligible_markets=(
+            EligibleMarket(
+                provider="cryptohftdata",
+                venue="bybit",
+                instrument=instrument,
+                base_asset=normalized_base,
+                quote_asset="USDT",
+                market_type=MarketType.PERPETUAL,
+                settlement_type=SettlementType.QUOTE,
+            ),
+        ),
+    )
+
+
 def build_okx_futures_data_preset(
     *,
     base: str,
@@ -743,6 +787,7 @@ __all__ = [
     "MarketType",
     "SettlementType",
     "build_binance_futures_data_preset",
+    "build_bybit_data_preset",
     "build_okx_futures_data_preset",
     "build_binance_okx_futures_data_preset",
     "component_data_presets",

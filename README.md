@@ -842,9 +842,13 @@ preceding hour was initially available.
 This adapter is strict and venue-specific. It does not alter the Binance
 Futures contract.
 
-Bybit now has a strict isolated replay adapter, but remains excluded from the
-normal production acquisition, processing, remote-worker, Hugging Face import,
-preset, and UI universes until the remaining integration batches are complete.
+Bybit now has a strict isolated replay adapter and is included in local
+production acquisition, local processing, single-market preset management,
+Automatic Fetch completeness, and local source availability.
+
+Bybit remains excluded from the GitHub remote-worker matrix, Hugging Face
+publication/import planning, and multi-market aggregate presets until the
+remaining integration batches are complete.
 
 Bitget remains disabled for production replay until a separate adapter is
 established:
@@ -950,11 +954,35 @@ archives.
 The GitHub diagnostic prints the complete bounded report into the Actions log
 and uploads the JSON report. Raw Bybit source archives are temporary runner
 inputs and are not uploaded as workflow artifacts.
+
+### Local Bybit production integration
+
+The normal local production source universe now includes:
+
+```text
+Bybit BTCUSDT orderbook
+Bybit ETHUSDT orderbook
 ```
 
-### OKX production integration
+Bybit is independently:
 
-The normal production source universe now includes, per exact UTC hour:
+```text
+downloaded
+sequence-validated
+reconstructed
+one-second sampled
+depth-band calculated
+encoded
+persisted
+```
+
+under its own single-market preset hash.
+
+Bybit does not contribute price OHLC. Binance Futures trades remain the sole
+price source.
+
+The local production acquisition universe now contains eight source archives
+per exact UTC hour:
 
 ```text
 Binance Futures BTCUSDT orderbook
@@ -963,6 +991,26 @@ Binance Futures ETHUSDT orderbook
 Binance Futures ETHUSDT trades
 OKX Futures BTC-USDT-SWAP orderbook
 OKX Futures ETH-USDT-SWAP orderbook
+Bybit BTCUSDT orderbook
+Bybit ETHUSDT orderbook
+```
+
+This batch does not yet add Bybit to the GitHub remote-worker matrix, Hugging
+Face publication/import planning, or a Binance+OKX+Bybit aggregate preset.
+
+### OKX production integration
+
+The normal local production source universe now includes, per exact UTC hour:
+
+```text
+Binance Futures BTCUSDT orderbook
+Binance Futures BTCUSDT trades
+Binance Futures ETHUSDT orderbook
+Binance Futures ETHUSDT trades
+OKX Futures BTC-USDT-SWAP orderbook
+OKX Futures ETH-USDT-SWAP orderbook
+Bybit BTCUSDT orderbook
+Bybit ETHUSDT orderbook
 ```
 
 Binance Futures trades remain the sole price source for chart OHLC and price
@@ -979,6 +1027,9 @@ single-market presets:
 
 ```text
 binance_futures:
+    BTCUSDT / ETHUSDT
+
+bybit:
     BTCUSDT / ETHUSDT
 
 okx_futures:
@@ -1342,7 +1393,7 @@ CryptoHFTData.
 
 Automatic Fetch protects the newest release-eligible UTC source hour first.
 
-Once that hour has all six required production source archives:
+Once that hour has all eight required local production source archives:
 
 ```text
 Binance Futures BTCUSDT orderbook
@@ -1351,6 +1402,8 @@ Binance Futures ETHUSDT orderbook
 Binance Futures ETHUSDT trades
 OKX Futures BTC-USDT-SWAP orderbook
 OKX Futures ETH-USDT-SWAP orderbook
+Bybit BTCUSDT orderbook
+Bybit ETHUSDT orderbook
 ```
 
 the runtime searches backward for the nearest incomplete source hour inside:
@@ -1371,8 +1424,8 @@ local archives are reused through the normal acquisition path.
 Catch-up remains acquisition-only. It does not automatically invoke L2 or price
 Processing.
 
-An hour is considered acquisition-complete when all six expected production
-source identities are proven by durable metadata.
+An hour is considered locally acquisition-complete when all eight expected
+production source identities are proven by durable metadata.
 
 Downloaded and processing rows require an intact canonical local archive whose
 size matches durable metadata.

@@ -693,7 +693,7 @@ async def test_downloader_context_failure_finalizes_fetch_run() -> None:
 
 
 @pytest.mark.asyncio
-async def test_production_source_planner_can_fetch_six_file_universe(
+async def test_production_source_planner_can_fetch_eight_file_universe(
     tmp_path: Path,
 ) -> None:
     from l2shock.acquisition import plan_production_source_files
@@ -724,8 +724,8 @@ async def test_production_source_planner_can_fetch_six_file_universe(
         requested_end_utc=_utc(13),
     )
 
-    assert result.files_requested == 6
-    assert result.files_downloaded == 6
+    assert result.files_requested == 8
+    assert result.files_downloaded == 8
     assert result.files_failed == 0
 
     assert {
@@ -764,6 +764,16 @@ async def test_production_source_planner_can_fetch_six_file_universe(
         (
             "okx_futures",
             "ETH-USDT-SWAP",
+            "orderbook",
+        ),
+        (
+            "bybit",
+            "BTCUSDT",
+            "orderbook",
+        ),
+        (
+            "bybit",
+            "ETHUSDT",
             "orderbook",
         ),
     }

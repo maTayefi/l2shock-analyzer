@@ -7,6 +7,7 @@ from l2shock.presets import (
     PresetMarketProfile,
     build_binance_futures_data_preset,
     build_binance_okx_futures_data_preset,
+    build_bybit_data_preset,
     build_okx_futures_data_preset,
 )
 from l2shock.presets.management import (
@@ -50,6 +51,10 @@ def test_fraction_parser_rejects_invalid_values(
         (
             PresetMarketProfile.BINANCE_FUTURES,
             build_binance_futures_data_preset,
+        ),
+        (
+            PresetMarketProfile.BYBIT,
+            build_bybit_data_preset,
         ),
         (
             PresetMarketProfile.OKX_FUTURES,
@@ -102,7 +107,8 @@ def test_profile_builder_matches_authoritative_identity(
 
     expected_builder = {
         PresetMarketProfile.BINANCE_FUTURES: (build_binance_futures_data_preset),
-        PresetMarketProfile.OKX_FUTURES: (build_okx_futures_data_preset),
+        PresetMarketProfile.BYBIT: build_bybit_data_preset,
+        PresetMarketProfile.OKX_FUTURES: build_okx_futures_data_preset,
         PresetMarketProfile.BINANCE_OKX_FUTURES: (
             build_binance_okx_futures_data_preset
         ),

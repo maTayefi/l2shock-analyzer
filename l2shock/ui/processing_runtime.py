@@ -37,6 +37,7 @@ from l2shock.acquisition.models import (
 from l2shock.config import get_settings
 from l2shock.presets import (
     build_binance_futures_data_preset,
+    build_bybit_data_preset,
     build_okx_futures_data_preset,
 )
 from l2shock.processing import (
@@ -637,7 +638,8 @@ class ManualProcessingRuntime:
                         if target.data_kind is SourceDataKind.ORDERBOOK:
                             preset_builder = {
                                 "binance_futures": (build_binance_futures_data_preset),
-                                "okx_futures": (build_okx_futures_data_preset),
+                                "bybit": build_bybit_data_preset,
+                                "okx_futures": build_okx_futures_data_preset,
                             }.get(target.venue)
 
                             if preset_builder is None:

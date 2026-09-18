@@ -71,6 +71,16 @@ _REQUIRED_SOURCE_IDENTITIES = frozenset(
             "trades",
         ),
         (
+            "bybit",
+            "BTCUSDT",
+            "orderbook",
+        ),
+        (
+            "bybit",
+            "ETHUSDT",
+            "orderbook",
+        ),
+        (
             "okx_futures",
             "BTC-USDT-SWAP",
             "orderbook",
@@ -532,6 +542,7 @@ def _complete_source_hours_sync(
                 SourceHour.venue.in_(
                     (
                         "binance_futures",
+                        "bybit",
                         "okx_futures",
                     )
                 )

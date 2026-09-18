@@ -621,3 +621,68 @@ async def test_runtime_forwards_depth_to_target_loader() -> None:
             Decimal("0.025"),
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_builds_bybit_preset_for_bybit_orderbook() -> None:
+    reset_state_for_tests()
+    observed_markets: list[tuple[str, str]] = []
+
+    class RecordingL2(FakeL2Coordinator):
+        def run(
+            self,
+            request,
+            preset,
+            *,
+            cancellation_probe=None,
+        ) -> ProcessingResult:
+            market = preset.eligible_markets[0]
+            observed_markets.append(
+                (
+                    market.venue,
+                    market.instrument,
+                )
+            )
+
+            return super().run(
+                request,
+                preset,
+                cancellation_probe=cancellation_probe,
+            )
+
+    target = SourceFileSpec(
+        provider="cryptohftdata",
+        venue="bybit",
+        symbol="BTCUSDT",
+        data_kind=SourceDataKind.ORDERBOOK,
+        hour_utc=_hour(),
+    )
+
+    async def loader(
+        _start: datetime,
+        _end: datetime,
+        _lower_depth_fraction: Decimal,
+        _upper_depth_fraction: Decimal,
+    ) -> tuple[SourceFileSpec, ...]:
+        return (target,)
+
+    runtime = ManualProcessingRuntime(
+        target_loader=loader,
+        l2_coordinator_factory=lambda _sink: RecordingL2(),
+        price_coordinator_factory=lambda _sink: FakePriceCoordinator(),
+    )
+
+    result = await runtime.start(
+        requested_start_utc=_hour(12),
+        requested_end_utc=_hour(13),
+        lower_depth_fraction=Decimal("0"),
+        upper_depth_fraction=Decimal("0.01"),
+    )
+
+    assert result.status == "ok"
+    assert observed_markets == [
+        (
+            "bybit",
+            "BTCUSDT",
+        )
+    ]

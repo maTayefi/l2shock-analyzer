@@ -13,6 +13,8 @@ from l2shock.acquisition import (
 )
 from l2shock.ui.automatic_fetch_runtime import (
     AutomaticFetchRuntime,
+    _REQUIRED_FILES_PER_HOUR,
+    _REQUIRED_SOURCE_IDENTITIES,
     _source_row_counts_as_complete,
     _write_retry_cursor_durably,
     latest_release_eligible_hour,
@@ -410,4 +412,25 @@ def test_remote_import_marker_does_not_bypass_noncanonical_local_path(
         quality_json={
             "processing_origin": "hugging_face_remote_import_v1",
         },
+    )
+
+
+def test_automatic_fetch_requires_bybit_orderbooks() -> None:
+    assert _REQUIRED_FILES_PER_HOUR == 8
+
+    assert (
+        "bybit",
+        "BTCUSDT",
+        "orderbook",
+    ) in _REQUIRED_SOURCE_IDENTITIES
+
+    assert (
+        "bybit",
+        "ETHUSDT",
+        "orderbook",
+    ) in _REQUIRED_SOURCE_IDENTITIES
+
+    assert not any(
+        venue == "bybit" and data_kind == "trades"
+        for venue, _instrument, data_kind in _REQUIRED_SOURCE_IDENTITIES
     )

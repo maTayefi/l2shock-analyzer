@@ -14,6 +14,10 @@ _SYMBOLS_BY_VENUE = {
         "BTC": "BTCUSDT",
         "ETH": "ETHUSDT",
     },
+    "bybit": {
+        "BTC": "BTCUSDT",
+        "ETH": "ETHUSDT",
+    },
     "okx_futures": {
         "BTC": "BTC-USDT-SWAP",
         "ETH": "ETH-USDT-SWAP",
@@ -168,6 +172,28 @@ def plan_binance_futures_files(
     )
 
 
+def plan_bybit_files(
+    start_utc: datetime,
+    end_utc: datetime,
+    *,
+    bases: Sequence[str] = ("BTC", "ETH"),
+    data_kinds: Sequence[SourceDataKind | str] = (SourceDataKind.ORDERBOOK,),
+) -> tuple[SourceFileSpec, ...]:
+    """Plan empirically supported Bybit linear USDT perpetual archives.
+
+    Bybit contributes independently reconstructed L2 order-book liquidity.
+    Binance Futures trades remain the sole production price source.
+    """
+
+    return _plan_venue_files(
+        "bybit",
+        start_utc,
+        end_utc,
+        bases=bases,
+        data_kinds=data_kinds,
+    )
+
+
 def plan_okx_futures_files(
     start_utc: datetime,
     end_utc: datetime,
@@ -193,7 +219,7 @@ def plan_production_source_files(
     start_utc: datetime,
     end_utc: datetime,
 ) -> tuple[SourceFileSpec, ...]:
-    """Plan the complete currently supported production source universe.
+    """Plan the complete locally supported production source universe.
 
     Per exact UTC hour, version 1 requests:
 
@@ -207,9 +233,15 @@ def plan_production_source_files(
             BTC-USDT-SWAP orderbook
             ETH-USDT-SWAP orderbook
 
-    Binance Futures trades remain the sole persisted price source. OKX trade
-    archives are not included merely because their schema is available.
+        Bybit:
+            BTCUSDT orderbook
+            ETHUSDT orderbook
+
+    Binance Futures trades remain the sole persisted price source. OKX and
+    Bybit trade archives are not included merely because source identities or
+    physical schemas may exist.
     """
+
     result: list[SourceFileSpec] = []
 
     for hour_utc in intersecting_utc_hours(
@@ -231,6 +263,12 @@ def plan_production_source_files(
                 data_kinds=(SourceDataKind.ORDERBOOK,),
             )
         )
+        result.extend(
+            plan_bybit_files(
+                hour_utc,
+                next_hour,
+            )
+        )
 
     return tuple(result)
 
@@ -238,6 +276,7 @@ def plan_production_source_files(
 __all__ = [
     "intersecting_utc_hours",
     "plan_binance_futures_files",
+    "plan_bybit_files",
     "plan_okx_futures_files",
     "plan_production_source_files",
 ]
