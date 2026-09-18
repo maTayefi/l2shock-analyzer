@@ -9,6 +9,7 @@ import pytest
 
 from l2shock.presets import (
     build_binance_futures_data_preset,
+    build_bybit_data_preset,
     build_okx_futures_data_preset,
 )
 from l2shock.remote import (
@@ -38,7 +39,7 @@ def _hour(value: int = 12) -> datetime:
     )
 
 
-def test_range_planner_uses_component_preset_hashes() -> None:
+def test_range_planner_uses_all_component_preset_hashes() -> None:
     lower = Decimal("0")
     upper = Decimal("0.01")
 
@@ -55,13 +56,18 @@ def test_range_planner_uses_component_preset_hashes() -> None:
         lower_fraction=lower,
         upper_fraction=upper,
     )
+    bybit_preset = build_bybit_data_preset(
+        base="BTC",
+        lower_fraction=lower,
+        upper_fraction=upper,
+    )
     okx_preset = build_okx_futures_data_preset(
         base="BTC",
         lower_fraction=lower,
         upper_fraction=upper,
     )
 
-    assert len(keys) == 3
+    assert len(keys) == 4
 
     assert keys[0] == RemoteArtifactKey(
         kind=RemoteArtifactKind.L2,
@@ -74,12 +80,20 @@ def test_range_planner_uses_component_preset_hashes() -> None:
     assert keys[1] == RemoteArtifactKey(
         kind=RemoteArtifactKind.L2,
         provider="cryptohftdata",
+        venue="bybit",
+        instrument="BTCUSDT",
+        hour_utc=_hour(12),
+        preset_hash=bybit_preset.preset_hash,
+    )
+    assert keys[2] == RemoteArtifactKey(
+        kind=RemoteArtifactKind.L2,
+        provider="cryptohftdata",
         venue="okx_futures",
         instrument="BTC-USDT-SWAP",
         hour_utc=_hour(12),
         preset_hash=okx_preset.preset_hash,
     )
-    assert keys[2] == RemoteArtifactKey(
+    assert keys[3] == RemoteArtifactKey(
         kind=RemoteArtifactKind.PRICE,
         provider="cryptohftdata",
         venue="binance_futures",
@@ -88,7 +102,7 @@ def test_range_planner_uses_component_preset_hashes() -> None:
     )
 
 
-def test_range_planner_builds_six_artifacts_per_hour_for_both_bases() -> None:
+def test_range_planner_builds_eight_artifacts_per_hour_for_both_bases() -> None:
     keys = plan_remote_import_keys(
         requested_start_utc=_hour(12),
         requested_end_utc=_hour(14),
@@ -97,18 +111,29 @@ def test_range_planner_builds_six_artifacts_per_hour_for_both_bases() -> None:
         upper_depth_fraction=Decimal("0.01"),
     )
 
-    assert len(keys) == 12
+    assert len(keys) == 16
     assert {key.hour_utc for key in keys} == {
         _hour(12),
         _hour(13),
     }
 
+    l2_keys = tuple(key for key in keys if key.kind is RemoteArtifactKind.L2)
     price_keys = tuple(key for key in keys if key.kind is RemoteArtifactKind.PRICE)
 
+    assert len(l2_keys) == 12
     assert len(price_keys) == 4
+
+    assert {key.venue for key in l2_keys} == {
+        "binance_futures",
+        "bybit",
+        "okx_futures",
+    }
     assert {key.instrument for key in price_keys} == {
         "BTCUSDT",
         "ETHUSDT",
+    }
+    assert {key.venue for key in price_keys} == {
+        "binance_futures",
     }
 
 
@@ -204,14 +229,15 @@ async def test_runtime_pins_revision_once_and_reports_missing() -> None:
         "a" * 40,
         "a" * 40,
         "a" * 40,
+        "a" * 40,
     ]
 
     assert result.status == "error"
     assert result.pinned_revision == "a" * 40
-    assert result.artifacts_selected == 3
+    assert result.artifacts_selected == 4
     assert result.imported_count == 0
     assert result.reused_count == 0
-    assert result.missing_count == 3
+    assert result.missing_count == 4
     assert result.failed_count == 0
     assert result.stopped is False
 
@@ -258,7 +284,7 @@ async def test_runtime_stops_between_artifacts() -> None:
 
     assert len(observed_keys) == 1
     assert result.status == "stopped"
-    assert result.artifacts_selected == 3
+    assert result.artifacts_selected == 4
     assert result.missing_count == 1
     assert result.stopped is True
     assert len(result.items) == 1

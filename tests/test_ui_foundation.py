@@ -94,6 +94,7 @@ def test_health_snapshot_reports_foundation_status(
     assert implemented["bybit_l2_processing"] is True
     assert implemented["bybit_remote_worker"] is True
     assert implemented["bybit_hf_publication"] is True
+    assert implemented["bybit_hf_range_import"] is True
     assert implemented["okx_orderbook_acquisition"] is True
     assert implemented["okx_l2_processing"] is True
     assert implemented["checkpoint_codec"] is True
@@ -324,3 +325,14 @@ def test_settings_market_composition_includes_bybit_profiles() -> None:
 
     assert "PresetMarketProfile.BINANCE_BYBIT_OKX_FUTURES.value" in source
     assert "PresetMarketProfile.BINANCE_BYBIT_OKX_FUTURES.label" in source
+
+
+def test_remote_import_ui_names_all_l2_component_venues() -> None:
+    from l2shock.ui import tab_fetch
+
+    source = Path(tab_fetch.__file__).read_text(
+        encoding="utf-8",
+    )
+
+    assert "Binance, Bybit, and OKX component L2" in source
+    assert "Binance real-trade price artifacts" in source

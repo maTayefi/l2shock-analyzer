@@ -1616,10 +1616,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--catch-up-hours",
         type=_positive_integer,
-        default=72,
+        default=720,
         help=(
             "Bounded newest-to-oldest HF frontier search used when --hour "
-            "is omitted."
+            "is omitted. The default covers established historical seed "
+            "frontiers during initial chain catch-up."
         ),
     )
     parser.add_argument(

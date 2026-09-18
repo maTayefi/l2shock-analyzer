@@ -221,9 +221,9 @@ def build_fetch_tab(
             ui.label("Remote Hugging Face Import").classes("text-lg font-semibold")
 
             ui.label(
-                "Import verified Binance and OKX component L2 artifacts plus "
-                "Binance real-trade price artifacts from one pinned private "
-                "Hugging Face dataset revision."
+                "Import verified Binance, Bybit, and OKX component L2 "
+                "artifacts plus Binance real-trade price artifacts from one "
+                "pinned private Hugging Face dataset revision."
             ).classes("text-sm text-gray-600")
 
             if remote_runtime is None:

@@ -268,6 +268,7 @@ def build_health_snapshot() -> dict[str, Any]:
             "bybit_l2_processing": True,
             "bybit_remote_worker": True,
             "bybit_hf_publication": True,
+            "bybit_hf_range_import": True,
             "okx_orderbook_acquisition": True,
             "okx_l2_processing": True,
             "checkpoint_codec": True,

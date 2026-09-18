@@ -99,5 +99,6 @@ def test_all_chain_matrix_contains_six_independent_chains() -> None:
 def test_remote_workflow_uses_extended_bootstrap_search_bound() -> None:
     source = _workflow_text()
 
-    assert 'default: "336"' in source
+    assert 'default: "720"' in source
     assert "L2SHOCK_CATCH_UP_HOURS" in source
+    assert "|| '720'" in source

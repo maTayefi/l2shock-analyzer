@@ -815,3 +815,24 @@ def test_catch_up_replanning_skips_immutable_blocked_hour(
     assert result.completed_hour_count == 2
     assert result.first_hour_utc == _hour(0)
     assert result.last_hour_utc == _hour(2)
+
+
+def test_remote_worker_default_search_reaches_historical_seeds() -> None:
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "--venue",
+            "bybit",
+            "--instrument",
+            "BTCUSDT",
+            "--depth-lower",
+            "0",
+            "--depth-upper",
+            "0.01",
+        ]
+    )
+
+    assert args.catch_up_hours == 720
+    assert args.max_hours_per_run == 4
+    assert args.max_runtime_minutes == 240

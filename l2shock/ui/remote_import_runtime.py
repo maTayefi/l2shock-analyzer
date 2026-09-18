@@ -31,6 +31,7 @@ from l2shock.config import get_settings
 from l2shock.db.engine import session_scope
 from l2shock.presets import (
     build_binance_futures_data_preset,
+    build_bybit_data_preset,
     build_okx_futures_data_preset,
 )
 from l2shock.remote.contracts import (
@@ -368,12 +369,21 @@ def plan_remote_import_keys(
                 "BTC": "BTCUSDT",
                 "ETH": "ETHUSDT",
             }[base]
+            bybit_instrument = {
+                "BTC": "BTCUSDT",
+                "ETH": "ETHUSDT",
+            }[base]
             okx_instrument = {
                 "BTC": "BTC-USDT-SWAP",
                 "ETH": "ETH-USDT-SWAP",
             }[base]
 
             binance_preset = build_binance_futures_data_preset(
+                base=base,
+                lower_fraction=lower_depth_fraction,
+                upper_fraction=upper_depth_fraction,
+            )
+            bybit_preset = build_bybit_data_preset(
                 base=base,
                 lower_fraction=lower_depth_fraction,
                 upper_fraction=upper_depth_fraction,
@@ -393,6 +403,14 @@ def plan_remote_import_keys(
                         instrument=binance_instrument,
                         hour_utc=hour,
                         preset_hash=binance_preset.preset_hash,
+                    ),
+                    RemoteArtifactKey(
+                        kind=RemoteArtifactKind.L2,
+                        provider="cryptohftdata",
+                        venue="bybit",
+                        instrument=bybit_instrument,
+                        hour_utc=hour,
+                        preset_hash=bybit_preset.preset_hash,
                     ),
                     RemoteArtifactKey(
                         kind=RemoteArtifactKind.L2,

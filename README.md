@@ -104,22 +104,40 @@ The Fetch tab defaults to the `Remote HF Import` workflow profile. A remote
 range import resolves one full Hugging Face revision and uses that same commit
 SHA for every artifact in the operation.
 
+For each selected base and exact UTC hour, the range importer plans:
+
+```text
+Binance component L2
+Bybit component L2
+OKX component L2
+Binance real-trade price
+```
+
+For both BTC and ETH, this is eight processed artifacts per UTC hour. Missing
+artifacts remain explicit import results and are not interpreted as zero
+liquidity.
+
 The required remote artifact universe per selected UTC hour is:
 
 ```text
 BTC:
     Binance Futures BTCUSDT component L2
+    Bybit BTCUSDT component L2
     OKX Futures BTC-USDT-SWAP component L2
     Binance Futures BTCUSDT price
 
 ETH:
     Binance Futures ETHUSDT component L2
+    Bybit ETHUSDT component L2
     OKX Futures ETH-USDT-SWAP component L2
     Binance Futures ETHUSDT price
 ```
 
 The component L2 keys use the exact existing single-market preset hashes for
-the selected depth band. They do not use the aggregate Binance+OKX preset hash.
+the selected depth band. They do not use either aggregate preset hash.
+
+Bybit contributes independently reconstructed component L2 only. Binance
+Futures trades remain the sole remote and local price source.
 
 The existing `Local CryptoHFTData Fetch + Processing` profile remains available
 as the fallback, debugging, recovery, and reprocessing workflow.
@@ -309,7 +327,7 @@ The remote-hour worker composes the existing release schedule, remote source
 acquisition adapter, headless processors, and Hugging Face repository adapter.
 It does not add another downloader or analytical implementation.
 
-The worker supports these initial chains:
+The worker supports these chains:
 
 ```text
 binance_futures / BTCUSDT:
@@ -317,6 +335,12 @@ binance_futures / BTCUSDT:
 
 binance_futures / ETHUSDT:
     L2 orderbook + Binance trade price
+
+bybit / BTCUSDT:
+    L2 orderbook only
+
+bybit / ETHUSDT:
+    L2 orderbook only
 
 okx_futures / BTC-USDT-SWAP:
     L2 orderbook only
@@ -360,10 +384,30 @@ OKX may process without a predecessor because the approved OKX contract
 requires the target archive to establish its own complete opening snapshot.
 The target still must produce a usable output checkpoint before publication.
 
+Bybit remote processing uses the same strict sequence contract as local Bybit
+processing:
 
+```text
+update replay frontier:
+    final_update_id
 
+update continuity:
+    current.final_update_id
+    ==
+    previous replay frontier + 1
+```
 
-Scheduled remote processing has two deployment gates:
+A native Bybit snapshot with a non-null `final_update_id` may initialize a
+remote chain.
+
+A Bybit archive-boundary snapshot with null `final_update_id` may replace book
+levels only when an immediately preceding verified checkpoint already owns the
+replay frontier. Such a snapshot cannot initialize a fresh chain.
+
+Every Bybit remote target must produce a usable output checkpoint before its L2
+artifact is published.
+
+Scheduled remote processing has three deployment gates:
 
 ```text
 L2SHOCK_REMOTE_PROCESSING_ENABLED=true
@@ -371,16 +415,19 @@ L2SHOCK_REMOTE_PROCESSING_ENABLED=true
 
 L2SHOCK_BINANCE_SEEDS_READY=true
     admits Binance BTC and ETH into scheduled processing
+
+L2SHOCK_BYBIT_SEEDS_READY=true
+    admits Bybit BTC and ETH into scheduled processing
 ```
 
-When remote processing is enabled but the Binance seed gate is not exactly
-lowercase `true`, scheduled runs include only the two OKX chains.
+The Binance and Bybit seed gates independently control their two checkpoint
+chains. The two OKX chains remain schedulable without a seed gate.
 
-Manual workflow dispatch may still select one Binance chain for controlled
-snapshot bootstrap or checkpoint validation.
+Manual workflow dispatch may select a Binance or Bybit chain before its
+scheduled gate is enabled for controlled bootstrap and checkpoint validation.
 
-Do not set `L2SHOCK_BINANCE_SEEDS_READY=true` until both Binance chains own
-verified L2 artifacts containing usable output checkpoints.
+Do not set a seed gate to `true` until both chains in that venue own verified L2
+artifacts containing usable output checkpoints.
 
 Local private-dataset import configuration is:
 
@@ -413,10 +460,20 @@ Optional Actions variables:
     L2SHOCK_HF_REVISION
     L2SHOCK_DEPTH_LOWER
     L2SHOCK_DEPTH_UPPER
+    L2SHOCK_CATCH_UP_HOURS
+    L2SHOCK_MAX_HOURS_PER_RUN
+    L2SHOCK_MAX_RUNTIME_MINUTES
+    L2SHOCK_REMOTE_PROCESSING_ENABLED
+    L2SHOCK_BINANCE_SEEDS_READY
+    L2SHOCK_BYBIT_SEEDS_READY
 ```
 
 The workflow serializes each venue/instrument chain independently while
 allowing different chains to run concurrently.
+
+The current default remote frontier-search bound is 720 hours. This is separate
+from the processing budget: `L2SHOCK_MAX_HOURS_PER_RUN` still limits how many
+hours one chain may process during one workflow job.
 
 Do not enable scheduled Binance processing until the Binance snapshot
 normalization path and both initialization paths have passed their verified
@@ -576,20 +633,22 @@ expected publication:
 Remote processing may start only after the configured release delay has
 elapsed. A missing source at the first attempt remains retryable.
 
-The first remote scope is:
+The remote processing scope is:
 
 ```text
 Binance Futures BTCUSDT orderbook
 Binance Futures BTCUSDT trades
 Binance Futures ETHUSDT orderbook
 Binance Futures ETHUSDT trades
+Bybit BTCUSDT orderbook
+Bybit ETHUSDT orderbook
 OKX Futures BTC-USDT-SWAP orderbook
 OKX Futures ETH-USDT-SWAP orderbook
 ```
 
-Bybit and Bitget remain postponed. They must not be enabled in the remote
-workflow until their snapshot/bootstrap and sequence contracts are proven and
-their local adapters pass the same replay tests as Binance and OKX.
+Bitget remains postponed. It must not be enabled until its sequence,
+snapshot/bootstrap, replay, processing, publication, and import contracts are
+proven independently.
 
 The GitHub source repository may be public, but the Hugging Face dataset remains
 private initially.
@@ -849,8 +908,15 @@ Automatic Fetch completeness, and local source availability.
 Bybit is included in the GitHub remote-worker matrix and private Hugging Face
 publication path behind its independent scheduled seed gate.
 
-Bybit remains excluded only from local Hugging Face range-import planning until
-the next integration batch is complete.
+Bybit is included in local Hugging Face range-import planning. A selected base
+and hour imports four exact remote artifacts:
+
+```text
+Binance component L2
+Bybit component L2
+OKX component L2
+Binance real-trade price
+```
 
 Local Analysis supports an approved Binance + Bybit + OKX aggregate preset.
 The aggregate resolves all three independently persisted component preset
@@ -883,10 +949,11 @@ Bitget:
     continuity contract
 ```
 
-### Bybit diagnostic evidence gate
+### Bybit diagnostic evidence and regression workflow
 
-Bybit production support remains fail-closed while a dedicated GitHub Actions
-diagnostic collects bounded event-level evidence.
+Bybit production replay is enabled through its isolated strict adapter. The
+dedicated GitHub Actions diagnostic remains available as a regression and
+format-drift detector.
 
 The diagnostic workflow is:
 
@@ -1002,13 +1069,11 @@ Bybit BTCUSDT orderbook
 Bybit ETHUSDT orderbook
 ```
 
-Bybit is now included in the GitHub remote-worker matrix and Hugging Face
-publication path. Local Hugging Face import planning is completed in the next
-integration batch.
+Bybit is included in the GitHub remote-worker matrix, Hugging Face publication
+path, and local pinned-revision Hugging Face range-import planner.
 
-The Binance + Bybit + OKX aggregate preset is already available locally and
-continues to resolve independently persisted component rows at Analysis load
-time.
+The Binance + Bybit + OKX aggregate preset resolves independently persisted
+Binance, Bybit, and OKX component rows at Analysis load time.
 
 ### OKX production integration
 
