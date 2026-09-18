@@ -91,3 +91,27 @@ def test_rate_limiter_rejects_invalid_configuration() -> None:
 
     with pytest.raises(ValueError, match="window_seconds"):
         AsyncRollingWindowRateLimiter(1, window_seconds=0)
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        "nan",
+        "inf",
+        None,
+    ),
+)
+def test_rate_limiter_rejects_non_finite_or_non_numeric_window(
+    value: object,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="finite positive number",
+    ):
+        AsyncRollingWindowRateLimiter(
+            1,
+            window_seconds=value,  # type: ignore[arg-type]
+        )

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -41,9 +42,17 @@ class AsyncRollingWindowRateLimiter:
         if limit <= 0:
             raise ValueError("limit must be positive")
 
-        window = float(window_seconds)
-        if window <= 0.0:
-            raise ValueError("window_seconds must be positive")
+        try:
+            window = float(window_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                "window_seconds must be a finite positive number"
+            ) from exc
+
+        if not math.isfinite(window) or window <= 0.0:
+            raise ValueError(
+                "window_seconds must be a finite positive number"
+            )
 
         self._limit = limit
         self._window_seconds = window
