@@ -366,6 +366,37 @@ def test_each_value_axis_belongs_to_its_matching_grid() -> None:
     assert all("max" not in axis for axis in option["yAxis"])
 
 
+def test_custom_background_colors_cannot_expand_value_axes() -> None:
+    option = build_analysis_chart_option(
+        _result(excluded=frozenset({2, 3})),
+        timezone_name="Asia/Tehran",
+    )
+
+    custom_series = [
+        item
+        for item in option["series"]
+        if isinstance(item, dict) and item.get("type") == "custom"
+    ]
+
+    assert custom_series
+
+    for series in custom_series:
+        assert series["dimensions"] == [
+            "first_category",
+            "last_category",
+        ]
+        assert series["encode"] == {
+            "x": [0, 1],
+            "y": [],
+        }
+
+        for item in series["data"]:
+            assert len(item["value"]) == 2
+            assert all(isinstance(value, int) for value in item["value"])
+            assert isinstance(item["packed_rgba"], int)
+            assert item["packed_rgba"] > 255
+
+
 def test_delta_series_contains_bid_minus_ask_values() -> None:
     option = build_analysis_chart_option(
         _result(),

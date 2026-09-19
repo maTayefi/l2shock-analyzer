@@ -453,11 +453,11 @@ def _alpha_runs(
                 "value": [
                     start,
                     end_index,
-                    _packed_rgba(
-                        rgb,
-                        current_alpha,
-                    ),
-                ]
+                ],
+                "packed_rgba": _packed_rgba(
+                    rgb,
+                    current_alpha,
+                ),
             }
         )
 
@@ -489,7 +489,9 @@ def _slot_background_render_item_js() -> str:
     function(params, api) {
         const firstIndex = Number(api.value(0));
         const lastIndex = Number(api.value(1));
-        const packedValue = Number(api.value(2));
+        const packedValue = Number(
+            params.data && params.data.packed_rgba
+        );
 
         if (
             !Number.isFinite(firstIndex)
@@ -592,10 +594,10 @@ def _background_series(
         "dimensions": [
             "first_category",
             "last_category",
-            "packed_rgba",
         ],
         "encode": {
             "x": [0, 1],
+            "y": [],
         },
         "data": data,
         "silent": True,
@@ -695,8 +697,11 @@ def _discontinuity_series(
                 "value": [
                     display_index,
                     display_index,
-                    _packed_rgba(rgb, alpha),
-                ]
+                ],
+                "packed_rgba": _packed_rgba(
+                    rgb,
+                    alpha,
+                ),
             }
         )
 
