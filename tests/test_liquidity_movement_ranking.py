@@ -526,3 +526,56 @@ def test_boundary_extremeness_is_independent_of_ambient_decimal_context() -> Non
     assert ranking.boundary_extremeness * 2 == (
         ranking.start_extremeness + ranking.end_extremeness
     )
+
+
+def test_modified_z_median_and_mad_ignore_ambient_context() -> None:
+    values = (
+        Decimal("1.0000000000000000000000000000000000000000000000001"),
+        Decimal("2.0000000000000000000000000000000000000000000000002"),
+        Decimal("3.0000000000000000000000000000000000000000000000003"),
+        Decimal("9.0000000000000000000000000000000000000000000000009"),
+    )
+
+    expected = positive_tail_modified_z_scores(
+        values,
+        decimal_precision=50,
+    )
+
+    with localcontext(
+        Context(
+            prec=6,
+        )
+    ):
+        observed = positive_tail_modified_z_scores(
+            values,
+            decimal_precision=50,
+        )
+
+    assert observed == expected
+
+
+def test_percentile_ranks_use_requested_precision() -> None:
+    values = tuple(
+        Decimal(index)
+        for index in range(4)
+    )
+
+    observed = percentile_ranks(
+        values,
+        decimal_precision=50,
+    )
+
+    with localcontext(
+        Context(
+            prec=50,
+        )
+    ):
+        expected_one_third = Decimal(1) / Decimal(3)
+        expected_two_thirds = Decimal(2) / Decimal(3)
+
+    assert observed == (
+        Decimal(0),
+        expected_one_third,
+        expected_two_thirds,
+        Decimal(1),
+    )

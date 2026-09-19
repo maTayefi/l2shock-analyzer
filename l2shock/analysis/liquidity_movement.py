@@ -19,7 +19,7 @@ Detection semantics:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from enum import StrEnum
@@ -92,6 +92,21 @@ def _nonnegative_integer(
     return value
 
 
+def _validated_decimal_precision(
+    value: object,
+) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 16
+    ):
+        raise LiquidityMovementError(
+            "decimal_precision must be an integer of at least 16"
+        )
+
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class LiquidityMovementDetectionConfig:
     """Semantic configuration for candidate detection."""
@@ -111,19 +126,19 @@ class LiquidityMovementDetectionConfig:
                 "confirmation_retracement_fraction must be less than 1"
             )
 
-        if (
-            isinstance(self.decimal_precision, bool)
-            or not isinstance(self.decimal_precision, int)
-            or self.decimal_precision < 16
-        ):
-            raise LiquidityMovementError(
-                "decimal_precision must be an integer of at least 16"
-            )
+        precision = _validated_decimal_precision(
+            self.decimal_precision,
+        )
 
         object.__setattr__(
             self,
             "confirmation_retracement_fraction",
             fraction,
+        )
+        object.__setattr__(
+            self,
+            "decimal_precision",
+            precision,
         )
 
 
@@ -170,13 +185,21 @@ class LiquidityMovementCandidate:
     degraded_bar_count: int
     terminal_offline: bool
 
+    decimal_precision: InitVar[int] = _DEFAULT_DECIMAL_PRECISION
+
     schema: str = LM_DETECTOR_SCHEMA
     schema_version: int = LM_DETECTOR_SCHEMA_VERSION
     algorithm_version: str = LM_DETECTOR_ALGORITHM_VERSION
 
-    def __post_init__(self) -> None:
+    def __post_init__(
+        self,
+        decimal_precision: int,
+    ) -> None:
         metric = LiquidityMetric(self.metric)
         direction = LiquidityMovementDirection(self.direction)
+        validated_precision = _validated_decimal_precision(
+            decimal_precision,
+        )
 
         if self.schema != LM_DETECTOR_SCHEMA:
             raise LiquidityMovementError("Unsupported LM candidate schema")
@@ -277,7 +300,12 @@ class LiquidityMovementCandidate:
 
         # Validate endpoint geometry using the same precision used during
         # candidate construction to avoid ambient-context rounding mismatches.
-        with localcontext(Context(prec=34)):
+        with localcontext(
+    Context(
+        prec=validated_precision,
+        rounding=ROUND_HALF_EVEN,
+    )
+):
             if absolute_height != abs(end_value - start_value):
                 raise LiquidityMovementError(
                     "absolute_height does not match endpoint values"
@@ -315,7 +343,12 @@ class LiquidityMovementCandidate:
                 "adverse_move_maximum cannot exceed adverse_move_total"
             )
 
-        with localcontext(Context(prec=34)):
+        with localcontext(
+    Context(
+        prec=validated_precision,
+        rounding=ROUND_HALF_EVEN,
+    )
+):
             if adverse_total_fraction != adverse_total / absolute_height:
                 raise LiquidityMovementError(
                     "adverse_move_total_fraction is inconsistent"
@@ -378,7 +411,12 @@ class LiquidityMovementCandidate:
                 positive=True,
             )
 
-            with localcontext(Context(prec=34)):
+            with localcontext(
+    Context(
+        prec=validated_precision,
+        rounding=ROUND_HALF_EVEN,
+    )
+):
                 if retracement_fraction != retracement / absolute_height:
                     raise LiquidityMovementError(
                         "Confirmation retracement fraction is inconsistent"
@@ -408,6 +446,8 @@ class LiquidityMovementCandidate:
 def _metric_value(
     bar: AlignedAnalysisBar,
     metric: LiquidityMetric,
+    *,
+    decimal_precision: int,
 ) -> Decimal | None:
     if bar.hard_discontinuity:
         return None
@@ -422,13 +462,15 @@ def _metric_value(
         return bar.l2.total_liquidity
 
     return bar.l2.bid_ask_imbalance(
-        decimal_precision=_DEFAULT_DECIMAL_PRECISION,
+        decimal_precision=decimal_precision,
     )
 
 
 def liquidity_metric_value(
     bar: AlignedAnalysisBar,
     metric: LiquidityMetric | str,
+    *,
+    decimal_precision: int = _DEFAULT_DECIMAL_PRECISION,
 ) -> Decimal | None:
     """Return one selected metric under the detector's availability policy.
 
@@ -439,9 +481,14 @@ def liquidity_metric_value(
     if not isinstance(bar, AlignedAnalysisBar):
         raise TypeError("bar must be an AlignedAnalysisBar")
 
+    precision = _validated_decimal_precision(
+        decimal_precision,
+    )
+
     return _metric_value(
         bar,
         LiquidityMetric(metric),
+        decimal_precision=precision,
     )
 
 
@@ -452,19 +499,28 @@ def _adverse_diagnostics(
     direction: LiquidityMovementDirection,
     start_index: int,
     end_index: int,
+    decimal_precision: int,
 ) -> tuple[int, Decimal, Decimal]:
     count = 0
     total = Decimal(0)
     maximum = Decimal(0)
 
-    previous = _metric_value(bars[start_index], metric)
+    previous = _metric_value(
+        bars[start_index],
+        metric,
+        decimal_precision=decimal_precision,
+    )
     if previous is None:
         raise LiquidityMovementError(
             "LM diagnostic extent contains unavailable metric data"
         )
 
     for index in range(start_index + 1, end_index + 1):
-        current = _metric_value(bars[index], metric)
+        current = _metric_value(
+            bars[index],
+            metric,
+            decimal_precision=decimal_precision,
+        )
         if current is None:
             raise LiquidityMovementError(
                 "LM diagnostic extent contains unavailable metric data"
@@ -504,8 +560,16 @@ def _candidate(
         return None
 
     bars = series.bars
-    start_value = _metric_value(bars[start_index], metric)
-    end_value = _metric_value(bars[end_index], metric)
+    start_value = _metric_value(
+        bars[start_index],
+        metric,
+        decimal_precision=config.decimal_precision,
+    )
+    end_value = _metric_value(
+        bars[end_index],
+        metric,
+        decimal_precision=config.decimal_precision,
+    )
 
     if start_value is None or end_value is None:
         raise LiquidityMovementError(
@@ -520,6 +584,7 @@ def _candidate(
         direction=direction,
         start_index=start_index,
         end_index=end_index,
+        decimal_precision=config.decimal_precision,
     )
 
     terminal_offline = confirmation_index is None
@@ -544,6 +609,7 @@ def _candidate(
             confirmation_value = _metric_value(
                 bars[confirmation_index],
                 metric,
+                decimal_precision=config.decimal_precision,
             )
 
             if confirmation_value is None:
@@ -595,6 +661,7 @@ def _candidate(
         confirmation_retracement_fraction=confirmation_fraction,
         degraded_bar_count=degraded_count,
         terminal_offline=terminal_offline,
+        decimal_precision=config.decimal_precision,
     )
 
 
@@ -614,7 +681,11 @@ def _detect_run(
     result: list[LiquidityMovementCandidate] = []
 
     pivot_index = run_start
-    pivot_value = _metric_value(bars[pivot_index], metric)
+    pivot_value = _metric_value(
+        bars[pivot_index],
+        metric,
+        decimal_precision=config.decimal_precision,
+    )
     direction: LiquidityMovementDirection | None = None
     extremum_index = run_start
     extremum_value = pivot_value
@@ -625,7 +696,11 @@ def _detect_run(
     index = run_start + 1
 
     while index <= run_end:
-        value = _metric_value(bars[index], metric)
+        value = _metric_value(
+            bars[index],
+            metric,
+            decimal_precision=config.decimal_precision,
+        )
         if value is None:
             raise LiquidityMovementError(
                 "LM run unexpectedly contains unavailable data"
@@ -751,6 +826,7 @@ def detect_liquidity_movements(
                 value := _metric_value(
                     bar,
                     selected_metric,
+                    decimal_precision=selected_config.decimal_precision,
                 )
             )
             is not None
@@ -775,7 +851,11 @@ def detect_liquidity_movements(
             ):
                 in_bounds = index <= segment.context_end_index
                 value = (
-                    _metric_value(series.bars[index], selected_metric)
+                    _metric_value(
+                        series.bars[index],
+                        selected_metric,
+                        decimal_precision=selected_config.decimal_precision,
+                    )
                     if in_bounds
                     else None
                 )

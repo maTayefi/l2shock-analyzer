@@ -14,6 +14,7 @@ from l2shock.analysis import (
     PriceBounds,
     build_aligned_analysis_dataset,
     detect_liquidity_movements,
+    liquidity_metric_value,
 )
 from l2shock.analysis import L2Second, PriceSecond
 from l2shock.ingest import (
@@ -471,6 +472,72 @@ def test_detection_is_independent_of_ambient_decimal_context() -> None:
             series,
             metric=LiquidityMetric.BID_LIQUIDITY,
             config=config,
+        )
+
+    assert observed == expected
+
+
+def test_candidate_validation_uses_detector_precision_above_34() -> None:
+    series = _series(
+        (
+            "1",
+            "3",
+            "2.3333333333333333333333333333333333333333333333333",
+        )
+    )
+    config = LiquidityMovementDetectionConfig(
+        confirmation_retracement_fraction=Decimal("0.20"),
+        decimal_precision=50,
+    )
+
+    candidates = detect_liquidity_movements(
+        series,
+        metric=LiquidityMetric.BID_LIQUIDITY,
+        config=config,
+    )
+
+    assert candidates
+
+    candidate = candidates[0]
+
+    with localcontext(
+        Context(
+            prec=50,
+        )
+    ):
+        expected = (
+            candidate.confirmation_retracement
+            / candidate.absolute_height
+        )
+
+    assert candidate.confirmation_retracement_fraction == expected
+
+
+def test_imbalance_metric_uses_requested_decimal_precision() -> None:
+    series = _series(
+        (
+            "1",
+            "2",
+            "1.5",
+        )
+    )
+    bar = series.bars[0]
+
+    observed = liquidity_metric_value(
+        bar,
+        LiquidityMetric.BID_ASK_IMBALANCE,
+        decimal_precision=50,
+    )
+
+    with localcontext(
+        Context(
+            prec=50,
+        )
+    ):
+        expected = (
+            bar.l2.bid_liquidity - bar.l2.ask_liquidity
+        ) / (
+            bar.l2.bid_liquidity + bar.l2.ask_liquidity
         )
 
     assert observed == expected

@@ -398,3 +398,45 @@ def test_remote_hf_default_workflow_is_strict() -> None:
         match="default_workflow",
     ):
         Settings(**raw)
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        True,
+        False,
+        0,
+        15,
+        1001,
+        16.5,
+        "16.5",
+    ),
+)
+def test_lm_decimal_precision_is_strictly_bounded(
+    value: object,
+) -> None:
+    raw = _minimal_config()
+    raw["analysis"] = {
+        "lm": {
+            "decimal_precision": value,
+        }
+    }
+
+    with pytest.raises(
+        ValidationError,
+        match="decimal_precision",
+    ):
+        Settings(**raw)
+
+
+def test_lm_decimal_precision_accepts_integer_text() -> None:
+    raw = _minimal_config()
+    raw["analysis"] = {
+        "lm": {
+            "decimal_precision": "50",
+        }
+    }
+
+    settings = Settings(**raw)
+
+    assert settings.analysis.lm.decimal_precision == 50

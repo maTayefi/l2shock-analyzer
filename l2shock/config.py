@@ -533,6 +533,7 @@ class RemoteConfig(StrictConfigModel):
 
 class LMConfig(StrictConfigModel):
     confirmation_retracement_fraction: float = 0.20
+    decimal_precision: int = 34
     top_n_height: int = 10
     top_n_sharpness: int = 10
 
@@ -559,6 +560,29 @@ class LMConfig(StrictConfigModel):
         )
         if result > 1000:
             raise ValueError(f"analysis.lm.{info.field_name} must be <= 1000")
+        return result
+
+    @field_validator(
+        "decimal_precision",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_precision(cls, value: Any) -> int:
+        result = _strict_positive_int(
+            value,
+            field_name="analysis.lm.decimal_precision",
+        )
+
+        if result < 16:
+            raise ValueError(
+                "analysis.lm.decimal_precision must be at least 16"
+            )
+
+        if result > 1000:
+            raise ValueError(
+                "analysis.lm.decimal_precision must be <= 1000"
+            )
+
         return result
 
     @model_validator(mode="after")

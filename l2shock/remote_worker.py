@@ -48,6 +48,7 @@ from l2shock.acquisition import (
     RemoteFileNotFoundError,
     SourceDataKind,
     SourceFileSpec,
+    RemoteFileNotFoundError,
     latest_release_eligible_hour,
 )
 from l2shock.config import CryptoHFTConfig
@@ -976,6 +977,7 @@ async def process_remote_catch_up(
         )
 
     completed: list[RemoteWorkerResult] = []
+    stop_reason = "no_work" # Fallback initialization
 
     while True:
         # Always admit the first selected hour. On later iterations, enforce
@@ -999,6 +1001,13 @@ async def process_remote_catch_up(
                 use_api_key=use_api_key,
                 batch_size=batch_size,
             )
+        except RemoteFileNotFoundError:
+            # The upstream provider has not yet published the next hour's archive.
+            # This is the normal "caught up to the live edge" condition.
+            # Break the loop to stop the catch-up run gracefully (exit code 0)
+            # instead of failing the GitHub Action workflow.
+            stop_reason = "caught_up" if completed else "no_work"
+            break
         except Exception as exc:
             log.error(
                 "=== PROCESSING HOUR FAILED === venue=%s instrument=%s "
@@ -1077,7 +1086,6 @@ async def process_remote_catch_up(
         max_runtime_minutes=max_runtime_minutes,
         stop_reason=stop_reason,
     )
-
 
 async def _inspect_existing_state(
     repository: HuggingFaceDatasetRepository,

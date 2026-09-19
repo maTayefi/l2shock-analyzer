@@ -67,6 +67,7 @@ analysis:
 
   lm:
     confirmation_retracement_fraction: 0.20
+    decimal_precision: 34
     top_n_height: 10
     top_n_sharpness: 10
     priority_height: 0.35

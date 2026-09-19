@@ -294,7 +294,10 @@ class LiquidityMovementStatisticalEvidence:
         )
         combined = _unit_interval("combined", self.combined)
 
-        expected = (percentile + normalized_z) / _TWO
+        expected = _exact_equal_weight_mean(
+            percentile,
+            normalized_z,
+        )
 
         if combined != expected:
             raise LiquidityMovementRankingError(
@@ -506,9 +509,20 @@ class _EvidenceRow:
 
 def _median(
     values: Sequence[Decimal],
+    *,
+    decimal_precision: int,
 ) -> Decimal:
     if not values:
         raise LiquidityMovementRankingError("Median requires at least one value")
+
+    if (
+        isinstance(decimal_precision, bool)
+        or not isinstance(decimal_precision, int)
+        or decimal_precision < 16
+    ):
+        raise LiquidityMovementRankingError(
+            "decimal_precision must be an integer of at least 16"
+        )
 
     ordered = sorted(values)
     middle = len(ordered) // 2
@@ -516,11 +530,19 @@ def _median(
     if len(ordered) % 2:
         return ordered[middle]
 
-    return (ordered[middle - 1] + ordered[middle]) / _TWO
+    with localcontext(
+        Context(
+            prec=decimal_precision,
+            rounding=ROUND_HALF_EVEN,
+        )
+    ):
+        return (ordered[middle - 1] + ordered[middle]) / _TWO
 
 
 def percentile_ranks(
     values: Sequence[Decimal],
+    *,
+    decimal_precision: int = _DEFAULT_DECIMAL_PRECISION,
 ) -> tuple[Decimal, ...]:
     """Return deterministic midpoint-tie percentiles in input order.
 
@@ -547,6 +569,15 @@ def percentile_ranks(
     if not normalized:
         return ()
 
+    if (
+        isinstance(decimal_precision, bool)
+        or not isinstance(decimal_precision, int)
+        or decimal_precision < 16
+    ):
+        raise LiquidityMovementRankingError(
+            "decimal_precision must be an integer of at least 16"
+        )
+
     if len(normalized) == 1:
         return (_ONE,)
 
@@ -556,7 +587,12 @@ def percentile_ranks(
 
     start = 0
 
-    with localcontext(Context(prec=_DEFAULT_DECIMAL_PRECISION)):
+    with localcontext(
+        Context(
+            prec=decimal_precision,
+            rounding=ROUND_HALF_EVEN,
+        )
+    ):
         while start < len(ordered):
             value = ordered[start]
             stop = start + 1
@@ -609,22 +645,36 @@ def positive_tail_modified_z_scores(
             "decimal_precision must be an integer of at least 16"
         )
 
-    median = _median(normalized)
-    deviations = tuple(abs(value - median) for value in normalized)
-    mad = _median(deviations)
-
-    if mad == 0:
-        return tuple(
-            (
-                _ZERO,
-                _ONE if value > median else _ZERO,
-            )
-            for value in normalized
-        )
-
     result: list[tuple[Decimal, Decimal]] = []
 
-    with localcontext(Context(prec=decimal_precision)):
+    with localcontext(
+        Context(
+            prec=decimal_precision,
+            rounding=ROUND_HALF_EVEN,
+        )
+    ):
+        median = _median(
+            normalized,
+            decimal_precision=decimal_precision,
+        )
+        deviations = tuple(
+            abs(value - median)
+            for value in normalized
+        )
+        mad = _median(
+            deviations,
+            decimal_precision=decimal_precision,
+        )
+
+        if mad == 0:
+            return tuple(
+                (
+                    _ZERO,
+                    _ONE if value > median else _ZERO,
+                )
+                for value in normalized
+            )
+
         for value in normalized:
             modified_z = _MODIFIED_Z_SCALE * (value - median) / mad
             positive_z = max(_ZERO, modified_z)
@@ -639,7 +689,10 @@ def _statistical_evidence(
     *,
     decimal_precision: int,
 ) -> tuple[LiquidityMovementStatisticalEvidence, ...]:
-    percentiles = percentile_ranks(values)
+    percentiles = percentile_ranks(
+        values,
+        decimal_precision=decimal_precision,
+    )
     modified = positive_tail_modified_z_scores(
         values,
         decimal_precision=decimal_precision,
@@ -650,7 +703,10 @@ def _statistical_evidence(
             percentile=percentile,
             modified_z=modified_z,
             normalized_positive_tail_modified_z=normalized_z,
-            combined=(percentile + normalized_z) / _TWO,
+            combined=_exact_equal_weight_mean(
+                percentile,
+                normalized_z,
+            ),
         )
         for percentile, (modified_z, normalized_z) in zip(
             percentiles,
@@ -768,6 +824,8 @@ def _boundary_extremeness(
 
 def _retracement_magnitude_quality(
     candidate: LiquidityMovementCandidate,
+    *,
+    decimal_precision: int,
 ) -> Decimal:
     fraction = _finite_decimal(
         "adverse_move_total_fraction",
@@ -776,7 +834,7 @@ def _retracement_magnitude_quality(
     )
     with localcontext(
         Context(
-            prec=_DEFAULT_DECIMAL_PRECISION,
+            prec=decimal_precision,
             rounding=ROUND_HALF_EVEN,
         )
     ):
@@ -785,6 +843,8 @@ def _retracement_magnitude_quality(
 
 def _retracement_count_quality(
     candidate: LiquidityMovementCandidate,
+    *,
+    decimal_precision: int,
 ) -> Decimal:
     transition_count = candidate.bars - 1
     if transition_count <= 0:
@@ -797,7 +857,7 @@ def _retracement_count_quality(
         )
     with localcontext(
         Context(
-            prec=_DEFAULT_DECIMAL_PRECISION,
+            prec=decimal_precision,
             rounding=ROUND_HALF_EVEN,
         )
     ):
@@ -871,8 +931,14 @@ def _evidence_rows(
             decimal_precision=config.decimal_precision,
         )
 
-        magnitude = _retracement_magnitude_quality(candidate)
-        count = _retracement_count_quality(candidate)
+        magnitude = _retracement_magnitude_quality(
+            candidate,
+            decimal_precision=config.decimal_precision,
+        )
+        count = _retracement_count_quality(
+            candidate,
+            decimal_precision=config.decimal_precision,
+        )
 
         with localcontext(
             Context(
@@ -1135,6 +1201,7 @@ def ranking_config_from_lm_config(
 ) -> LiquidityMovementRankingConfig:
     """Build exact ranking configuration from the validated app LM config."""
     required_fields = (
+        "decimal_precision",
         "top_n_height",
         "top_n_sharpness",
         "priority_height",
@@ -1148,6 +1215,7 @@ def ranking_config_from_lm_config(
         raise TypeError("value does not expose the required LM configuration fields")
 
     return LiquidityMovementRankingConfig(
+        decimal_precision=getattr(value, "decimal_precision"),
         top_n_height=getattr(value, "top_n_height"),
         top_n_sharpness=getattr(value, "top_n_sharpness"),
         priority_height=Decimal(str(getattr(value, "priority_height"))),

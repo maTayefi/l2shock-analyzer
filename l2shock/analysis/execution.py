@@ -703,6 +703,8 @@ def liquidity_movement_analysis_id(
 def _scan_bounds(
     series: TimeframeAnalysisSeries,
     metric: LiquidityMetric,
+    *,
+    decimal_precision: int,
 ) -> LiquidityMovementScanBounds | None:
     values = tuple(
         value
@@ -711,6 +713,7 @@ def _scan_bounds(
             value := liquidity_metric_value(
                 bar,
                 metric,
+                decimal_precision=decimal_precision,
             )
         )
         is not None
@@ -833,6 +836,9 @@ def execute_liquidity_movement_analysis(
             bounds = _scan_bounds(
                 series,
                 metric,
+                decimal_precision=(
+                    selected_config.detection.decimal_precision
+                ),
             )
 
             if bounds is None:
@@ -1074,6 +1080,12 @@ def analysis_config_from_lm_config(
     ):
         raise TypeError("value does not expose confirmation_retracement_fraction")
 
+    if not hasattr(
+        value,
+        "decimal_precision",
+    ):
+        raise TypeError("value does not expose decimal_precision")
+
     detection = LiquidityMovementDetectionConfig(
         confirmation_retracement_fraction=Decimal(
             str(
@@ -1082,7 +1094,11 @@ def analysis_config_from_lm_config(
                     "confirmation_retracement_fraction",
                 )
             )
-        )
+        ),
+        decimal_precision=getattr(
+            value,
+            "decimal_precision",
+        ),
     )
 
     return LiquidityMovementAnalysisConfig(
