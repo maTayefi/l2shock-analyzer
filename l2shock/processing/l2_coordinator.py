@@ -52,6 +52,9 @@ from l2shock.db.analytical_repository import (
     L2HourlyProvenance,
     SourceHourReference,
 )
+from l2shock.db.checkpoint_reference_locks import (
+    acquire_checkpoint_reference_transaction_locks,
+)
 from l2shock.db.engine import session_scope
 from l2shock.ingest.replay import (
     OrderBookCheckpoint,
@@ -734,6 +737,17 @@ class SingleMarketL2ProcessingCoordinator:
             request,
             ProcessingProgressPhase.PERSISTING,
             "Persisting preset and compact target-hour liquidity.",
+        )
+
+        acquire_checkpoint_reference_transaction_locks(
+            session,
+            (
+                (
+                    output_checkpoint.encoding_info.content_sha256
+                    if output_checkpoint is not None
+                    else None
+                ),
+            ),
         )
 
         analytical_repository = AnalyticalRepository(session)

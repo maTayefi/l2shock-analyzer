@@ -286,6 +286,7 @@ l2shock/processing/checkpoint_references.py
 l2shock/processing/checkpoint_store.py
 l2shock/processing/integrity.py
 l2shock/timeutils.py
+l2shock/db/checkpoint_reference_locks.py
 ```
 
 ## Primary tests

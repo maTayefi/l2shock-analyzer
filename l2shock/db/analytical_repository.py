@@ -23,6 +23,9 @@ from sqlalchemy import Select, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.orm import Session
 
+from l2shock.db.checkpoint_reference_locks import (
+    acquire_checkpoint_reference_transaction_locks,
+)
 from l2shock.db.models import DataPreset, L2HourlySeries
 from l2shock.timeutils import require_utc_hour
 
@@ -1117,6 +1120,11 @@ class AnalyticalRepository:
             hour_utc,
         )
         provenance.validate_for_hour(normalized_hour)
+
+        acquire_checkpoint_reference_transaction_locks(
+            self._session,
+            (provenance.checkpoint_content_sha256,),
+        )
 
         if encoded.codec != HOURLY_BLOCK_CODEC:
             raise ValueError("Encoded hourly block uses an unsupported codec")

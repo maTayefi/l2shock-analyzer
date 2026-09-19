@@ -55,6 +55,9 @@ from l2shock.db import (
     PriceSourceHourReference,
     SourceHourReference,
 )
+from l2shock.db.checkpoint_reference_locks import (
+    acquire_checkpoint_reference_transaction_locks,
+)
 from l2shock.db.engine import session_scope
 from l2shock.ingest import (
     BookSampleInvalidReason,
@@ -499,6 +502,21 @@ def _import_l2(
         raise RemoteArtifactImportError(
             "Remote L2 artifact lacks its canonical data preset"
         )
+
+    current_source = _current_source_reference(downloaded)
+    current_source_spec = _source_spec(current_source)
+
+    acquire_source_hour_transaction_lock(
+        session,
+        current_source_spec,
+    )
+    acquire_checkpoint_reference_transaction_locks(
+        session,
+        (
+            manifest.input_checkpoint_content_sha256,
+            manifest.output_checkpoint_content_sha256,
+        ),
+    )
 
     analytical_repository = AnalyticalRepository(session)
 

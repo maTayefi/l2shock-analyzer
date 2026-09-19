@@ -46,6 +46,9 @@ from l2shock.acquisition.retention import (
 )
 from l2shock.acquisition.validation import sha256_file
 from l2shock.config import Settings, get_settings
+from l2shock.db.checkpoint_reference_locks import (
+    acquire_checkpoint_reference_transaction_lock,
+)
 from l2shock.db.engine import session_scope
 from l2shock.db.models import SourceHour
 from l2shock.ingest.checkpoint_codec import (
@@ -1167,6 +1170,10 @@ def _execute_orphan_checkpoint_deletion(
                 acquire_source_hour_transaction_lock(
                     session,
                     checkpoint_source,
+                )
+                acquire_checkpoint_reference_transaction_lock(
+                    session,
+                    info.content_sha256,
                 )
 
                 current_references = _checkpoint_reference_set(session)
