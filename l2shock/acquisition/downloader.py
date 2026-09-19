@@ -44,6 +44,11 @@ from l2shock.acquisition.validation import (
     validate_parquet_file,
 )
 from l2shock.config import CryptoHFTConfig, StorageConfig
+from l2shock.filesystem import (
+    OwnedPathError,
+    prepare_owned_file_path,
+    require_owned_regular_file,
+)
 
 log = logging.getLogger(__name__)
 
@@ -179,6 +184,24 @@ class CryptoHFTDownloader:
     def _minimum_free_bytes(self) -> int:
         return int(float(self._storage.minimum_free_disk_gib) * 1024**3)
 
+    def _owned_raw_path(
+        self,
+        path: Path,
+        *,
+        create_parents: bool = False,
+    ) -> Path:
+        try:
+            return prepare_owned_file_path(
+                self._storage.raw_path,
+                path,
+                create_parents=create_parents,
+            )
+        except OwnedPathError as exc:
+            raise DownloadConflictError(
+                "Raw archive path is outside application-owned storage "
+                "or contains a symbolic link or junction"
+            ) from exc
+
     def _check_cancelled(
         self,
         cancel_event: asyncio.Event | None,
@@ -297,23 +320,20 @@ class CryptoHFTDownloader:
         spec: SourceFileSpec,
         destination: Path,
     ) -> DownloadArtifact | None:
-        # Inspect the canonical directory entry before any operation which
-        # follows symbolic links. Acquisition must own a real regular file at
-        # the exact destination, not an externally mutable link target.
-        if destination.is_symlink():
-            raise DownloadConflictError(
-                "Raw archive destination cannot be a symbolic link: "
-                f"{destination.name!r}"
-            )
+        destination = self._owned_raw_path(destination)
 
-        if not destination.exists():
+        if not os.path.lexists(destination):
             return None
 
-        if not destination.is_file():
-            raise DownloadConflictError(
-                "Raw archive destination exists but is not a regular file: "
-                f"{destination.name!r}"
+        try:
+            destination = require_owned_regular_file(
+                self._storage.raw_path,
+                destination,
             )
+        except OwnedPathError as exc:
+            raise DownloadConflictError(
+                "Raw archive destination is not an application-owned " "regular file"
+            ) from exc
 
         try:
             validation = validate_parquet_file(destination, spec)
@@ -351,8 +371,10 @@ class CryptoHFTDownloader:
         self._ensure_open()
         self._check_cancelled(cancel_event)
 
-        destination = spec.local_path(self._storage.raw_path)
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination = self._owned_raw_path(
+            spec.local_path(self._storage.raw_path),
+            create_parents=True,
+        )
 
         existing = self._existing_artifact(spec, destination)
         if existing is not None:
@@ -480,6 +502,9 @@ class CryptoHFTDownloader:
                 byte_count = 0
                 bytes_at_last_disk_check = 0
 
+                temporary = self._owned_raw_path(temporary)
+                self._owned_raw_path(destination)
+
                 try:
                     with temporary.open("xb") as handle:
                         async for chunk in response.aiter_bytes(_STREAM_CHUNK_SIZE):
@@ -593,6 +618,18 @@ class CryptoHFTDownloader:
         and POSIX filesystems. It prevents one process from silently replacing
         another process's already published immutable source file.
         """
+        destination = self._owned_raw_path(destination)
+
+        try:
+            temporary = require_owned_regular_file(
+                self._storage.raw_path,
+                temporary,
+            )
+        except OwnedPathError as exc:
+            raise DownloadIntegrityError(
+                "Validated temporary archive left application-owned storage"
+            ) from exc
+
         try:
             os.link(temporary, destination)
         except FileExistsError:

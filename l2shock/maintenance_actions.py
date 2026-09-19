@@ -51,6 +51,12 @@ from l2shock.db.checkpoint_reference_locks import (
 )
 from l2shock.db.engine import session_scope
 from l2shock.db.models import SourceHour
+from l2shock.filesystem import (
+    OwnedPathError,
+    absolute_path_without_resolution,
+    prepare_owned_file_path,
+    require_owned_regular_file,
+)
 from l2shock.ingest.checkpoint_codec import (
     checkpoint_encoding_info,
     encode_checkpoint,
@@ -574,28 +580,33 @@ def _source_row_has_intact_raw_file(
             hour_utc=row.hour_utc,
         )
 
-        stored_path = Path(raw_path).expanduser()
-
-        # Inspect the claimed directory entry before any operation which
-        # follows symbolic links.
-        if stored_path.is_symlink():
-            return False
-
-        stored_path = stored_path.absolute()
-        canonical_path = spec.local_path(raw_root)
+        root = absolute_path_without_resolution(raw_root)
+        stored_path = absolute_path_without_resolution(
+            Path(raw_path).expanduser(),
+        )
+        canonical_path = absolute_path_without_resolution(
+            spec.local_path(root),
+        )
 
         if stored_path != canonical_path:
             return False
 
-        if not stored_path.is_file():
-            return False
+        stored_path = require_owned_regular_file(
+            root,
+            stored_path,
+        )
 
         if stored_path.stat().st_size != row.file_size_bytes:
             return False
 
         actual_digest, actual_size = sha256_file(stored_path)
 
-    except Exception:
+    except (
+        OSError,
+        OwnedPathError,
+        TypeError,
+        ValueError,
+    ):
         return False
 
     return bool(actual_size == row.file_size_bytes and actual_digest == expected_digest)
@@ -1276,7 +1287,9 @@ def _execute_raw_pruning(
     failed: list[dict[str, object]] = []
     affected_bytes = 0
 
-    raw_root = settings.storage.raw_path.resolve()
+    raw_root = absolute_path_without_resolution(
+        settings.storage.raw_path,
+    )
     renamed: list[
         tuple[
             Path,
@@ -1289,18 +1302,31 @@ def _execute_raw_pruning(
     try:
         with session_scope() as session:
             for item in preview.items:
-                original = Path(str(item["local_path"])).expanduser().resolve()
+                original = absolute_path_without_resolution(
+                    Path(str(item["local_path"])).expanduser(),
+                )
 
                 try:
-                    original.relative_to(raw_root)
-
                     spec = _source_spec_from_item(item)
-                    canonical = spec.local_path(raw_root).resolve()
+                    canonical = absolute_path_without_resolution(
+                        spec.local_path(raw_root),
+                    )
 
                     if original != canonical:
                         raise MaintenanceActionError(
                             "Raw candidate path is not canonical"
                         )
+
+                    try:
+                        original = require_owned_regular_file(
+                            raw_root,
+                            original,
+                        )
+                    except OwnedPathError as exc:
+                        raise MaintenanceActionError(
+                            "Raw candidate path contains a symbolic link, "
+                            "junction, or non-directory parent"
+                        ) from exc
 
                     acquire_source_hour_transaction_lock(
                         session,
@@ -1333,10 +1359,15 @@ def _execute_raw_pruning(
                             "Raw source digest changed after preview"
                         )
 
-                    if original.is_symlink() or not original.is_file():
-                        raise MaintenanceActionError(
-                            "Raw candidate is not a regular file"
+                    try:
+                        original = require_owned_regular_file(
+                            raw_root,
+                            original,
                         )
+                    except OwnedPathError as exc:
+                        raise MaintenanceActionError(
+                            "Raw candidate is not an application-owned " "regular file"
+                        ) from exc
 
                     if original.stat().st_size != row.file_size_bytes:
                         raise MaintenanceActionError(
@@ -1355,8 +1386,14 @@ def _execute_raw_pruning(
                             "Raw file SHA-256 changed after preview"
                         )
 
-                    temporary = original.with_name(
-                        f".{original.name}.{uuid4().hex}.pruning"
+                    temporary = prepare_owned_file_path(
+                        raw_root,
+                        original.with_name(f".{original.name}.{uuid4().hex}.pruning"),
+                    )
+
+                    original = require_owned_regular_file(
+                        raw_root,
+                        original,
                     )
                     original.replace(temporary)
 

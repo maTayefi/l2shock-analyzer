@@ -10,6 +10,8 @@ import pyarrow.parquet as pq
 import pytest
 from sqlalchemy.orm import Session
 
+import l2shock.processing.price_coordinator as price_coordinator_module
+
 from l2shock.acquisition import (
     AcquisitionRepository,
     SourceDataKind,
@@ -214,6 +216,7 @@ def test_price_processing_persists_real_trade_hour(
 def test_explicit_adjacent_source_routing_is_recorded(
     database_session: Session,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     previous_path = tmp_path / "previous.parquet"
     current_path = tmp_path / "current.parquet"
@@ -249,6 +252,25 @@ def test_explicit_adjacent_source_routing_is_recorded(
     def scope():
         yield database_session
 
+    observed_lock_identities: list[tuple[object, ...]] = []
+    production_lock = price_coordinator_module.acquire_source_hour_transaction_lock
+
+    def recording_lock(
+        session: Session,
+        spec: SourceFileSpec,
+    ):
+        observed_lock_identities.append(spec.identity_tuple)
+        return production_lock(
+            session,
+            spec,
+        )
+
+    monkeypatch.setattr(
+        price_coordinator_module,
+        "acquire_source_hour_transaction_lock",
+        recording_lock,
+    )
+
     coordinator = SingleMarketPriceProcessingCoordinator(
         session_scope_factory=scope,
         batch_size=1,
@@ -265,6 +287,17 @@ def test_explicit_adjacent_source_routing_is_recorded(
     assert result.source_archive_count == 3
     assert result.valid_count == 1
     assert result.total_trade_count == 3
+
+    expected_lock_identities = [
+        _spec(-1).identity_tuple,
+        _spec(0).identity_tuple,
+        _spec(1).identity_tuple,
+    ]
+
+    assert observed_lock_identities == sorted(
+        expected_lock_identities,
+    )
+    assert len(observed_lock_identities) == len(set(observed_lock_identities))
 
     stored = PriceAnalyticalRepository(database_session).get_price_hour(
         base="BTC",

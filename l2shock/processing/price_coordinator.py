@@ -281,16 +281,56 @@ class SingleMarketPriceProcessingCoordinator:
     ) -> PriceProcessingResult:
         target = request.target
 
-        acquire_source_hour_transaction_lock(
+        source_repository = SQLAlchemyProcessingSourceRepository(
             session,
-            target,
+            raw_root=self._raw_root,
         )
+
+        # Discover the complete dependency set before acquiring any source
+        # lock. Acquiring the target first would violate global ordering when
+        # two adjacent target hours include each other as dependencies.
+        sources = self._select_sources(
+            request,
+            source_repository,
+        )
+
+        ordered_sources = tuple(
+            sorted(
+                sources,
+                key=lambda item: item.spec.identity_tuple,
+            )
+        )
+
+        for archive in ordered_sources:
+            acquire_source_hour_transaction_lock(
+                session,
+                archive.spec,
+            )
+
+        # Source availability and metadata were read before lock acquisition.
+        # Repeat discovery under the complete lock set and fail closed if the
+        # selected immutable inputs changed while locks were being obtained.
+        locked_sources = self._select_sources(
+            request,
+            source_repository,
+        )
+
+        if locked_sources != sources:
+            raise ProcessingContractError(
+                "Trade source selection changed while source locks "
+                "were being acquired"
+            )
+
+        sources = locked_sources
 
         acquisition_repository = AcquisitionRepository(session)
         target_row = acquisition_repository.get_source_hour(target)
 
         if target_row is None:
             raise ProcessingContractError("Target trade source-hour row does not exist")
+
+        # Refresh mutable target state after all source locks are owned.
+        session.refresh(target_row)
 
         try:
             current_status = SourceHourStatus(target_row.status)
@@ -317,37 +357,6 @@ class SingleMarketPriceProcessingCoordinator:
             session.flush()
 
         raise_if_processing_cancelled(cancellation_probe)
-
-        source_repository = SQLAlchemyProcessingSourceRepository(
-            session,
-            raw_root=self._raw_root,
-        )
-        sources = self._select_sources(
-            request,
-            source_repository,
-        )
-
-        for archive in sorted(
-            sources,
-            key=lambda item: item.spec.identity_tuple,
-        ):
-            acquire_source_hour_transaction_lock(
-                session,
-                archive.spec,
-            )
-
-        locked_sources = self._select_sources(
-            request,
-            source_repository,
-        )
-
-        if locked_sources != sources:
-            raise ProcessingContractError(
-                "Trade source selection changed while source locks "
-                "were being acquired"
-            )
-
-        sources = locked_sources
 
         self._emit(
             request,

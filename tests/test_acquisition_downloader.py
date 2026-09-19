@@ -500,3 +500,58 @@ async def test_existing_symlink_destination_is_rejected_before_reuse(
     assert request_count == 0
     assert destination.is_symlink()
     assert target.read_bytes() == content
+
+
+@pytest.mark.asyncio
+async def test_intermediate_symlink_destination_is_rejected_before_http(
+    tmp_path: Path,
+) -> None:
+    spec = _spec()
+    storage = _storage(tmp_path)
+    destination = spec.local_path(storage.raw_path)
+    redirected_parent = destination.parent
+    external_parent = tmp_path / "external-raw-parent"
+
+    redirected_parent.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    external_parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    try:
+        redirected_parent.symlink_to(
+            external_parent,
+            target_is_directory=True,
+        )
+    except OSError:
+        pytest.skip("Directory symbolic links are unavailable on this platform")
+
+    request_count = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(
+            500,
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        async with CryptoHFTDownloader(
+            cryptohft=_cryptohft(),
+            storage=storage,
+            client=client,
+            free_bytes_provider=lambda _path: 10 * 1024**3,
+        ) as downloader:
+            with pytest.raises(
+                DownloadConflictError,
+                match="application-owned storage|symbolic link|junction",
+            ):
+                await downloader.download(spec)
+
+    assert request_count == 0
+    assert not (external_parent / destination.name).exists()

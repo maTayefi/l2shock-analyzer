@@ -37,6 +37,11 @@ from l2shock.db.models import (
     PriceHourlySeries,
     SourceHour,
 )
+from l2shock.filesystem import (
+    OwnedPathError,
+    absolute_path_without_resolution,
+    require_owned_regular_file,
+)
 from l2shock.timeutils import require_utc_hour
 
 
@@ -472,24 +477,29 @@ def _local_source_archive_is_available(
             ),
         )
 
-        root = Path(raw_root).expanduser().resolve()
-        stored_path = Path(stored_path_text).expanduser()
+        root = absolute_path_without_resolution(
+            Path(raw_root).expanduser(),
+        )
+        stored_path = absolute_path_without_resolution(
+            Path(stored_path_text).expanduser(),
+        )
+        canonical_path = absolute_path_without_resolution(
+            spec.local_path(root),
+        )
 
-        if stored_path.is_symlink():
+        if stored_path != canonical_path:
             return False
 
-        canonical_path = spec.local_path(root).resolve()
-
-        if stored_path.resolve() != canonical_path:
-            return False
-
-        if not stored_path.is_file():
-            return False
+        stored_path = require_owned_regular_file(
+            root,
+            stored_path,
+        )
 
         return stored_path.stat().st_size == file_size_bytes
 
     except (
         OSError,
+        OwnedPathError,
         TypeError,
         ValueError,
     ):
