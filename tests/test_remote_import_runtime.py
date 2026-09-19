@@ -345,3 +345,45 @@ def test_remote_import_result_fixture_contract() -> None:
 
     assert result.key is key
     assert result.analytical_inserted is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_reports_stop_requested_during_final_artifact() -> None:
+    reset_state_for_tests()
+    observed_keys: list[RemoteArtifactKey] = []
+
+    class Repository:
+        def current_revision(self) -> str:
+            return "a" * 40
+
+        def download_artifact(
+            self,
+            key,
+            *,
+            revision=None,
+        ):
+            assert revision == "a" * 40
+            observed_keys.append(key)
+
+            if len(observed_keys) == 4:
+                assert runtime.request_stop() is True
+
+            return None
+
+    runtime = RemoteImportRuntime(
+        repository=Repository(),
+    )
+
+    result = await runtime.start(
+        requested_start_utc=_hour(12),
+        requested_end_utc=_hour(13),
+        bases=("BTC",),
+        lower_depth_fraction=Decimal("0"),
+        upper_depth_fraction=Decimal("0.01"),
+    )
+
+    assert len(observed_keys) == 4
+    assert result.artifacts_selected == 4
+    assert result.missing_count == 4
+    assert result.status == "stopped"
+    assert result.stopped is True

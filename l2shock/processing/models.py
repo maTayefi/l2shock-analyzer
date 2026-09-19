@@ -239,6 +239,11 @@ class PriceProcessingRequest:
                 "PriceProcessingRequest requires a trades source"
             )
 
+        if self.target.venue != "binance_futures":
+            raise ProcessingContractError(
+                "Version 1 price processing requires Binance Futures trades"
+            )
+
         if not isinstance(self.include_adjacent_sources, bool):
             raise ProcessingContractError("include_adjacent_sources must be bool")
 

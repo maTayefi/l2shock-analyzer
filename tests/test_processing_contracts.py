@@ -387,3 +387,36 @@ def test_production_processing_coordinator_batch_defaults() -> None:
 
     assert l2_parameters["batch_size"].default == 131_072
     assert price_parameters["batch_size"].default == 131_072
+
+
+def test_price_processing_request_rejects_non_binance_trades() -> None:
+    from uuid import uuid4
+
+    from l2shock.acquisition import SourceDataKind, SourceFileSpec
+    from l2shock.processing import (
+        PriceProcessingRequest,
+        ProcessingContractError,
+    )
+
+    target = SourceFileSpec(
+        provider="cryptohftdata",
+        venue="bybit",
+        symbol="BTCUSDT",
+        data_kind=SourceDataKind.TRADES,
+        hour_utc=datetime(
+            2026,
+            9,
+            2,
+            12,
+            tzinfo=timezone.utc,
+        ),
+    )
+
+    with pytest.raises(
+        ProcessingContractError,
+        match="Binance Futures",
+    ):
+        PriceProcessingRequest(
+            operation_id=uuid4(),
+            target=target,
+        )

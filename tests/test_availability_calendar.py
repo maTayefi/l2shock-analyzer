@@ -296,7 +296,7 @@ def test_hour_tooltip_reports_component_market_coverage() -> None:
         trades_status="processed",
         orderbook_local=False,
         trades_local=True,
-        l2_materialized=True,
+        l2_materialized=False,
         price_materialized=True,
         l2_valid_seconds=2_000,
         price_valid_seconds=3_600,
@@ -305,12 +305,10 @@ def test_hour_tooltip_reports_component_market_coverage() -> None:
         materialized_l2_market_count=1,
         valid_l2_market_count=1,
     )
-
     tooltip = availability_hour_tooltip(
         item,
         timezone_name="Asia/Tehran",
     )
-
     assert "L2 markets materialized=1/2" in tooltip
     assert "L2 markets valid=1/2" in tooltip
 
@@ -324,7 +322,7 @@ def test_partial_multi_market_validity_can_keep_strict_handoff_seconds_zero() ->
         trades_status="processed",
         orderbook_local=False,
         trades_local=True,
-        l2_materialized=True,
+        l2_materialized=False,
         price_materialized=True,
         l2_valid_seconds=0,
         price_valid_seconds=3_600,
@@ -333,9 +331,43 @@ def test_partial_multi_market_validity_can_keep_strict_handoff_seconds_zero() ->
         materialized_l2_market_count=2,
         valid_l2_market_count=1,
     )
-
     assert item.analyzable is False
     assert item.l2_valid_seconds == 0
     assert item.valid_l2_market_count == 1
     assert item.l2_market_coverage_degraded is True
     assert item.l2_valid_market_coverage_degraded is True
+
+
+def test_partial_aggregate_component_is_not_materialized() -> None:
+    from l2shock.acquisition import (
+        HourAvailability,
+        HourAvailabilityState,
+    )
+
+    item = HourAvailability(
+        base="BTC",
+        hour_utc=datetime(
+            2026,
+            9,
+            2,
+            12,
+            tzinfo=timezone.utc,
+        ),
+        preset_hash="a" * 64,
+        orderbook_status="partial",
+        trades_status="processed",
+        orderbook_local=False,
+        trades_local=True,
+        l2_materialized=False,
+        price_materialized=True,
+        l2_valid_seconds=0,
+        price_valid_seconds=3_600,
+        state=HourAvailabilityState.PARTIAL,
+        expected_l2_market_count=3,
+        materialized_l2_market_count=1,
+        valid_l2_market_count=1,
+    )
+
+    assert item.materialized is False
+    assert item.l2_market_coverage_degraded is True
+    assert item.state is HourAvailabilityState.PARTIAL

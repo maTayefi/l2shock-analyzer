@@ -888,6 +888,13 @@ class RemoteImportRuntime:
                     current_key=key,
                 )
 
+                # A stop request cannot interrupt the current atomic
+                # download/import boundary. Observe it immediately afterward,
+                # including when this was the final selected artifact.
+                if cancellation_event.is_set():
+                    stopped = True
+                    break
+
             imported_count = sum(
                 item.disposition is RemoteImportItemDisposition.IMPORTED
                 for item in items

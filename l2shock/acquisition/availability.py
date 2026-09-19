@@ -225,9 +225,14 @@ class HourAvailability:
                 "market to be materialized and valid for all 3,600 seconds"
             )
 
-        if self.l2_materialized != (materialized_market_count > 0):
+        expected_l2_materialized = bool(
+            materialized_market_count == expected_market_count
+        )
+
+        if self.l2_materialized != expected_l2_materialized:
             raise AvailabilityError(
-                "l2_materialized does not match materialized market coverage"
+                "l2_materialized does not match complete materialized "
+                "market coverage"
             )
 
         # For one market, l2_valid_seconds and valid market coverage describe
@@ -838,7 +843,7 @@ def load_hourly_availability(
             "valid_count",
         )
 
-        l2_materialized = materialized_market_count > 0
+        l2_materialized = bool(materialized_market_count == expected_market_count)
 
         state = _classify(
             orderbook_exists=orderbook_exists,

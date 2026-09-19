@@ -493,17 +493,18 @@ def _integer(
     if isinstance(value, int):
         parsed = value
     elif isinstance(value, float):
+        # PyArrow nullable integer columns normally produce int | None.
+        # A NaN is accepted only as the null representation for a nullable
+        # field. Every other float is rejected because conversion to float may
+        # already have rounded an authoritative timestamp or sequence ID.
         if math.isnan(value) and nullable:
             return None
 
-        if not math.isfinite(value) or not value.is_integer():
-            raise StreamedParquetReadError(
-                f"{field_name} must be an exact integer",
-                path=path,
-                row_number=row_number,
-            )
-
-        parsed = int(value)
+        raise StreamedParquetReadError(
+            f"{field_name} must be stored as an integer, not floating point",
+            path=path,
+            row_number=row_number,
+        )
     else:
         raise StreamedParquetReadError(
             f"{field_name} must be stored as an integer",
@@ -1359,6 +1360,9 @@ def read_trade_file(
     if spec.data_kind is not SourceDataKind.TRADES:
         raise ValueError("read_trade_file requires a trades SourceFileSpec")
 
+    if spec.venue != "binance_futures":
+        raise ValueError("Version 1 trade-price reading requires Binance Futures")
+
     if not source.is_file():
         raise StreamedParquetReadError(
             "Trade archive is not a regular file",
@@ -1460,19 +1464,45 @@ def read_trade_file(
                 allow_zero=True,
             )
 
+            is_zero_price_sentinel = bool(
+                spec.venue == "binance_futures" and parsed_price == 0
+            )
+
+            # Validate the complete normalized row before deciding whether it
+            # is an approved zero-price sentinel. This prevents malformed
+            # trade IDs, quantities, maker flags, or order types from being
+            # hidden merely because price is zero.
+            trade_id = _trade_id(
+                raw_trade_id,
+                path=source,
+                row_number=row_number,
+            )
+            parsed_quantity = _decimal_string(
+                raw_quantity,
+                field_name="quantity",
+                path=source,
+                row_number=row_number,
+                # Existing Binance sentinel rows may carry zero quantity.
+                # Positive-price trades remain strictly positive.
+                allow_zero=is_zero_price_sentinel,
+            )
+            is_buyer_maker = _boolean(
+                raw_is_buyer_maker,
+                field_name="is_buyer_maker",
+                path=source,
+                row_number=row_number,
+            )
+            order_type = _nullable_text(
+                raw_order_type,
+                field_name="order_type",
+                path=source,
+                row_number=row_number,
+            )
+
             # CryptoHFTData Binance Futures trade archives can contain exact
-            # zero-price sentinel rows. Such rows cannot own real-trade OHLC
-            # and are excluded from price construction.
-            #
-            # This normalization is intentionally restricted to:
-            #
-            #     venue == binance_futures
-            #     and parsed price == 0
-            #
-            # Negative, malformed, non-finite, and non-string prices remain
-            # strict source-contract errors. Zero quantity on a positive-price
-            # trade also remains a strict error.
-            if spec.venue == "binance_futures" and parsed_price == 0:
+            # zero-price sentinel rows. Structurally valid sentinel rows cannot
+            # own real-trade OHLC and are excluded from price construction.
+            if is_zero_price_sentinel:
                 rows_read += 1
                 skipped_zero_price_rows += 1
 
@@ -1494,34 +1524,14 @@ def read_trade_file(
 
             record = TradeRecord(
                 symbol=symbol,
-                trade_id=_trade_id(
-                    raw_trade_id,
-                    path=source,
-                    row_number=row_number,
-                ),
+                trade_id=trade_id,
                 price=parsed_price,
-                quantity=_decimal_string(
-                    raw_quantity,
-                    field_name="quantity",
-                    path=source,
-                    row_number=row_number,
-                    allow_zero=False,
-                ),
+                quantity=parsed_quantity,
                 received_time_ns=received_time_ns,
                 event_time_ms=event_time_ms,
                 trade_time_ms=trade_time_ms,
-                is_buyer_maker=_boolean(
-                    raw_is_buyer_maker,
-                    field_name="is_buyer_maker",
-                    path=source,
-                    row_number=row_number,
-                ),
-                order_type=_nullable_text(
-                    raw_order_type,
-                    field_name="order_type",
-                    path=source,
-                    row_number=row_number,
-                ),
+                is_buyer_maker=is_buyer_maker,
+                order_type=order_type,
                 row_number=row_number,
             )
 

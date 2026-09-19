@@ -757,3 +757,32 @@ def test_binance_update_still_rejects_null_transaction_time(
             _orderbook_spec(),
             batch_size=1,
         )
+
+
+def test_authoritative_integer_parser_rejects_integral_float(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(
+        StreamedParquetReadError,
+        match="not floating point",
+    ):
+        parquet_reader_module._integer(
+            float(2**53),
+            field_name="received_time",
+            path=tmp_path / "float-backed.parquet",
+            row_number=0,
+        )
+
+
+def test_nullable_integer_parser_retains_nan_null_compatibility(
+    tmp_path: Path,
+) -> None:
+    observed = parquet_reader_module._integer(
+        float("nan"),
+        field_name="last_update_id",
+        path=tmp_path / "nullable.parquet",
+        row_number=0,
+        nullable=True,
+    )
+
+    assert observed is None

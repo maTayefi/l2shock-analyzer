@@ -1019,73 +1019,102 @@ def _execute_stale_source_recovery(
 
     with session_scope() as session:
         for item in preview.items:
+            success_item: dict[str, object] | None = None
+
             try:
-                source_id = int(item["source_hour_id"])
-                row = session.get(SourceHour, source_id)
+                # One candidate-level savepoint prevents a failed flush from
+                # leaving the complete maintenance transaction unusable.
+                with session.begin_nested():
+                    source_id = int(item["source_hour_id"])
+                    preview_spec = _source_spec_from_item(item)
 
-                if row is None:
-                    raise MaintenanceActionError("Source row disappeared after preview")
+                    # Lock the exact identity authorized by the preview before
+                    # loading mutable ORM state.
+                    acquire_source_hour_transaction_lock(
+                        session,
+                        preview_spec,
+                    )
 
-                spec = SourceFileSpec(
-                    provider=row.provider,
-                    venue=row.venue,
-                    symbol=row.instrument,
-                    data_kind=SourceDataKind(row.data_kind),
-                    hour_utc=row.hour_utc,
-                )
-                acquire_source_hour_transaction_lock(session, spec)
+                    row = session.get(
+                        SourceHour,
+                        source_id,
+                        populate_existing=True,
+                    )
 
-                expected_status = str(item["current_status"])
-
-                if row.status != expected_status:
-                    raise MaintenanceActionError("Source status changed after preview")
-
-                current_status = SourceHourStatus(row.status)
-
-                # The preview authorizes recovery of this exact stale source
-                # row. Mutable filesystem facts are recomputed under the source
-                # advisory lock immediately before mutation.
-                if current_status is SourceHourStatus.PROCESSING:
-                    target = (
-                        SourceHourStatus.DOWNLOADED
-                        if _source_row_has_intact_raw_file(
-                            row,
-                            raw_root=settings.storage.raw_path,
+                    if row is None:
+                        raise MaintenanceActionError(
+                            "Source row disappeared after preview"
                         )
-                        else SourceHourStatus.ERROR
+
+                    # Force current database values into the identity-mapped
+                    # instance after lock acquisition.
+                    session.refresh(row)
+
+                    current_spec = SourceFileSpec(
+                        provider=row.provider,
+                        venue=row.venue,
+                        symbol=row.instrument,
+                        data_kind=SourceDataKind(row.data_kind),
+                        hour_utc=row.hour_utc,
                     )
-                elif current_status is SourceHourStatus.DOWNLOADING:
-                    target = SourceHourStatus.ERROR
-                else:
-                    raise MaintenanceActionError(
-                        "Source is no longer in a recoverable transient status"
+
+                    if current_spec.identity_tuple != preview_spec.identity_tuple:
+                        raise MaintenanceActionError(
+                            "Source identity changed after preview"
+                        )
+
+                    expected_status = str(item["current_status"])
+
+                    if row.status != expected_status:
+                        raise MaintenanceActionError(
+                            "Source status changed after preview"
+                        )
+
+                    current_status = SourceHourStatus(row.status)
+
+                    # The preview authorizes recovery of this exact stale
+                    # source row. Mutable filesystem facts are recomputed under
+                    # the source advisory lock immediately before mutation.
+                    if current_status is SourceHourStatus.PROCESSING:
+                        target = (
+                            SourceHourStatus.DOWNLOADED
+                            if _source_row_has_intact_raw_file(
+                                row,
+                                raw_root=settings.storage.raw_path,
+                            )
+                            else SourceHourStatus.ERROR
+                        )
+                    elif current_status is SourceHourStatus.DOWNLOADING:
+                        target = SourceHourStatus.ERROR
+                    else:
+                        raise MaintenanceActionError(
+                            "Source is no longer in a recoverable transient status"
+                        )
+
+                    validate_source_hour_transition(
+                        row.status,
+                        target,
+                        allow_processing_cancellation_reset=(
+                            current_status is SourceHourStatus.PROCESSING
+                            and target is SourceHourStatus.DOWNLOADED
+                        ),
                     )
 
-                validate_source_hour_transition(
-                    row.status,
-                    target,
-                    allow_processing_cancellation_reset=(
-                        current_status is SourceHourStatus.PROCESSING
-                        and target is SourceHourStatus.DOWNLOADED
-                    ),
-                )
+                    row.status = target.value
+                    row.error_text = (
+                        "Recovered by explicitly authorized stale-source "
+                        "maintenance."
+                    )
 
-                row.status = target.value
-                row.error_text = (
-                    "Recovered by explicitly authorized stale-source " "maintenance."
-                )
+                    if target is SourceHourStatus.DOWNLOADED:
+                        row.processed_at = None
 
-                if target is SourceHourStatus.DOWNLOADED:
-                    row.processed_at = None
+                    session.flush()
 
-                session.flush()
-
-                succeeded.append(
-                    {
+                    success_item = {
                         **dict(item),
                         "final_status": target.value,
                     }
-                )
 
             except Exception as exc:
                 failed.append(
@@ -1094,6 +1123,13 @@ def _execute_stale_source_recovery(
                         "error": _safe_exception_name(exc),
                     }
                 )
+            else:
+                if success_item is None:
+                    raise RuntimeError(
+                        "Stale-source recovery completed without an audit item"
+                    )
+
+                succeeded.append(success_item)
 
     return succeeded, failed, 0
 
