@@ -366,7 +366,7 @@ def test_each_value_axis_belongs_to_its_matching_grid() -> None:
     assert all("max" not in axis for axis in option["yAxis"])
 
 
-def test_custom_background_colors_cannot_expand_value_axes() -> None:
+def test_custom_background_colors_are_style_not_axis_data() -> None:
     option = build_analysis_chart_option(
         _result(excluded=frozenset({2, 3})),
         timezone_name="Asia/Tehran",
@@ -388,13 +388,25 @@ def test_custom_background_colors_cannot_expand_value_axes() -> None:
         assert series["encode"] == {
             "x": [0, 1],
             "y": [],
+            "tooltip": [],
         }
+
+        render_item = series[":renderItem"]
+
+        assert "api.style()" in render_item
+        assert "api.value(2)" not in render_item
+        assert "packedValue" not in render_item
 
         for item in series["data"]:
             assert len(item["value"]) == 2
             assert all(isinstance(value, int) for value in item["value"])
-            assert isinstance(item["packed_rgba"], int)
-            assert item["packed_rgba"] > 255
+
+            color = item["itemStyle"]["color"]
+
+            assert isinstance(color, str)
+            assert color.startswith("rgba(")
+            assert color.endswith(")")
+            assert "packed_rgba" not in item
 
 
 def test_delta_series_contains_bid_minus_ask_values() -> None:

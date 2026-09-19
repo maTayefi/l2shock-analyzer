@@ -326,14 +326,21 @@ def _candidate_display_indices(
     )
 
 
-def _packed_rgba(
+def _rgba_css(
     rgb: tuple[int, int, int],
     alpha: float,
-) -> int:
+) -> str:
     red, green, blue = rgb
-    alpha_byte = int(round(min(1.0, max(0.0, alpha)) * 255.0))
+    bounded_alpha = min(1.0, max(0.0, float(alpha)))
 
-    return (int(red) << 24) | (int(green) << 16) | (int(blue) << 8) | alpha_byte
+    return (
+        f"rgba("
+        f"{int(red)},"
+        f"{int(green)},"
+        f"{int(blue)},"
+        f"{bounded_alpha:.6f}"
+        f")"
+    )
 
 
 def _highlight_alpha_by_panel(
@@ -454,10 +461,12 @@ def _alpha_runs(
                     start,
                     end_index,
                 ],
-                "packed_rgba": _packed_rgba(
-                    rgb,
-                    current_alpha,
-                ),
+                "itemStyle": {
+                    "color": _rgba_css(
+                        rgb,
+                        current_alpha,
+                    ),
+                },
             }
         )
 
@@ -489,14 +498,10 @@ def _slot_background_render_item_js() -> str:
     function(params, api) {
         const firstIndex = Number(api.value(0));
         const lastIndex = Number(api.value(1));
-        const packedValue = Number(
-            params.data && params.data.packed_rgba
-        );
 
         if (
             !Number.isFinite(firstIndex)
             || !Number.isFinite(lastIndex)
-            || !Number.isFinite(packedValue)
             || !params.coordSys
         ) {
             return null;
@@ -545,12 +550,6 @@ def _slot_background_render_item_js() -> str:
             return null;
         }
 
-        const packed = Math.trunc(packedValue) >>> 0;
-        const red = (packed >>> 24) & 255;
-        const green = (packed >>> 16) & 255;
-        const blue = (packed >>> 8) & 255;
-        const alpha = (packed & 255) / 255;
-
         return {
             type: 'rect',
             shape: {
@@ -559,16 +558,7 @@ def _slot_background_render_item_js() -> str:
                 width: right - left,
                 height: params.coordSys.height,
             },
-            style: {
-                fill: (
-                    'rgba('
-                    + red + ','
-                    + green + ','
-                    + blue + ','
-                    + alpha.toFixed(6)
-                    + ')'
-                ),
-            },
+            style: api.style(),
         };
     }
     """
@@ -598,6 +588,7 @@ def _background_series(
         "encode": {
             "x": [0, 1],
             "y": [],
+            "tooltip": [],
         },
         "data": data,
         "silent": True,
@@ -698,10 +689,12 @@ def _discontinuity_series(
                     display_index,
                     display_index,
                 ],
-                "packed_rgba": _packed_rgba(
-                    rgb,
-                    alpha,
-                ),
+                "itemStyle": {
+                    "color": _rgba_css(
+                        rgb,
+                        alpha,
+                    ),
+                },
             }
         )
 
