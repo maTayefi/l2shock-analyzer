@@ -340,6 +340,13 @@ def process_l2_archive_headlessly(
     ) as exc:
         raise ProcessingCancelledError("Headless L2 processing was cancelled") from exc
 
+    # The Parquet reader reopened the pathname after initial verification.
+    # Reverify after streaming and before constructing any publishable artifact.
+    verify_processing_source_archive(
+        target_archive,
+        cancellation_probe=cancellation_probe,
+    )
+
     if len(sampled.hours) != 1:
         raise ProcessingContractError(
             "Headless target-only L2 processing did not produce one hour"
@@ -562,6 +569,15 @@ def process_price_archives_headlessly(
         raise ProcessingCancelledError(
             "Headless price processing was cancelled"
         ) from exc
+
+    # Every selected archive may contribute trades to the target hour.
+    # Reverify all of them after streaming and before creating the remote
+    # analytical artifact and provenance manifest.
+    for archive in archives:
+        verify_processing_source_archive(
+            archive,
+            cancellation_probe=cancellation_probe,
+        )
 
     block = streamed.block
 

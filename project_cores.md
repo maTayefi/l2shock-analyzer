@@ -472,6 +472,7 @@ tests/test_parquet_reader.py
 tests/test_processing_integrity.py
 tests/test_processing_l2_coordinator_postgresql.py
 tests/test_processing_price_coordinator_postgresql.py
+tests/test_processing_post_stream_integrity.py
 tests/test_replay_diagnostics.py
 tests/test_replay_validation_cli.py
 tests/test_trade_ohlc.py
@@ -698,6 +699,7 @@ tests/test_ui_analysis_runtime.py
 tests/test_ui_fetch_runtime.py
 tests/test_ui_processing_runtime.py
 tests/test_ui_shutdown.py
+tests/test_processing_post_stream_integrity.py
 ```
 
 ## Focus areas
@@ -788,6 +790,7 @@ tests/test_remote_importer_postgresql.py
 tests/test_remote_source_acquisition.py
 tests/test_remote_worker.py
 tests/test_remote_workflow_contract.py
+tests/test_processing_post_stream_integrity.py
 ```
 
 ## Workflow files

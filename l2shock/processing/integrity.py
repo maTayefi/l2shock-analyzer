@@ -2,10 +2,12 @@
 """Exact local source-archive integrity verification for processing.
 
 Acquisition validates and hashes an archive when it is downloaded or reused.
-Processing verifies it again immediately before source interpretation.
+Processing verifies it immediately before source interpretation and again
+after streaming, before any analytical publication or persistence.
 
-This protects the analytical boundary against a local file being replaced,
-truncated, or modified after acquisition metadata was persisted.
+The post-stream check detects a source path that was replaced, truncated, or
+modified while PyArrow was interpreting it. Analytical output is not published
+unless the source still matches its durable size and SHA-256 at that boundary.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ def verify_processing_source_archive(
     *,
     cancellation_probe: ProcessingCancellationProbe | None = None,
 ) -> None:
-    """Verify exact size and SHA-256 immediately before processing."""
+    """Verify exact current size and SHA-256 at a processing boundary."""
     if not isinstance(archive, ProcessingSourceArchive):
         raise TypeError("archive must be a ProcessingSourceArchive")
 

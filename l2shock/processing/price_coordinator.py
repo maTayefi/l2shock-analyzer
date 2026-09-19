@@ -409,6 +409,15 @@ class SingleMarketPriceProcessingCoordinator:
                 "Trade-price processing was cancelled during source streaming"
             ) from exc
 
+        # Adjacent source archives can all contribute to the target trade-time
+        # hour. Reverify every selected archive after streaming and before any
+        # compact encoding or database persistence.
+        for archive in sources:
+            verify_processing_source_archive(
+                archive,
+                cancellation_probe=cancellation_probe,
+            )
+
         block = streamed.block
 
         if block.base != target.base:

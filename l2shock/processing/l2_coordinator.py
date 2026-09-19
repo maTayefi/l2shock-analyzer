@@ -664,6 +664,16 @@ class SingleMarketL2ProcessingCoordinator:
                 "L2 processing was cancelled during replay or liquidity " "sampling"
             ) from exc
 
+        # Every replay source was initially verified before interpretation.
+        # Reverify the complete source set after all predecessor replay and
+        # target sampling have finished, but before encoding or checkpoint
+        # publication. A source changed during interpretation must fail closed.
+        for archive in plan.replay_sources:
+            verify_processing_source_archive(
+                archive,
+                cancellation_probe=cancellation_probe,
+            )
+
         if len(sampled.hours) != 1:
             raise ProcessingContractError(
                 "Target-only sampling did not produce exactly one hour"
