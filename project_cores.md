@@ -940,6 +940,345 @@ because its best results depend on already understanding those subsystems.
 10. Core 2 + Core 3 + Core 6
     Active-file ownership, replay workers, retention, cancellation, and shutdown.
 ```
+---
+# Top-priority bug-finding rounds — unified ranking
+
+The rankings below intentionally combine single-core, dual-core, and triple-core
+reviews into one priority order.
+
+Priority is determined by the project's current operational objectives, not by
+the general architectural importance of a subsystem.
+
+Current priority order:
+
+1. GitHub Actions remote preprocessing must not fail.
+2. Fetching and importing published remote artifacts from GitHub/Hugging Face
+   must not fail or silently corrupt identity/provenance.
+3. LM analysis must not fail or consume incorrect, stale, incomplete, or
+   non-equivalent analytical data.
+4. Only after those paths are covered should general acquisition, persistence,
+   maintenance, NiceGUI, export, and other secondary concerns receive priority.
+
+A connected triple-core review should outrank an unrelated dual-core or
+single-core review when it covers a more important end-to-end failure path.
+
+the importance of cores for user functionality is in this order:
+
+1. Core 2
+2. Core 6
+3. Core 7
+4. Core 3
+5. Core 1
+6. Core 4
+7. Core 5
+
+but to find the bugs related to their interactions we sort them in this below rankings:
+
+## Unified priority ranking
+
+### 1. Core 2 + Core 6 + Core 7
+**Scheduled acquisition → workflow execution → concurrency/cancellation →
+remote worker → artifact publication**
+
+Highest priority because this covers the operational path most directly
+responsible for GitHub Actions success.
+
+Primary concerns:
+- scheduled versus manual workflow behavior;
+- source release-delay admission;
+- catch-up selection and bounded search;
+- duplicate worker admission;
+- concurrent venue/instrument execution;
+- cancellation and timeout behavior;
+- worker failure classification;
+- retry/idempotency after partial publication;
+- workflow seed gates;
+- failed/invalid hours accidentally becoming authoritative;
+- resource cleanup after worker failure;
+- workflow completion status disagreeing with actual publication state.
+
+### 2. Core 3 + Core 6 + Core 7
+**Replay/checkpoints → headless processing → remote artifacts → worker
+concurrency**
+
+Highest-value correctness review after workflow orchestration itself.
+
+Primary concerns:
+- replay behavior in headless versus local processing;
+- cross-hour checkpoint continuity;
+- checkpoint frontier selection;
+- checkpoint publication after invalid or failed processing;
+- cancellation while replay is active;
+- synchronous worker threads surviving cancelled async wrappers;
+- deterministic artifact generation;
+- duplicate/conflicting publication;
+- processing-chain recovery after one failed hour;
+- local/remote processing divergence.
+
+### 3. Core 2 + Core 3 + Core 7
+**Remote source acquisition → replay → processing → artifact publication**
+
+This is the complete remote preprocessing data path and should be treated as one
+failure domain.
+
+Primary concerns:
+- missing or late source archives;
+- release-boundary mistakes;
+- catch-up gaps;
+- venue-specific source handling;
+- update-only archives with no valid predecessor;
+- snapshot/frontier initialization;
+- cross-hour source ownership;
+- replay correctness feeding artifact creation;
+- missing output checkpoints;
+- invalid output being published as usable;
+- source changes between validation and streaming.
+
+### 4. Core 1 + Core 6 + Core 7
+**Remote identity/provenance → concurrent publication → transactional import**
+
+This is the most important remote-integrity review.
+
+Primary concerns:
+- immutable artifact identity;
+- manifest/artifact consistency;
+- revision pinning;
+- parent-commit conflicts;
+- concurrent publication;
+- transactional import failure;
+- metadata merging;
+- provenance preservation;
+- duplicate logical identities with different content;
+- stale remote revisions;
+- partial publication recovery;
+- filesystem/DB ordering during import.
+
+### 5. Core 1 + Core 3 + Core 7
+**Source identity → replay/checkpoint identity → remote artifact identity**
+
+This targets the risk that the pipeline technically succeeds but publishes or imports
+the wrong data under a valid-looking identity.
+
+Primary concerns:
+- source-hour ownership;
+- input/output checkpoint references;
+- checkpoint content hashes;
+- analytical content hashes;
+- preset identity;
+- artifact-key canonicalization;
+- raw-source references;
+- replay output determinism;
+- provenance round trips;
+- incorrect artifacts being accepted as the expected hour.
+
+### 6. Core 1 + Core 7
+**Remote artifact/import identity, provenance, revision, and transaction rules**
+
+Highest-priority dual-core review for the local side of the remote workflow.
+
+Primary concerns:
+- importing the wrong revision;
+- artifact and manifest coming from different revisions;
+- immutable-content conflicts;
+- import idempotency;
+- source metadata accidentally overwritten;
+- remote-imported rows appearing local/raw-backed when they are not;
+- partial DB rollback;
+- duplicate analytical ownership;
+- stale remote data being accepted as current.
+
+### 7. Core 3 + Core 7
+**Local/headless processing equivalence**
+
+Primary concerns:
+- local replay versus headless replay differences;
+- Binance/Bybit/OKX semantic divergence;
+- checkpoint handling;
+- artifact codec correctness;
+- quality metadata;
+- invalid/degraded hour handling;
+- price-source adjacency policy;
+- deterministic output;
+- remote processing producing a different result from local processing.
+
+### 8. Core 2 + Core 7
+**Remote source acquisition, release scheduling, catch-up, and workflow admission**
+
+Primary concerns:
+- release-delay boundaries;
+- available-hour discovery;
+- catch-up cursor progression;
+- source-path construction;
+- missing-source classification;
+- bounded historical search;
+- venue-specific availability;
+- workflow seed requirements;
+- retry behavior;
+- accidental permanent skipping of recoverable hours.
+
+### 9. Core 1 + Core 4 + Core 7
+**Remote import → analytical identity → aggregate/analysis loading**
+
+This is the first major LM-analysis protection round.
+
+Primary concerns:
+- imported rows carrying incorrect identity;
+- aggregate content hash mismatch;
+- stale aggregate cache after remote replacement/conflict;
+- preset identity mismatch;
+- source/provenance lookup failures;
+- imported analytical content being rejected as incomplete;
+- imported content appearing complete when it is not;
+- remote metadata causing analysis selection to load the wrong dataset.
+
+### 10. Core 3 + Core 4 + Core 6
+**L2/price semantics → aggregation → LM-analysis semantics**
+
+Primary concerns:
+- timestamp alignment;
+- second/hour ownership;
+- missing-hour generation;
+- endpoint-state aggregation;
+- degraded/invalid quality propagation;
+- price filtering;
+- activity-range ownership;
+- aggregation boundary errors;
+- cancellation and stale analysis publication;
+- deterministic analysis inputs.
+
+### 11. Core 4 + Core 6 + Core 7
+**Remote-imported data → analysis cache/identity → analysis execution**
+
+Primary concerns:
+- stale imported data entering analysis;
+- cache keys omitting source/content identity;
+- analysis cancellation publishing stale results;
+- remote-import completion racing analysis execution;
+- changed source content not invalidating cached aggregates;
+- deterministic analysis identity;
+- runtime state disagreeing with persisted analytical truth.
+
+### 12. Core 3 + Core 4
+**Data semantics consumed by LM analysis**
+
+Primary concerns:
+- exact L2 sampling boundaries;
+- price/L2 timestamp alignment;
+- missing versus invalid periods;
+- degraded coverage;
+- aggregation bucket ownership;
+- endpoint-state semantics;
+- LM pivot and confirmation boundaries;
+- adverse-move accounting;
+- deterministic extrema/tie handling.
+
+### 13. Core 4 + Core 6
+**LM analysis execution, caching, cancellation, and stale-result prevention**
+
+Primary concerns:
+- cache-key incompleteness;
+- cancellation after computation but before publication;
+- stale analysis ownership;
+- concurrent analysis requests;
+- deterministic ranking;
+- population-range leakage;
+- empty/all-invalid datasets;
+- large-range behavior;
+- analysis identity drift.
+
+### 14. Core 3
+**Replay, checkpoints, liquidity, and price correctness**
+
+Primary concerns:
+- event grouping;
+- venue sequence semantics;
+- checkpoint continuity;
+- sampling boundaries;
+- depth-band boundaries;
+- price ownership;
+- invalid-hour behavior;
+- deterministic replay;
+- corruption detection.
+
+This remains high priority because defects here can make both remote processing
+and LM analysis wrong even when all surrounding infrastructure succeeds.
+
+### 15. Core 2
+**Acquisition, availability, retention, and lifecycle correctness**
+
+Primary concerns:
+- download validation;
+- source state transitions;
+- retry behavior;
+- availability calculation;
+- retention/pruning;
+- recovery;
+- cancellation;
+- automatic-fetch state;
+- lifecycle consistency.
+
+### 16. Core 7
+**Remote subsystem as a complete single-core review**
+
+Use this when a full cross-file inspection is needed specifically for:
+- artifact codec;
+- contracts;
+- headless processing;
+- HF repository;
+- importer;
+- source acquisition;
+- worker;
+- remote CLI;
+- remote UI integration.
+
+### 17. Core 1
+**Persistence, provenance, identity, and maintenance foundations**
+
+Primary concerns:
+- transaction correctness;
+- immutable identity;
+- provenance;
+- checkpoint references;
+- maintenance recovery;
+- configuration precedence;
+- diagnostics;
+- migration/ORM consistency.
+
+This is lower than the remote/analysis pipeline because failures here are only
+more urgent when they directly affect one of those higher-priority paths.
+
+### 18. Core 6
+**Cross-cutting concurrency, cancellation, and integration**
+
+Use as a broad independent review after the major end-to-end paths have already
+been inspected.
+
+Primary concerns:
+- lock ordering;
+- task cancellation;
+- worker survival;
+- shutdown;
+- runtime/backend divergence;
+- publication ordering;
+- retry idempotency;
+- resource cleanup.
+
+### 19. Core 5
+**NiceGUI, charts, exports, controls, and user workflows**
+
+This is intentionally last in the current ranking.
+
+Primary concerns:
+- stale UI publication;
+- chart generation ownership;
+- control races;
+- export correctness;
+- availability-calendar refresh;
+- remote/local workflow presentation;
+- shutdown UI behavior.
+
+UI defects should be prioritized earlier only when they prevent the three
+primary operational objectives above from succeeding.
 
 ---
 

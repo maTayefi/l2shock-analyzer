@@ -31,6 +31,15 @@ from l2shock.acquisition import (
     SourceFileSpec,
     create_production_manual_fetch_coordinator,
 )
+from l2shock.acquisition.errors import DownloadIntegrityError
+from l2shock.acquisition.locks import (
+    acquire_source_hour_transaction_lock,
+)
+from l2shock.acquisition.repository import AcquisitionRepository
+from l2shock.acquisition.validation import (
+    quarantine_file,
+    sha256_file,
+)
 from l2shock.acquisition.release_schedule import (
     latest_release_eligible_hour,
 )
@@ -494,10 +503,178 @@ def _source_row_counts_as_complete(
         if not resolved_path.is_file():
             return False
 
-        return resolved_path.stat().st_size == file_size_bytes
+        actual_digest, actual_size = sha256_file(resolved_path)
 
-    except OSError:
+        return bool(actual_size == file_size_bytes and actual_digest == digest)
+
+    except (
+        DownloadIntegrityError,
+        OSError,
+    ):
         return False
+
+
+def _prepare_corrupt_local_sources_for_reacquisition_sync(
+    hour_utc: datetime,
+) -> int:
+    """Quarantine corrupt canonical raw files for one automatic-fetch hour.
+
+    Durable source content identity is never rebound. The source row is moved
+    to ``error`` while retaining its existing SHA-256, allowing the ordinary
+    coordinator to reacquire the canonical archive. The subsequent
+    ``record_artifact`` call succeeds only if the downloaded bytes match the
+    durable immutable digest.
+    """
+
+    target_hour = require_utc_hour(
+        "hour_utc",
+        hour_utc,
+    )
+    settings = get_settings()
+    raw_root = settings.storage.raw_path
+    quarantine_root = settings.storage.quarantine_path
+    repaired_count = 0
+
+    with session_scope() as session:
+        rows = session.scalars(
+            select(SourceHour)
+            .where(SourceHour.provider == "cryptohftdata")
+            .where(SourceHour.hour_utc == target_hour)
+            .where(
+                SourceHour.status.in_(
+                    (
+                        "downloaded",
+                        "processing",
+                        "processed",
+                    )
+                )
+            )
+        ).all()
+
+        repository = AcquisitionRepository(session)
+
+        for row in rows:
+            expected_digest = _canonical_sha256_or_none(
+                row.content_sha256,
+            )
+
+            if expected_digest is None:
+                continue
+
+            try:
+                spec = SourceFileSpec(
+                    provider=str(row.provider),
+                    venue=str(row.venue),
+                    symbol=str(row.instrument),
+                    data_kind=SourceDataKind(str(row.data_kind)),
+                    hour_utc=target_hour,
+                )
+            except TypeError, ValueError:
+                continue
+
+            path_text = str(row.local_path or "").strip()
+
+            if not path_text:
+                continue
+
+            stored_path = Path(path_text).expanduser()
+
+            try:
+                if stored_path.is_symlink():
+                    continue
+
+                resolved_path = stored_path.resolve()
+                canonical_path = spec.local_path(raw_root)
+
+                if resolved_path != canonical_path:
+                    continue
+
+                if not resolved_path.is_file():
+                    continue
+
+                actual_digest, actual_size = sha256_file(
+                    resolved_path,
+                )
+            except (
+                DownloadIntegrityError,
+                OSError,
+            ):
+                # Structurally unreadable files remain incomplete. The
+                # downloader owns its existing-file validation/quarantine path.
+                continue
+
+            if actual_size == row.file_size_bytes and actual_digest == expected_digest:
+                continue
+
+            # Serialize the final recheck, quarantine, and durable status
+            # mutation with other application transactions for this source.
+            acquire_source_hour_transaction_lock(
+                session,
+                spec,
+            )
+            session.refresh(row)
+
+            current_digest = _canonical_sha256_or_none(
+                row.content_sha256,
+            )
+            current_path_text = str(row.local_path or "").strip()
+
+            if current_digest != expected_digest or current_path_text != path_text:
+                continue
+
+            try:
+                current_path = Path(current_path_text).expanduser()
+
+                if current_path.is_symlink():
+                    continue
+
+                current_resolved = current_path.resolve()
+
+                if current_resolved != canonical_path:
+                    continue
+
+                if not current_resolved.is_file():
+                    continue
+
+                confirmed_digest, confirmed_size = sha256_file(
+                    current_resolved,
+                )
+            except (
+                DownloadIntegrityError,
+                OSError,
+            ):
+                continue
+
+            if (
+                confirmed_size == row.file_size_bytes
+                and confirmed_digest == expected_digest
+            ):
+                continue
+
+            quarantined = quarantine_file(
+                current_resolved,
+                quarantine_root,
+                spec=spec,
+                reason="automatic_fetch_content_mismatch",
+            )
+
+            repository.record_error(
+                spec,
+                message=(
+                    "Automatic Fetch quarantined a local raw archive whose "
+                    "bytes differed from its durable immutable SHA-256"
+                ),
+            )
+
+            repaired_count += 1
+
+            log.warning(
+                "Automatic Fetch quarantined corrupt local source %s as %s.",
+                spec.remote_path,
+                quarantined.name,
+            )
+
+    return repaired_count
 
 
 def _complete_source_hours_sync(
@@ -895,6 +1072,18 @@ class AutomaticFetchRuntime:
                         state.active_operation_started_at = now_utc()
 
                         try:
+                            quarantined_count = await asyncio.to_thread(
+                                _prepare_corrupt_local_sources_for_reacquisition_sync,
+                                target_hour,
+                            )
+
+                            if quarantined_count:
+                                log.warning(
+                                    "Automatic Fetch prepared %d corrupt local "
+                                    "source archive(s) for exact reacquisition.",
+                                    quarantined_count,
+                                )
+
                             coordinator = create_production_manual_fetch_coordinator(
                                 operation_lock=state.operation_lock,
                             )

@@ -643,3 +643,71 @@ def test_redownload_clears_stale_processing_metadata_but_keeps_references(
         "analytical_content_sha256": "d" * 64,
         "output_checkpoint_content_sha256": "e" * 64,
     }
+
+
+def test_processing_repository_rejects_noncanonical_regular_file(
+    database_session: Session,
+    tmp_path: Path,
+) -> None:
+    spec = _spec(
+        day=4,
+        hour=3,
+    )
+    raw_root = tmp_path / "raw"
+    outside = tmp_path / "outside.parquet"
+    content = b"valid-size-but-outside-storage"
+
+    outside.write_bytes(content)
+
+    repository = AcquisitionRepository(database_session)
+    row = repository.upsert_discovered(spec)
+
+    row.status = SourceHourStatus.DOWNLOADED.value
+    row.local_path = str(outside)
+    row.file_size_bytes = len(content)
+    row.content_sha256 = __import__("hashlib").sha256(content).hexdigest()
+    database_session.flush()
+
+    with pytest.raises(
+        SourceArchiveMetadataError,
+        match="canonical configured raw-storage identity",
+    ):
+        SQLAlchemyProcessingSourceRepository(
+            database_session,
+            raw_root=raw_root,
+        ).find_replayable(spec)
+
+
+def test_processing_repository_accepts_canonical_regular_file(
+    database_session: Session,
+    tmp_path: Path,
+) -> None:
+    spec = _spec(
+        day=4,
+        hour=4,
+    )
+    raw_root = tmp_path / "raw"
+    canonical = spec.local_path(raw_root)
+    content = b"canonical-processing-source"
+
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(content)
+
+    repository = AcquisitionRepository(database_session)
+    row = repository.upsert_discovered(spec)
+
+    row.status = SourceHourStatus.DOWNLOADED.value
+    row.local_path = str(canonical)
+    row.file_size_bytes = len(content)
+    row.content_sha256 = __import__("hashlib").sha256(content).hexdigest()
+    database_session.flush()
+
+    archive = SQLAlchemyProcessingSourceRepository(
+        database_session,
+        raw_root=raw_root,
+    ).find_replayable(spec)
+
+    assert archive is not None
+    assert archive.spec == spec
+    assert archive.local_path == canonical
+    assert archive.content_sha256 == row.content_sha256

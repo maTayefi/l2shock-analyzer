@@ -33,6 +33,7 @@ import logging
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Protocol, TypeAlias
 
 from sqlalchemy.orm import Session
@@ -253,6 +254,7 @@ class SingleMarketL2ProcessingCoordinator:
         checkpoint_store: CheckpointStore,
         progress_sink: ProcessingProgressSink | None = None,
         session_scope_factory: SessionScopeFactory = session_scope,
+        raw_root: Path | None = None,
         batch_size: int = 131_072,
         cancellation_check_interval_rows: int = 4_096,
         cancellation_check_interval_levels: int = 1_024,
@@ -285,6 +287,9 @@ class SingleMarketL2ProcessingCoordinator:
         self._checkpoint_store = checkpoint_store
         self._progress_sink = progress_sink
         self._session_scope_factory = session_scope_factory
+        self._raw_root = (
+            Path(raw_root).expanduser().resolve() if raw_root is not None else None
+        )
         self._batch_size = batch_size
         self._cancellation_check_interval_rows = cancellation_check_interval_rows
         self._cancellation_check_interval_levels = cancellation_check_interval_levels
@@ -519,7 +524,10 @@ class SingleMarketL2ProcessingCoordinator:
 
         raise_if_processing_cancelled(cancellation_probe)
 
-        source_repository = SQLAlchemyProcessingSourceRepository(session)
+        source_repository = SQLAlchemyProcessingSourceRepository(
+            session,
+            raw_root=self._raw_root,
+        )
 
         self._emit(
             request,
@@ -983,6 +991,7 @@ def create_production_l2_processing_coordinator(
     return SingleMarketL2ProcessingCoordinator(
         checkpoint_store=CheckpointStore(settings.storage.cache_path),
         progress_sink=progress_sink,
+        raw_root=settings.storage.raw_path,
     )
 
 

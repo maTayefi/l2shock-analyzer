@@ -251,6 +251,8 @@ def test_downloaded_source_requires_canonical_local_file(
 def test_downloaded_source_with_canonical_file_is_complete(
     tmp_path: Path,
 ) -> None:
+    import hashlib
+
     from l2shock.acquisition import SourceFileSpec
 
     spec = SourceFileSpec(
@@ -271,7 +273,7 @@ def test_downloaded_source_with_canonical_file_is_complete(
         status="downloaded",
         local_path=str(path),
         file_size_bytes=path.stat().st_size,
-        content_sha256="a" * 64,
+        content_sha256=hashlib.sha256(b"source").hexdigest(),
         raw_root=tmp_path,
     )
 
@@ -434,3 +436,94 @@ def test_automatic_fetch_requires_bybit_orderbooks() -> None:
         venue == "bybit" and data_kind == "trades"
         for venue, _instrument, data_kind in _REQUIRED_SOURCE_IDENTITIES
     )
+
+
+def test_same_size_corrupted_local_source_is_not_complete(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+
+    from l2shock.acquisition import (
+        SourceDataKind,
+        SourceFileSpec,
+    )
+
+    hour = datetime(
+        2026,
+        9,
+        2,
+        12,
+        tzinfo=timezone.utc,
+    )
+    raw_root = tmp_path / "raw"
+    spec = SourceFileSpec(
+        venue="binance_futures",
+        symbol="BTCUSDT",
+        data_kind=SourceDataKind.ORDERBOOK,
+        hour_utc=hour,
+    )
+    canonical = spec.local_path(raw_root)
+    original = b"original-source-content"
+    corrupted = b"x" * len(original)
+
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(corrupted)
+
+    complete = _source_row_counts_as_complete(
+        venue=spec.venue,
+        instrument=spec.symbol,
+        data_kind=spec.data_kind.value,
+        hour_utc=spec.hour_utc,
+        status="downloaded",
+        local_path=str(canonical),
+        file_size_bytes=len(original),
+        content_sha256=hashlib.sha256(original).hexdigest(),
+        raw_root=raw_root,
+    )
+
+    assert complete is False
+
+
+def test_hash_verified_canonical_local_source_is_complete(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+
+    from l2shock.acquisition import (
+        SourceDataKind,
+        SourceFileSpec,
+    )
+
+    hour = datetime(
+        2026,
+        9,
+        2,
+        12,
+        tzinfo=timezone.utc,
+    )
+    raw_root = tmp_path / "raw"
+    spec = SourceFileSpec(
+        venue="binance_futures",
+        symbol="BTCUSDT",
+        data_kind=SourceDataKind.ORDERBOOK,
+        hour_utc=hour,
+    )
+    canonical = spec.local_path(raw_root)
+    content = b"verified-source-content"
+
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(content)
+
+    complete = _source_row_counts_as_complete(
+        venue=spec.venue,
+        instrument=spec.symbol,
+        data_kind=spec.data_kind.value,
+        hour_utc=spec.hour_utc,
+        status="downloaded",
+        local_path=str(canonical),
+        file_size_bytes=len(content),
+        content_sha256=hashlib.sha256(content).hexdigest(),
+        raw_root=raw_root,
+    )
+
+    assert complete is True

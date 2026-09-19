@@ -27,6 +27,7 @@ import logging
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from datetime import timedelta
+from pathlib import Path
 from typing import Protocol, TypeAlias
 
 from sqlalchemy.orm import Session
@@ -135,6 +136,7 @@ class SingleMarketPriceProcessingCoordinator:
         *,
         progress_sink: PriceProcessingProgressSink | None = None,
         session_scope_factory: PriceSessionScopeFactory = session_scope,
+        raw_root: Path | None = None,
         batch_size: int = 131_072,
         cancellation_check_interval_rows: int = 4_096,
         cancellation_check_interval_records: int = 4_096,
@@ -158,6 +160,9 @@ class SingleMarketPriceProcessingCoordinator:
 
         self._progress_sink = progress_sink
         self._session_scope_factory = session_scope_factory
+        self._raw_root = (
+            Path(raw_root).expanduser().resolve() if raw_root is not None else None
+        )
         self._batch_size = batch_size
         self._cancellation_check_interval_rows = cancellation_check_interval_rows
         self._cancellation_check_interval_records = cancellation_check_interval_records
@@ -313,7 +318,10 @@ class SingleMarketPriceProcessingCoordinator:
 
         raise_if_processing_cancelled(cancellation_probe)
 
-        source_repository = SQLAlchemyProcessingSourceRepository(session)
+        source_repository = SQLAlchemyProcessingSourceRepository(
+            session,
+            raw_root=self._raw_root,
+        )
         sources = self._select_sources(
             request,
             source_repository,
@@ -632,8 +640,13 @@ def create_production_price_processing_coordinator(
     progress_sink: PriceProcessingProgressSink | None = None,
 ) -> SingleMarketPriceProcessingCoordinator:
     """Build the synchronous production price coordinator."""
+    from l2shock.config import get_settings
+
+    settings = get_settings()
+
     return SingleMarketPriceProcessingCoordinator(
         progress_sink=progress_sink,
+        raw_root=settings.storage.raw_path,
     )
 
 

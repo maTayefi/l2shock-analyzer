@@ -124,13 +124,27 @@ class ProcessingSourceRepository(Protocol):
 
 
 class SQLAlchemyProcessingSourceRepository:
-    """Read-only PostgreSQL-backed processing source lookup."""
+    """Read-only PostgreSQL-backed processing source lookup.
 
-    def __init__(self, session: Session) -> None:
+    ``raw_root`` should always be supplied by production local-processing
+    coordinators. ``None`` is retained only for isolated tests and generic
+    repository consumers that do not claim configured local-storage
+    ownership.
+    """
+
+    def __init__(
+        self,
+        session: Session,
+        *,
+        raw_root: Path | None = None,
+    ) -> None:
         if not isinstance(session, Session):
             raise TypeError("session must be a SQLAlchemy Session")
 
         self._session = session
+        self._raw_root = (
+            Path(raw_root).expanduser().resolve() if raw_root is not None else None
+        )
 
     @property
     def session(self) -> Session:
@@ -226,7 +240,49 @@ class SQLAlchemyProcessingSourceRepository:
                 "Replayable source-hour row has no content SHA-256"
             )
 
-        local_path = Path(row.local_path).expanduser().resolve()
+        stored_path = Path(row.local_path).expanduser()
+
+        # Inspect the stored directory entry before any operation that follows
+        # symbolic links.
+        if stored_path.is_symlink():
+            raise SourceArchiveMetadataError(
+                "Replayable source-hour local path cannot be a symbolic link"
+            )
+
+        local_path = stored_path.absolute()
+        raw_root = self._raw_root
+
+        if raw_root is not None:
+            canonical_path = spec.local_path(raw_root)
+
+            if local_path != canonical_path:
+                raise SourceArchiveMetadataError(
+                    "Replayable source-hour local path does not match its "
+                    "canonical configured raw-storage identity"
+                )
+
+            # Reject a symbolic link in any component below the configured
+            # root. Checking only the final filename would permit a canonical
+            # textual path whose parent directory redirects outside raw
+            # storage.
+            try:
+                relative_parts = local_path.relative_to(raw_root).parts
+            except ValueError as exc:
+                raise SourceArchiveMetadataError(
+                    "Replayable source-hour local path lies outside the "
+                    "configured raw root"
+                ) from exc
+
+            current = raw_root
+
+            for part in relative_parts:
+                current = current / part
+
+                if current.is_symlink():
+                    raise SourceArchiveMetadataError(
+                        "Replayable source-hour local path contains a "
+                        "symbolic-link component"
+                    )
 
         if not local_path.is_file():
             raise SourceArchiveMetadataError(
