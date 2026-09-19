@@ -695,7 +695,7 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
             metrics.add(LiquidityMetric.TOTAL_LIQUIDITY)
 
         if show_imbalance_highlights.value:
-            metrics.add(LiquidityMetric.BID_ASK_IMBALANCE)
+            metrics.add(LiquidityMetric.BID_ASK_DELTA)
 
         return AnalysisChartVisibility(
             show_price_highlights=bool(show_price_highlights.value),

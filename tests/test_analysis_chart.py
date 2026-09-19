@@ -146,12 +146,12 @@ def test_chart_contains_price_and_four_liquidity_metrics() -> None:
     )
     series = _series_by_name(option)
 
-    assert series["Binance perpetual price"]["type"] == ("candlestick")
+    assert series["Binance perpetual price"]["type"] == "candlestick"
     assert series["Bid Liquidity"]["type"] == "line"
     assert series["Ask Liquidity"]["type"] == "line"
     assert series["Total Liquidity"]["type"] == "line"
-    assert series["Positive imbalance"]["type"] == "line"
-    assert series["Negative imbalance"]["type"] == "line"
+    assert series["Positive Delta"]["type"] == "line"
+    assert series["Negative Delta"]["type"] == "line"
 
 
 def test_chart_uses_local_timezone_labels() -> None:
@@ -295,14 +295,14 @@ def test_chart_metadata_contains_temporal_viewport_ownership() -> None:
     assert all(str(value).endswith("Z") for value in timestamps)
 
 
-def test_imbalance_zero_reference_belongs_to_imbalance_series() -> None:
+def test_delta_zero_reference_belongs_to_delta_series() -> None:
     option = build_analysis_chart_option(
         _result(),
         timezone_name="Asia/Tehran",
     )
     series = _series_by_name(option)
 
-    negative = series["Negative imbalance"]
+    negative = series["Negative Delta"]
 
     assert "markLine" in negative
     assert negative["markLine"]["data"][0]["yAxis"] == 0
@@ -316,3 +316,83 @@ def test_imbalance_zero_reference_belongs_to_imbalance_series() -> None:
 
     assert focus
     assert all("markLine" not in item for item in focus)
+
+
+def test_principal_series_are_bound_to_independent_panel_axes() -> None:
+    option = build_analysis_chart_option(
+        _result(),
+        timezone_name="Asia/Tehran",
+    )
+    series = _series_by_name(option)
+
+    expected_axes = {
+        "Binance perpetual price": 0,
+        "Bid Liquidity": 1,
+        "Ask Liquidity": 2,
+        "Total Liquidity": 3,
+        "Positive Delta": 4,
+        "Negative Delta": 4,
+    }
+
+    for name, expected_index in expected_axes.items():
+        assert series[name]["xAxisIndex"] == expected_index
+        assert series[name]["yAxisIndex"] == expected_index
+
+
+def test_each_value_axis_belongs_to_its_matching_grid() -> None:
+    option = build_analysis_chart_option(
+        _result(),
+        timezone_name="Asia/Tehran",
+    )
+
+    assert [axis["gridIndex"] for axis in option["yAxis"]] == [
+        0,
+        1,
+        2,
+        3,
+        4,
+    ]
+
+    assert [axis["name"] for axis in option["yAxis"]] == [
+        "Price (USDT)",
+        "Bid Liquidity (USD eq.)",
+        "Ask Liquidity (USD eq.)",
+        "Total Liquidity (USD eq.)",
+        "Order-Book Delta (USD eq.)",
+    ]
+
+    assert all(axis["scale"] is True for axis in option["yAxis"])
+    assert all("min" not in axis for axis in option["yAxis"])
+    assert all("max" not in axis for axis in option["yAxis"])
+
+
+def test_delta_series_contains_bid_minus_ask_values() -> None:
+    option = build_analysis_chart_option(
+        _result(),
+        timezone_name="Asia/Tehran",
+    )
+    series = _series_by_name(option)
+
+    positive = series["Positive Delta"]["data"]
+    negative = series["Negative Delta"]["data"]
+
+    combined = [
+        positive_value if positive_value is not None else negative_value
+        for positive_value, negative_value in zip(
+            positive,
+            negative,
+            strict=True,
+        )
+    ]
+
+    result = _result()
+    expected = []
+
+    for bar in result.dataset.chart.bars:
+        if not bar.core_eligible:
+            continue
+
+        delta = bar.l2.bid_ask_delta()
+        expected.append(None if delta is None else float(delta))
+
+    assert combined == expected

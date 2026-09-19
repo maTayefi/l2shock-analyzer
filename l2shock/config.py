@@ -574,14 +574,10 @@ class LMConfig(StrictConfigModel):
         )
 
         if result < 16:
-            raise ValueError(
-                "analysis.lm.decimal_precision must be at least 16"
-            )
+            raise ValueError("analysis.lm.decimal_precision must be at least 16")
 
         if result > 1000:
-            raise ValueError(
-                "analysis.lm.decimal_precision must be <= 1000"
-            )
+            raise ValueError("analysis.lm.decimal_precision must be <= 1000")
 
         return result
 

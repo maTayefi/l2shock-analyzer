@@ -235,6 +235,8 @@ class RemoteCatchUpRunResult:
 
         allowed_stop_reasons = {
             "caught_up",
+            "source_unavailable",
+            "no_work",
             "max_hours_per_run",
             "runtime_budget",
         }
@@ -242,10 +244,14 @@ class RemoteCatchUpRunResult:
         if self.stop_reason not in allowed_stop_reasons:
             raise RemoteWorkerError("Unsupported remote catch-up stop reason")
 
-        if not results:
+        if not results and self.stop_reason != "no_work":
             raise RemoteWorkerError(
-                "A successful remote catch-up run must contain at least "
-                "one hour result"
+                "An empty remote catch-up result requires stop_reason='no_work'"
+            )
+
+        if results and self.stop_reason == "no_work":
+            raise RemoteWorkerError(
+                "stop_reason='no_work' requires an empty catch-up result"
             )
 
         previous_hour: datetime | None = None
@@ -275,10 +281,23 @@ class RemoteCatchUpRunResult:
         if len(results) > self.max_hours_per_run:
             raise RemoteWorkerError("Catch-up result exceeds max_hours_per_run")
 
-        if self.stop_reason == "caught_up" and results[-1].hour_utc != latest:
-            raise RemoteWorkerError(
-                "caught_up requires the latest eligible hour to complete"
-            )
+        if self.stop_reason == "caught_up":
+            if not results or results[-1].hour_utc != latest:
+                raise RemoteWorkerError(
+                    "caught_up requires the latest eligible hour to complete"
+                )
+
+        if self.stop_reason == "source_unavailable":
+            if not results:
+                raise RemoteWorkerError(
+                    "source_unavailable requires at least one completed hour"
+                )
+
+            if results[-1].hour_utc >= latest:
+                raise RemoteWorkerError(
+                    "source_unavailable requires the latest eligible hour "
+                    "to remain incomplete"
+                )
 
         object.__setattr__(self, "venue", venue)
         object.__setattr__(self, "instrument", instrument)
@@ -294,12 +313,28 @@ class RemoteCatchUpRunResult:
         return len(self.results)
 
     @property
-    def first_hour_utc(self) -> datetime:
+    def first_hour_utc(self) -> datetime | None:
+        if not self.results:
+            return None
+
         return self.results[0].hour_utc
 
     @property
-    def last_hour_utc(self) -> datetime:
+    def last_hour_utc(self) -> datetime | None:
+        if not self.results:
+            return None
+
         return self.results[-1].hour_utc
+
+    @staticmethod
+    def _optional_utc_text(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+
+        return value.isoformat().replace(
+            "+00:00",
+            "Z",
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -313,17 +348,11 @@ class RemoteCatchUpRunResult:
                     "Z",
                 )
             ),
-            "first_hour_utc": (
-                self.first_hour_utc.isoformat().replace(
-                    "+00:00",
-                    "Z",
-                )
+            "first_hour_utc": self._optional_utc_text(
+                self.first_hour_utc,
             ),
-            "last_hour_utc": (
-                self.last_hour_utc.isoformat().replace(
-                    "+00:00",
-                    "Z",
-                )
+            "last_hour_utc": self._optional_utc_text(
+                self.last_hour_utc,
             ),
             "completed_hour_count": self.completed_hour_count,
             "max_hours_per_run": self.max_hours_per_run,
@@ -977,7 +1006,7 @@ async def process_remote_catch_up(
         )
 
     completed: list[RemoteWorkerResult] = []
-    stop_reason = "no_work" # Fallback initialization
+    stop_reason = "no_work"  # Fallback initialization
 
     while True:
         # Always admit the first selected hour. On later iterations, enforce
@@ -1002,11 +1031,21 @@ async def process_remote_catch_up(
                 batch_size=batch_size,
             )
         except RemoteFileNotFoundError:
-            # The upstream provider has not yet published the next hour's archive.
-            # This is the normal "caught up to the live edge" condition.
-            # Break the loop to stop the catch-up run gracefully (exit code 0)
-            # instead of failing the GitHub Action workflow.
-            stop_reason = "caught_up" if completed else "no_work"
+            # Release eligibility is a scheduling boundary, not proof that the
+            # provider has already published every required archive. Preserve
+            # successfully completed hours and stop gracefully without falsely
+            # claiming that the latest eligible hour completed.
+            stop_reason = "source_unavailable" if completed else "no_work"
+
+            log.info(
+                "CATCH-UP STOPPED AT UNAVAILABLE SOURCE: venue=%s "
+                "instrument=%s target=%s completed_hours=%d stop_reason=%s",
+                normalized_venue,
+                normalized_instrument,
+                target_hour.isoformat(),
+                len(completed),
+                stop_reason,
+            )
             break
         except Exception as exc:
             log.error(
@@ -1086,6 +1125,7 @@ async def process_remote_catch_up(
         max_runtime_minutes=max_runtime_minutes,
         stop_reason=stop_reason,
     )
+
 
 async def _inspect_existing_state(
     repository: HuggingFaceDatasetRepository,

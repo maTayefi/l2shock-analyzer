@@ -36,7 +36,7 @@ _PRICE_GRID_INDEX: Final[int] = 0
 _BID_GRID_INDEX: Final[int] = 1
 _ASK_GRID_INDEX: Final[int] = 2
 _TOTAL_GRID_INDEX: Final[int] = 3
-_IMBALANCE_GRID_INDEX: Final[int] = 4
+_DELTA_GRID_INDEX: Final[int] = 4
 
 ANALYSIS_SELECTED_FOCUS_SERIES_PREFIX: Final[str] = "l2shock-selected-focus-"
 
@@ -44,7 +44,7 @@ _GRID_BY_METRIC: Final[dict[LiquidityMetric, int]] = {
     LiquidityMetric.BID_LIQUIDITY: _BID_GRID_INDEX,
     LiquidityMetric.ASK_LIQUIDITY: _ASK_GRID_INDEX,
     LiquidityMetric.TOTAL_LIQUIDITY: _TOTAL_GRID_INDEX,
-    LiquidityMetric.BID_ASK_IMBALANCE: _IMBALANCE_GRID_INDEX,
+    LiquidityMetric.BID_ASK_DELTA: _DELTA_GRID_INDEX,
 }
 
 
@@ -71,9 +71,9 @@ class AnalysisChartColors:
     ask_line: str = "#f97316"
     total_line: str = "#a78bfa"
 
-    imbalance_positive: str = "#22c55e"
-    imbalance_negative: str = "#ef4444"
-    imbalance_zero: str = "#94a3b8"
+    delta_positive: str = "#22c55e"
+    delta_negative: str = "#ef4444"
+    delta_zero: str = "#94a3b8"
 
     upward_lm_rgb: tuple[int, int, int] = (37, 99, 235)
     downward_lm_rgb: tuple[int, int, int] = (220, 38, 38)
@@ -793,8 +793,8 @@ def _tooltip_formatter_js(
             + formatNumber(row.ask_liquidity)
             + '<br/><b>Total Liquidity:</b> '
             + formatNumber(row.total_liquidity)
-            + '<br/><b>Bid-Ask Imbalance:</b> '
-            + formatNumber(row.imbalance);
+            + '<br/><b>Order-Book Delta:</b> '
+            + formatNumber(row.delta);
 
         if (row.discontinuity) {{
             output +=
@@ -855,7 +855,7 @@ def _chart_metadata(
                 "bid_liquidity": _decimal_float(bar.bid_liquidity),
                 "ask_liquidity": _decimal_float(bar.ask_liquidity),
                 "total_liquidity": _decimal_float(bar.total_liquidity),
-                "imbalance": _decimal_float(bar.bid_ask_imbalance()),
+                "delta": _decimal_float(bar.l2.bid_ask_delta()),
                 "discontinuity": discontinuities.get(display_index),
             }
         )
@@ -1021,8 +1021,8 @@ def build_analysis_chart_option(
     bid_data: list[float | None] = []
     ask_data: list[float | None] = []
     total_data: list[float | None] = []
-    imbalance_positive: list[float | None] = []
-    imbalance_negative: list[float | None] = []
+    delta_positive: list[float | None] = []
+    delta_negative: list[float | None] = []
 
     for source_index in visible.source_indices:
         bar = bars[source_index]
@@ -1044,14 +1044,10 @@ def build_analysis_chart_option(
         ask_data.append(_decimal_float(bar.ask_liquidity))
         total_data.append(_decimal_float(bar.total_liquidity))
 
-        imbalance = _decimal_float(bar.bid_ask_imbalance())
+        delta = _decimal_float(bar.l2.bid_ask_delta())
 
-        imbalance_positive.append(
-            imbalance if imbalance is not None and imbalance >= 0.0 else None
-        )
-        imbalance_negative.append(
-            imbalance if imbalance is not None and imbalance < 0.0 else None
-        )
+        delta_positive.append(delta if delta is not None and delta >= 0.0 else None)
+        delta_negative.append(delta if delta is not None and delta < 0.0 else None)
 
     grids = [
         {
@@ -1093,7 +1089,7 @@ def build_analysis_chart_option(
             "gridIndex": index,
             "boundaryGap": True,
             "axisLabel": {
-                "show": index == _IMBALANCE_GRID_INDEX,
+                "show": index == _DELTA_GRID_INDEX,
                 "fontSize": 9,
                 "color": colors.muted_text,
             },
@@ -1118,18 +1114,16 @@ def build_analysis_chart_option(
 
     y_axis_names = (
         "Price (USDT)",
-        "Bid Liquidity",
-        "Ask Liquidity",
-        "Total Liquidity",
-        "Bid-Ask Imbalance",
+        "Bid Liquidity (USD eq.)",
+        "Ask Liquidity (USD eq.)",
+        "Total Liquidity (USD eq.)",
+        "Order-Book Delta (USD eq.)",
     )
 
     y_axes = [
         {
             "type": "value",
-            "scale": index != _IMBALANCE_GRID_INDEX,
-            "min": (-1 if index == _IMBALANCE_GRID_INDEX else None),
-            "max": (1 if index == _IMBALANCE_GRID_INDEX else None),
+            "scale": True,
             "gridIndex": index,
             "name": name,
             "nameTextStyle": {
@@ -1204,39 +1198,39 @@ def build_analysis_chart_option(
             area_color="rgba(167,139,250,0.07)",
         ),
         _line_series(
-            name="Positive imbalance",
-            panel_index=_IMBALANCE_GRID_INDEX,
-            data=imbalance_positive,
-            color=colors.imbalance_positive,
+            name="Positive Delta",
+            panel_index=_DELTA_GRID_INDEX,
+            data=delta_positive,
+            color=colors.delta_positive,
             area_color="rgba(34,197,94,0.09)",
         ),
         _line_series(
-            name="Negative imbalance",
-            panel_index=_IMBALANCE_GRID_INDEX,
-            data=imbalance_negative,
-            color=colors.imbalance_negative,
+            name="Negative Delta",
+            panel_index=_DELTA_GRID_INDEX,
+            data=delta_negative,
+            color=colors.delta_negative,
             area_color="rgba(239,68,68,0.09)",
         ),
     ]
 
     series.extend(_selected_focus_series(panel_index) for panel_index in range(5))
 
-    negative_imbalance_series = next(
-        (item for item in series if item.get("name") == "Negative imbalance"),
+    negative_delta_series = next(
+        (item for item in series if item.get("name") == "Negative Delta"),
         None,
     )
 
-    if negative_imbalance_series is None:
-        raise AnalysisChartError("Negative imbalance series is missing")
+    if negative_delta_series is None:
+        raise AnalysisChartError("Negative Delta series is missing")
 
-    negative_imbalance_series["markLine"] = {
+    negative_delta_series["markLine"] = {
         "silent": True,
         "symbol": "none",
         "data": [
             {
                 "yAxis": 0,
                 "lineStyle": {
-                    "color": colors.imbalance_zero,
+                    "color": colors.delta_zero,
                     "type": "dashed",
                     "width": 1,
                 },
@@ -1337,8 +1331,8 @@ def build_analysis_chart_option(
                 "Bid Liquidity",
                 "Ask Liquidity",
                 "Total Liquidity",
-                "Positive imbalance",
-                "Negative imbalance",
+                "Positive Delta",
+                "Negative Delta",
                 "Upward LM highlights · panel 0",
                 "Downward LM highlights · panel 0",
             ],

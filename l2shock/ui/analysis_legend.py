@@ -59,14 +59,14 @@ def open_analysis_color_legend() -> None:
             "Bid Liquidity plus Ask Liquidity.",
         ),
         _row(
-            "Positive imbalance",
-            colors.imbalance_positive,
-            "Bid Liquidity exceeds Ask Liquidity.",
+            "Positive Order-Book Delta",
+            colors.delta_positive,
+            "Bid Liquidity minus Ask Liquidity is positive.",
         ),
         _row(
-            "Negative imbalance",
-            colors.imbalance_negative,
-            "Ask Liquidity exceeds Bid Liquidity.",
+            "Negative Order-Book Delta",
+            colors.delta_negative,
+            "Bid Liquidity minus Ask Liquidity is negative.",
         ),
         _row(
             "Upward LM",

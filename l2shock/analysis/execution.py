@@ -836,9 +836,7 @@ def execute_liquidity_movement_analysis(
             bounds = _scan_bounds(
                 series,
                 metric,
-                decimal_precision=(
-                    selected_config.detection.decimal_precision
-                ),
+                decimal_precision=(selected_config.detection.decimal_precision),
             )
 
             if bounds is None:

@@ -45,12 +45,16 @@ class LiquidityMovementError(ValueError):
 
 
 class LiquidityMetric(StrEnum):
-    """Authoritative liquidity metrics accepted by the LM detector."""
+    """Derived liquidity metrics accepted by the LM detector.
+
+    Bid and Ask are the authoritative stored channels. Total and Order-Book
+    Delta are derived from those channels for analysis.
+    """
 
     BID_LIQUIDITY = "bid_liquidity"
     ASK_LIQUIDITY = "ask_liquidity"
     TOTAL_LIQUIDITY = "total_liquidity"
-    BID_ASK_IMBALANCE = "bid_ask_imbalance"
+    BID_ASK_DELTA = "bid_ask_delta"
 
 
 class LiquidityMovementDirection(StrEnum):
@@ -95,11 +99,7 @@ def _nonnegative_integer(
 def _validated_decimal_precision(
     value: object,
 ) -> int:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or value < 16
-    ):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 16:
         raise LiquidityMovementError(
             "decimal_precision must be an integer of at least 16"
         )
@@ -301,11 +301,11 @@ class LiquidityMovementCandidate:
         # Validate endpoint geometry using the same precision used during
         # candidate construction to avoid ambient-context rounding mismatches.
         with localcontext(
-    Context(
-        prec=validated_precision,
-        rounding=ROUND_HALF_EVEN,
-    )
-):
+            Context(
+                prec=validated_precision,
+                rounding=ROUND_HALF_EVEN,
+            )
+        ):
             if absolute_height != abs(end_value - start_value):
                 raise LiquidityMovementError(
                     "absolute_height does not match endpoint values"
@@ -344,11 +344,11 @@ class LiquidityMovementCandidate:
             )
 
         with localcontext(
-    Context(
-        prec=validated_precision,
-        rounding=ROUND_HALF_EVEN,
-    )
-):
+            Context(
+                prec=validated_precision,
+                rounding=ROUND_HALF_EVEN,
+            )
+        ):
             if adverse_total_fraction != adverse_total / absolute_height:
                 raise LiquidityMovementError(
                     "adverse_move_total_fraction is inconsistent"
@@ -412,11 +412,11 @@ class LiquidityMovementCandidate:
             )
 
             with localcontext(
-    Context(
-        prec=validated_precision,
-        rounding=ROUND_HALF_EVEN,
-    )
-):
+                Context(
+                    prec=validated_precision,
+                    rounding=ROUND_HALF_EVEN,
+                )
+            ):
                 if retracement_fraction != retracement / absolute_height:
                     raise LiquidityMovementError(
                         "Confirmation retracement fraction is inconsistent"
@@ -461,9 +461,12 @@ def _metric_value(
     if metric is LiquidityMetric.TOTAL_LIQUIDITY:
         return bar.l2.total_liquidity
 
-    return bar.l2.bid_ask_imbalance(
-        decimal_precision=decimal_precision,
-    )
+    if metric is LiquidityMetric.BID_ASK_DELTA:
+        return bar.l2.bid_ask_delta(
+            decimal_precision=decimal_precision,
+        )
+
+    raise LiquidityMovementError(f"Unsupported liquidity metric: {metric!r}")
 
 
 def liquidity_metric_value(

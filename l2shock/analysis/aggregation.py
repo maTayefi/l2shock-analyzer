@@ -285,11 +285,50 @@ class AggregatedL2Bar:
             self.ask_liquidity,
         )
 
+    def bid_ask_delta(
+        self,
+        *,
+        decimal_precision: int = 34,
+    ) -> Decimal | None:
+        """Return Bid Liquidity minus Ask Liquidity in USD-equivalent units.
+
+        Bid and Ask Liquidity are already derived using the project's
+        linear USD-equivalent ``price * quantity`` convention. Supported
+        USD, USDT, and USDC quotes are intentionally treated as approximately
+        equal rather than live-FX converted.
+
+        Delta remains derived from the authoritative Bid and Ask channels and
+        is not persisted as a separate PostgreSQL or remote-artifact channel.
+        """
+        if self.bid_liquidity is None or self.ask_liquidity is None:
+            return None
+
+        if (
+            isinstance(decimal_precision, bool)
+            or not isinstance(decimal_precision, int)
+            or decimal_precision <= 0
+        ):
+            raise ValueError("decimal_precision must be a positive integer")
+
+        with localcontext(
+            Context(
+                prec=decimal_precision,
+                rounding=ROUND_HALF_EVEN,
+            )
+        ):
+            return self.bid_liquidity - self.ask_liquidity
+
     def bid_ask_imbalance(
         self,
         *,
         decimal_precision: int = 34,
     ) -> Decimal | None:
+        """Return normalized Bid-Ask Imbalance for diagnostics.
+
+        This normalized ratio is retained as a derived analytical helper, but
+        the user-facing fourth liquidity panel and LM metric use Order-Book
+        Delta instead.
+        """
         total = self.total_liquidity
 
         if total is None or total == 0:

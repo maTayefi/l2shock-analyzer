@@ -505,15 +505,12 @@ def test_candidate_validation_uses_detector_precision_above_34() -> None:
             prec=50,
         )
     ):
-        expected = (
-            candidate.confirmation_retracement
-            / candidate.absolute_height
-        )
+        expected = candidate.confirmation_retracement / candidate.absolute_height
 
     assert candidate.confirmation_retracement_fraction == expected
 
 
-def test_imbalance_metric_uses_requested_decimal_precision() -> None:
+def test_delta_metric_uses_requested_decimal_precision() -> None:
     series = _series(
         (
             "1",
@@ -525,19 +522,18 @@ def test_imbalance_metric_uses_requested_decimal_precision() -> None:
 
     observed = liquidity_metric_value(
         bar,
-        LiquidityMetric.BID_ASK_IMBALANCE,
+        LiquidityMetric.BID_ASK_DELTA,
         decimal_precision=50,
     )
+
+    assert bar.l2.bid_liquidity is not None
+    assert bar.l2.ask_liquidity is not None
 
     with localcontext(
         Context(
             prec=50,
         )
     ):
-        expected = (
-            bar.l2.bid_liquidity - bar.l2.ask_liquidity
-        ) / (
-            bar.l2.bid_liquidity + bar.l2.ask_liquidity
-        )
+        expected = bar.l2.bid_liquidity - bar.l2.ask_liquidity
 
     assert observed == expected

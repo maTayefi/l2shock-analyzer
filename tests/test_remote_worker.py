@@ -489,6 +489,119 @@ def test_bounded_catch_up_replans_each_hour_until_caught_up(
     assert result.last_hour_utc == _hour(3)
 
 
+def test_catch_up_reports_source_unavailable_after_completed_hours(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    latest = _hour(3)
+    observed: list[datetime] = []
+
+    async def fake_select(**kwargs: object) -> datetime:
+        del kwargs
+        return _hour(len(observed) + 1)
+
+    async def fake_process(**kwargs: object) -> RemoteWorkerResult:
+        hour = kwargs["hour_utc"]
+        assert isinstance(hour, datetime)
+        observed.append(hour)
+
+        if hour == latest:
+            raise remote_worker_module.RemoteFileNotFoundError(
+                "simulated unpublished source archive"
+            )
+
+        return _worker_result(hour)
+
+    monkeypatch.setattr(
+        remote_worker_module,
+        "select_remote_catch_up_hour",
+        fake_select,
+    )
+    monkeypatch.setattr(
+        remote_worker_module,
+        "process_remote_hour",
+        fake_process,
+    )
+
+    result = asyncio.run(
+        process_remote_catch_up(
+            repository=object(),  # type: ignore[arg-type]
+            cryptohft=object(),  # type: ignore[arg-type]
+            workspace=object(),  # type: ignore[arg-type]
+            venue="okx_futures",
+            instrument="BTC-USDT-SWAP",
+            latest_eligible_hour_utc=latest,
+            lower_fraction=Decimal("0"),
+            upper_fraction=Decimal("0.01"),
+            search_hours=72,
+            max_hours_per_run=4,
+            max_runtime_minutes=240,
+            producer_git_commit=None,
+            _monotonic=_Clock(0.0),
+        )
+    )
+
+    assert observed == [
+        _hour(1),
+        _hour(2),
+        _hour(3),
+    ]
+    assert result.stop_reason == "source_unavailable"
+    assert result.completed_hour_count == 2
+    assert result.first_hour_utc == _hour(1)
+    assert result.last_hour_utc == _hour(2)
+
+
+def test_catch_up_reports_no_work_when_first_source_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _hour(3)
+
+    async def fake_select(**kwargs: object) -> datetime:
+        del kwargs
+        return target
+
+    async def fake_process(**kwargs: object) -> RemoteWorkerResult:
+        assert kwargs["hour_utc"] == target
+        raise remote_worker_module.RemoteFileNotFoundError(
+            "simulated unpublished source archive"
+        )
+
+    monkeypatch.setattr(
+        remote_worker_module,
+        "select_remote_catch_up_hour",
+        fake_select,
+    )
+    monkeypatch.setattr(
+        remote_worker_module,
+        "process_remote_hour",
+        fake_process,
+    )
+
+    result = asyncio.run(
+        process_remote_catch_up(
+            repository=object(),  # type: ignore[arg-type]
+            cryptohft=object(),  # type: ignore[arg-type]
+            workspace=object(),  # type: ignore[arg-type]
+            venue="okx_futures",
+            instrument="BTC-USDT-SWAP",
+            latest_eligible_hour_utc=target,
+            lower_fraction=Decimal("0"),
+            upper_fraction=Decimal("0.01"),
+            search_hours=72,
+            max_hours_per_run=4,
+            max_runtime_minutes=240,
+            producer_git_commit=None,
+            _monotonic=_Clock(0.0),
+        )
+    )
+
+    assert result.stop_reason == "no_work"
+    assert result.completed_hour_count == 0
+    assert result.first_hour_utc is None
+    assert result.last_hour_utc is None
+    assert result.to_dict()["hours"] == []
+
+
 def test_bounded_catch_up_stops_at_max_hours_per_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -741,10 +854,7 @@ def test_catch_up_result_serializes_all_completed_hours() -> None:
 
 
 def test_caught_up_result_requires_latest_completed_hour() -> None:
-    with pytest.raises(
-        RemoteWorkerError,
-        match="caught_up requires",
-    ):
+    with pytest.raises(RemoteWorkerError, match="caught_up requires"):
         RemoteCatchUpRunResult(
             venue="okx_futures",
             instrument="BTC-USDT-SWAP",
@@ -754,6 +864,51 @@ def test_caught_up_result_requires_latest_completed_hour() -> None:
             max_runtime_minutes=240,
             stop_reason="caught_up",
         )
+
+
+def test_source_unavailable_preserves_completed_hours_below_latest() -> None:
+    result = RemoteCatchUpRunResult(
+        venue="okx_futures",
+        instrument="BTC-USDT-SWAP",
+        latest_eligible_hour_utc=_hour(2),
+        results=(
+            _worker_result(_hour(0)),
+            _worker_result(_hour(1)),
+        ),
+        max_hours_per_run=4,
+        max_runtime_minutes=240,
+        stop_reason="source_unavailable",
+    )
+
+    payload = result.to_dict()
+
+    assert result.completed_hour_count == 2
+    assert result.first_hour_utc == _hour(0)
+    assert result.last_hour_utc == _hour(1)
+    assert payload["stop_reason"] == "source_unavailable"
+    assert payload["first_hour_utc"] == "2026-09-14T12:00:00Z"
+    assert payload["last_hour_utc"] == "2026-09-14T13:00:00Z"
+
+
+def test_no_work_allows_empty_result_and_serializes_null_boundaries() -> None:
+    result = RemoteCatchUpRunResult(
+        venue="okx_futures",
+        instrument="BTC-USDT-SWAP",
+        latest_eligible_hour_utc=_hour(2),
+        results=(),
+        max_hours_per_run=4,
+        max_runtime_minutes=240,
+        stop_reason="no_work",
+    )
+
+    payload = result.to_dict()
+
+    assert result.completed_hour_count == 0
+    assert result.first_hour_utc is None
+    assert result.last_hour_utc is None
+    assert payload["first_hour_utc"] is None
+    assert payload["last_hour_utc"] is None
+    assert payload["hours"] == []
 
 
 def test_catch_up_replanning_skips_immutable_blocked_hour(

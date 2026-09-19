@@ -555,10 +555,7 @@ def test_modified_z_median_and_mad_ignore_ambient_context() -> None:
 
 
 def test_percentile_ranks_use_requested_precision() -> None:
-    values = tuple(
-        Decimal(index)
-        for index in range(4)
-    )
+    values = tuple(Decimal(index) for index in range(4))
 
     observed = percentile_ranks(
         values,

@@ -657,10 +657,7 @@ def positive_tail_modified_z_scores(
             normalized,
             decimal_precision=decimal_precision,
         )
-        deviations = tuple(
-            abs(value - median)
-            for value in normalized
-        )
+        deviations = tuple(abs(value - median) for value in normalized)
         mad = _median(
             deviations,
             decimal_precision=decimal_precision,
