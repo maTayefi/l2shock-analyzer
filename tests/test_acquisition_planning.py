@@ -389,3 +389,38 @@ def test_bybit_planner_defaults_to_orderbooks_only() -> None:
             SourceDataKind.ORDERBOOK,
         ),
     ]
+
+
+def test_local_path_preserves_canonical_entry_when_destination_is_symlink(
+    tmp_path: Path,
+) -> None:
+    spec = SourceFileSpec(
+        venue="binance_futures",
+        symbol="BTCUSDT",
+        data_kind=SourceDataKind.ORDERBOOK,
+        hour_utc=_utc(2026, 9, 2, 12),
+    )
+    raw_root = tmp_path / "raw"
+    canonical = (
+        raw_root
+        / "cryptohftdata"
+        / "binance_futures"
+        / "2026-09-02"
+        / "12"
+        / "BTCUSDT_orderbook.parquet"
+    )
+    external = tmp_path / "external.parquet"
+
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    external.write_bytes(b"source")
+
+    try:
+        canonical.symlink_to(external)
+    except OSError:
+        pytest.skip("File symlinks are unavailable on this platform")
+
+    observed = spec.local_path(raw_root)
+
+    assert observed == canonical
+    assert observed.is_symlink()
+    assert observed != external.resolve()

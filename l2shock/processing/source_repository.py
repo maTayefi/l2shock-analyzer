@@ -57,7 +57,17 @@ class ProcessingSourceArchive:
         if not isinstance(self.spec, SourceFileSpec):
             raise SourceArchiveMetadataError("spec must be a SourceFileSpec")
 
-        path = Path(self.local_path).expanduser().resolve()
+        raw_path = Path(self.local_path).expanduser()
+
+        # Check the supplied directory entry before resolution. Resolving first
+        # would turn a symbolic link into its target and lose the evidence
+        # needed to reject externally mutable source ownership.
+        if raw_path.is_symlink():
+            raise SourceArchiveMetadataError(
+                "Processing source archive cannot be a symbolic link"
+            )
+
+        path = raw_path.absolute()
         object.__setattr__(self, "local_path", path)
 
         object.__setattr__(

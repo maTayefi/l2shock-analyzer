@@ -189,9 +189,13 @@ class SourceFileSpec:
         date_part = self.hour_utc.strftime("%Y-%m-%d")
         hour_part = self.hour_utc.strftime("%H")
 
+        # Resolve the configured root, but do not resolve the generated
+        # destination itself. Resolving the destination would follow an
+        # existing symbolic link and erase the canonical directory-entry
+        # identity needed by acquisition, processing, and maintenance checks.
         destination = (
             root / self.provider / self.venue / date_part / hour_part / self.filename
-        ).resolve()
+        )
 
         try:
             destination.relative_to(root)

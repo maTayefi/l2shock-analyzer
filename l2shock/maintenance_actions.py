@@ -544,8 +544,10 @@ def _checkpoint_reference_set(
 
 def _source_row_has_intact_raw_file(
     row: SourceHour,
+    *,
+    raw_root: Path,
 ) -> bool:
-    """Verify a transient source's actual bytes against durable metadata."""
+    """Verify canonical transient-source bytes against durable metadata."""
 
     raw_path = str(row.local_path or "").strip()
     expected_digest = _canonical_sha256_or_none(row.content_sha256)
@@ -560,16 +562,35 @@ def _source_row_has_intact_raw_file(
     ):
         return False
 
-    path = Path(raw_path).expanduser().resolve()
-
     try:
-        if path.is_symlink() or not path.is_file():
+        spec = SourceFileSpec(
+            provider=row.provider,
+            venue=row.venue,
+            symbol=row.instrument,
+            data_kind=SourceDataKind(row.data_kind),
+            hour_utc=row.hour_utc,
+        )
+
+        stored_path = Path(raw_path).expanduser()
+
+        # Inspect the claimed directory entry before any operation which
+        # follows symbolic links.
+        if stored_path.is_symlink():
             return False
 
-        if path.stat().st_size != row.file_size_bytes:
+        stored_path = stored_path.absolute()
+        canonical_path = spec.local_path(raw_root)
+
+        if stored_path != canonical_path:
             return False
 
-        actual_digest, actual_size = sha256_file(path)
+        if not stored_path.is_file():
+            return False
+
+        if stored_path.stat().st_size != row.file_size_bytes:
+            return False
+
+        actual_digest, actual_size = sha256_file(stored_path)
 
     except Exception:
         return False
@@ -580,6 +601,7 @@ def _source_row_has_intact_raw_file(
 def _plan_stale_sources(
     session: Session,
     *,
+    raw_root: Path,
     generated_at_utc: datetime,
     stale_downloading_after: timedelta,
     stale_processing_after: timedelta,
@@ -633,7 +655,10 @@ def _plan_stale_sources(
             )
             threshold = processing_after
 
-            has_replayable_raw = _source_row_has_intact_raw_file(row)
+            has_replayable_raw = _source_row_has_intact_raw_file(
+                row,
+                raw_root=raw_root,
+            )
 
             recovery_status = (
                 SourceHourStatus.DOWNLOADED
@@ -818,6 +843,7 @@ def build_maintenance_preview(
         if selected_action is MaintenanceActionKind.RECOVER_STALE_SOURCES:
             items, blocked_count = _plan_stale_sources(
                 session,
+                raw_root=selected_settings.storage.raw_path,
                 generated_at_utc=generated,
                 stale_downloading_after=(selected_stale_downloading_after),
                 stale_processing_after=(selected_stale_processing_after),
@@ -982,6 +1008,8 @@ def _source_spec_from_item(
 
 def _execute_stale_source_recovery(
     preview: MaintenancePreview,
+    *,
+    settings: Settings,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], int]:
     succeeded: list[dict[str, object]] = []
     failed: list[dict[str, object]] = []
@@ -1009,23 +1037,32 @@ def _execute_stale_source_recovery(
                 if row.status != expected_status:
                     raise MaintenanceActionError("Source status changed after preview")
 
-                target = SourceHourStatus(str(item["recovery_status"]))
+                current_status = SourceHourStatus(row.status)
 
-                if (
-                    row.status == SourceHourStatus.PROCESSING.value
-                    and target is SourceHourStatus.DOWNLOADED
-                    and not _source_row_has_intact_raw_file(row)
-                ):
+                # The preview authorizes recovery of this exact stale source
+                # row. Mutable filesystem facts are recomputed under the source
+                # advisory lock immediately before mutation.
+                if current_status is SourceHourStatus.PROCESSING:
+                    target = (
+                        SourceHourStatus.DOWNLOADED
+                        if _source_row_has_intact_raw_file(
+                            row,
+                            raw_root=settings.storage.raw_path,
+                        )
+                        else SourceHourStatus.ERROR
+                    )
+                elif current_status is SourceHourStatus.DOWNLOADING:
+                    target = SourceHourStatus.ERROR
+                else:
                     raise MaintenanceActionError(
-                        "Stale processing raw bytes changed after preview. "
-                        "Build and review a new maintenance preview."
+                        "Source is no longer in a recoverable transient status"
                     )
 
                 validate_source_hour_transition(
                     row.status,
                     target,
                     allow_processing_cancellation_reset=(
-                        row.status == SourceHourStatus.PROCESSING.value
+                        current_status is SourceHourStatus.PROCESSING
                         and target is SourceHourStatus.DOWNLOADED
                     ),
                 )
@@ -1367,7 +1404,10 @@ def execute_maintenance_action(
     )
 
     if preview.action is MaintenanceActionKind.RECOVER_STALE_SOURCES:
-        succeeded, failed, affected_bytes = _execute_stale_source_recovery(preview)
+        succeeded, failed, affected_bytes = _execute_stale_source_recovery(
+            preview,
+            settings=selected_settings,
+        )
 
     elif preview.action is MaintenanceActionKind.DELETE_ORPHAN_CHECKPOINTS:
         succeeded, failed, affected_bytes = _execute_orphan_checkpoint_deletion(

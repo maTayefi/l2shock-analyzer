@@ -284,7 +284,12 @@ def test_stale_processing_with_intact_raw_returns_to_downloaded(
     tmp_path: Path,
 ) -> None:
     session = patched_session_scope
-    raw_file = tmp_path / "intact.parquet"
+    raw_root = tmp_path / "raw"
+    settings = _make_settings_with_raw(raw_root)
+    spec = _spec(offset=0)
+    raw_file = spec.local_path(raw_root)
+
+    raw_file.parent.mkdir(parents=True, exist_ok=True)
     raw_file.write_bytes(b"valid-raw-data")
 
     _register_stale_source(
@@ -300,6 +305,7 @@ def test_stale_processing_with_intact_raw_returns_to_downloaded(
     preview = build_maintenance_preview(
         MaintenanceActionKind.RECOVER_STALE_SOURCES,
         generated_at_utc=_hour(),
+        settings=settings,
     )
 
     assert preview.candidate_count == 1
@@ -308,6 +314,7 @@ def test_stale_processing_with_intact_raw_returns_to_downloaded(
     report = execute_maintenance_action(
         preview,
         executed_at_utc=None,
+        settings=settings,
     )
 
     assert report.status == "ok"
@@ -848,10 +855,14 @@ def test_stale_processing_revalidates_raw_under_execution_lock(
     tmp_path: Path,
 ) -> None:
     session = patched_session_scope
+    raw_root = tmp_path / "raw"
+    settings = _make_settings_with_raw(raw_root)
     original = b"original-locked-source"
     changed = b"x" * len(original)
+    spec = _spec(offset=6)
+    raw_file = spec.local_path(raw_root)
 
-    raw_file = tmp_path / "changed-after-preview.parquet"
+    raw_file.parent.mkdir(parents=True, exist_ok=True)
     raw_file.write_bytes(original)
 
     row = _register_stale_source(
@@ -867,6 +878,7 @@ def test_stale_processing_revalidates_raw_under_execution_lock(
     preview = build_maintenance_preview(
         MaintenanceActionKind.RECOVER_STALE_SOURCES,
         generated_at_utc=_hour(),
+        settings=settings,
     )
 
     selected = next(
@@ -880,13 +892,14 @@ def test_stale_processing_revalidates_raw_under_execution_lock(
     report = execute_maintenance_action(
         preview,
         executed_at_utc=_hour(),
+        settings=settings,
     )
 
     session.refresh(row)
 
-    assert report.succeeded_count == 0
-    assert report.failed_count == 1
-    assert row.status == SourceHourStatus.PROCESSING.value
+    assert report.succeeded_count == 1
+    assert report.failed_count == 0
+    assert row.status == SourceHourStatus.ERROR.value
     assert row.processed_at is None
 
 
@@ -1095,3 +1108,105 @@ def test_stale_running_fetch_run_is_reported_read_only(
 
     assert run.status == "running"
     assert run.ended_at is None
+
+
+def test_stale_processing_reclassifies_restored_raw_under_execution_lock(
+    patched_session_scope: Session,
+    tmp_path: Path,
+) -> None:
+    session = patched_session_scope
+    raw_root = tmp_path / "raw"
+    settings = _make_settings_with_raw(raw_root)
+    spec = _spec(offset=23)
+    canonical = spec.local_path(raw_root)
+    content = b"restored-after-preview"
+
+    row = _register_stale_source(
+        session,
+        status=SourceHourStatus.PROCESSING,
+        offset=23,
+        local_path=str(canonical),
+        file_size_bytes=len(content),
+        content_sha256=hashlib.sha256(content).hexdigest(),
+        downloaded_hours_ago=10,
+    )
+
+    preview = build_maintenance_preview(
+        MaintenanceActionKind.RECOVER_STALE_SOURCES,
+        generated_at_utc=_hour(),
+        settings=settings,
+    )
+
+    selected = next(
+        item for item in preview.items if int(item["source_hour_id"]) == int(row.id)
+    )
+
+    assert selected["recovery_status"] == "error"
+
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(content)
+
+    report = execute_maintenance_action(
+        preview,
+        executed_at_utc=_hour(),
+        settings=settings,
+    )
+
+    session.refresh(row)
+
+    assert report.succeeded_count == 1
+    assert report.failed_count == 0
+    assert row.status == SourceHourStatus.DOWNLOADED.value
+
+    succeeded = report.succeeded[0]
+
+    assert succeeded["recovery_status"] == "error"
+    assert succeeded["final_status"] == "downloaded"
+
+
+def test_stale_processing_noncanonical_raw_path_becomes_error(
+    patched_session_scope: Session,
+    tmp_path: Path,
+) -> None:
+    session = patched_session_scope
+    raw_root = tmp_path / "raw"
+    settings = _make_settings_with_raw(raw_root)
+    content = b"noncanonical-source"
+    outside = tmp_path / "outside.parquet"
+
+    outside.write_bytes(content)
+
+    row = _register_stale_source(
+        session,
+        status=SourceHourStatus.PROCESSING,
+        offset=24,
+        local_path=str(outside),
+        file_size_bytes=len(content),
+        content_sha256=hashlib.sha256(content).hexdigest(),
+        downloaded_hours_ago=10,
+    )
+
+    preview = build_maintenance_preview(
+        MaintenanceActionKind.RECOVER_STALE_SOURCES,
+        generated_at_utc=_hour(),
+        settings=settings,
+    )
+
+    selected = next(
+        item for item in preview.items if int(item["source_hour_id"]) == int(row.id)
+    )
+
+    assert selected["recovery_status"] == "error"
+
+    report = execute_maintenance_action(
+        preview,
+        executed_at_utc=_hour(),
+        settings=settings,
+    )
+
+    session.refresh(row)
+
+    assert report.succeeded_count == 1
+    assert report.failed_count == 0
+    assert row.status == SourceHourStatus.ERROR.value
+    assert outside.is_file()

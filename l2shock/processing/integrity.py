@@ -36,7 +36,15 @@ def verify_processing_source_archive(
     if not isinstance(archive, ProcessingSourceArchive):
         raise TypeError("archive must be a ProcessingSourceArchive")
 
-    path = Path(archive.local_path).expanduser().resolve()
+    raw_path = Path(archive.local_path).expanduser()
+
+    # Repeat final-component symlink rejection at the consumption boundary.
+    # ProcessingSourceArchive normally rejects it earlier, but integrity
+    # verification must remain independently fail-closed.
+    if raw_path.is_symlink():
+        raise SourceArchiveIntegrityError("Processing source cannot be a symbolic link")
+
+    path = raw_path.absolute()
 
     if not path.is_file():
         raise SourceArchiveIntegrityError(

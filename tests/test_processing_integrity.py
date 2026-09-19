@@ -15,6 +15,7 @@ from l2shock.processing import (
     ProcessingCancelledError,
     ProcessingSourceArchive,
     SourceArchiveIntegrityError,
+    SourceArchiveMetadataError,
     verify_processing_source_archive,
 )
 
@@ -87,4 +88,30 @@ def test_processing_integrity_honors_cancellation(
         verify_processing_source_archive(
             archive,
             cancellation_probe=lambda: True,
+        )
+
+
+def test_processing_source_archive_rejects_symbolic_link(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target.parquet"
+    link = tmp_path / "source.parquet"
+
+    target.write_bytes(b"immutable-source-content")
+
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("File symlinks are unavailable on this platform")
+
+    with pytest.raises(
+        SourceArchiveMetadataError,
+        match="symbolic link",
+    ):
+        ProcessingSourceArchive(
+            spec=_spec(),
+            local_path=link,
+            content_sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+            file_size_bytes=target.stat().st_size,
+            status=SourceHourStatus.DOWNLOADED,
         )
