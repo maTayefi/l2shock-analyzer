@@ -34,7 +34,7 @@ import json
 import os
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from enum import IntEnum
@@ -62,6 +62,7 @@ from l2shock.processing import (
     ProcessingSourceArchive,
 )
 from l2shock.remote import (
+    HeadlessL2ProcessingOutput,
     HuggingFaceArtifactNotFoundError,
     HuggingFaceDatasetRepository,
     HuggingFacePublicationResult,
@@ -1182,6 +1183,53 @@ def _archive_by_kind(
     return selected[0]
 
 
+def _l2_artifact_for_publication(
+    output: HeadlessL2ProcessingOutput,
+) -> RemoteL2ProcessedArtifact:
+    """Return an explicit L2 result without propagating unsafe checkpoints.
+
+    A deterministically processed hour may be partially or completely
+    analytically invalid. Publishing its verified analytical channels records
+    that fact and gives catch-up a durable blocked-hour marker.
+
+    An all-invalid hour must not advance checkpoint state even when sequence
+    replay technically retained both book sides. In that case the analytical
+    artifact is published with no output checkpoint.
+    """
+
+    if not isinstance(output, HeadlessL2ProcessingOutput):
+        raise TypeError("output must be HeadlessL2ProcessingOutput")
+
+    valid_count = output.quality_summary.get("valid_count")
+
+    if (
+        isinstance(valid_count, bool)
+        or not isinstance(valid_count, int)
+        or not 0 <= valid_count <= 3_600
+    ):
+        raise RemoteWorkerError("Headless L2 output has an invalid valid_count")
+
+    artifact = output.artifact
+
+    if valid_count > 0 or artifact.output_checkpoint is None:
+        return artifact
+
+    # Sequence-valid state can still remain locked, crossed, or otherwise
+    # analytically unusable for all 3,600 seconds. Retain the explicit invalid
+    # analytical artifact, but remove the checkpoint so later hours cannot
+    # inherit that structurally unusable state.
+    manifest = replace(
+        artifact.manifest,
+        output_checkpoint_content_sha256=None,
+    )
+
+    return RemoteL2ProcessedArtifact(
+        manifest=manifest,
+        encoded=artifact.encoded,
+        output_checkpoint=None,
+    )
+
+
 async def process_remote_hour(
     *,
     repository: HuggingFaceDatasetRepository,
@@ -1441,24 +1489,35 @@ async def process_remote_hour(
             l2_output.artifact.manifest.content_sha256,
         )
 
-        if l2_output.artifact.output_checkpoint is None:
-            raise RemoteWorkerCheckpointBlockedError(
-                "Target L2 processing did not produce a usable output "
-                "checkpoint; no remote artifact was published"
+        original_artifact = l2_output.artifact
+        publication_artifact = _l2_artifact_for_publication(
+            l2_output,
+        )
+
+        if publication_artifact.output_checkpoint is None:
+            if original_artifact.output_checkpoint is not None:
+                reason = "all_analytical_seconds_invalid"
+            else:
+                reason = "replay_finished_without_usable_checkpoint"
+
+            log.warning(
+                "REMOTE L2 BLOCKED-HOUR MARKER: venue=%s instrument=%s "
+                "hour=%s reason=%s valid_seconds=%s invalid_seconds=%s "
+                "checkpoint_published=false",
+                normalized_venue,
+                normalized_instrument,
+                target_hour.isoformat(),
+                reason,
+                l2_output.quality_summary.get("valid_count"),
+                l2_output.quality_summary.get("invalid_count"),
             )
 
-        valid_l2_seconds = l2_output.quality_summary.get("valid_count")
-
-        if (
-            isinstance(valid_l2_seconds, bool)
-            or not isinstance(valid_l2_seconds, int)
-            or valid_l2_seconds <= 0
-        ):
-            raise RemoteWorkerCheckpointBlockedError(
-                "Target L2 processing produced no analytically valid "
-                "one-second observations; no remote artifact or checkpoint "
-                "was published"
-            )
+        # Keep all subsequent publication, provenance logging, and result
+        # construction on the checkpoint-safe artifact.
+        l2_output = replace(
+            l2_output,
+            artifact=publication_artifact,
+        )
 
     if price_missing:
         trade_archive = _archive_by_kind(

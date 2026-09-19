@@ -17,6 +17,7 @@ from l2shock.liquidity import decode_hourly_liquidity_blocks
 from l2shock.presets import build_bybit_data_preset
 from l2shock.processing import ProcessingSourceArchive
 from l2shock.remote import process_l2_archive_headlessly
+from l2shock.remote_worker import _l2_artifact_for_publication
 
 
 def _hour(offset: int = 0) -> datetime:
@@ -272,3 +273,70 @@ def test_remote_bybit_boundary_snapshot_uses_predecessor_checkpoint(
     assert decoded.invalid_count == 0
     assert decoded.bid_liquidity[0] == Decimal("696.5")
     assert decoded.ask_liquidity[0] == Decimal("612")
+
+
+def test_all_invalid_bybit_output_becomes_checkpointless_blocked_marker(
+    tmp_path: Path,
+) -> None:
+    rows = _native_snapshot_rows()
+
+    # Make the complete snapshot locked for the entire hour. Sequence replay
+    # remains initialized and checkpoint-capable, but no one-second
+    # observation is analytically valid.
+    for row in rows:
+        if row["event_type"] == "snapshot" and row["side"] == "ask":
+            row["price"] = "100"
+
+    archive = _write(
+        tmp_path / "bybit-all-invalid.parquet",
+        rows,
+    )
+
+    output = process_l2_archive_headlessly(
+        archive,
+        _preset(),
+        producer_git_commit="a" * 40,
+        batch_size=1,
+    )
+
+    assert output.quality_summary["valid_count"] == 0
+    assert output.quality_summary["invalid_count"] == 3_600
+
+    # Headless replay can technically serialize the sequence-valid locked
+    # state, but remote publication must not advance that checkpoint.
+    assert output.artifact.output_checkpoint is not None
+    assert output.artifact.manifest.output_checkpoint_content_sha256 is not None
+
+    publishable = _l2_artifact_for_publication(output)
+
+    assert publishable.encoded == output.artifact.encoded
+    assert publishable.manifest.content_sha256 == (
+        output.artifact.manifest.content_sha256
+    )
+    assert publishable.output_checkpoint is None
+    assert publishable.manifest.output_checkpoint_content_sha256 is None
+
+
+def test_valid_bybit_output_keeps_publication_checkpoint(
+    tmp_path: Path,
+) -> None:
+    archive = _write(
+        tmp_path / "bybit-valid-publication.parquet",
+        _native_snapshot_rows(),
+    )
+
+    output = process_l2_archive_headlessly(
+        archive,
+        _preset(),
+        producer_git_commit="a" * 40,
+        batch_size=1,
+    )
+
+    assert output.quality_summary["valid_count"] == 3_600
+    assert output.artifact.output_checkpoint is not None
+
+    publishable = _l2_artifact_for_publication(output)
+
+    assert publishable is output.artifact
+    assert publishable.output_checkpoint is not None
+    assert publishable.manifest.output_checkpoint_content_sha256 is not None

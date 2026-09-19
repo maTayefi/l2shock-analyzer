@@ -838,10 +838,11 @@ def test_remote_worker_default_search_reaches_historical_seeds() -> None:
     assert args.max_runtime_minutes == 240
 
 
-def test_remote_worker_refuses_all_invalid_l2_publication() -> None:
+def test_remote_worker_routes_l2_through_blocked_marker_policy() -> None:
     source = Path(remote_worker_module.__file__).read_text(
         encoding="utf-8",
     )
 
-    assert 'l2_output.quality_summary.get("valid_count")' in source
-    assert "no analytically valid" in source
+    assert "_l2_artifact_for_publication(" in source
+    assert "REMOTE L2 BLOCKED-HOUR MARKER" in source
+    assert "checkpoint_published=false" in source
