@@ -12,6 +12,7 @@ from l2shock.acquisition import SourceDataKind, SourceFileSpec
 from l2shock.ingest import TradeRecord
 from l2shock.price import (
     PRICE_OBSERVATIONS_PER_HOUR,
+    OneSecondTradeOHLCAccumulator,
     TradeOHLCCancelledError,
     TradeOHLCError,
     TradeSampleInvalidReason,
@@ -449,3 +450,96 @@ def test_streamed_trade_archive_builds_real_ohlc(
 
     assert result.block.accepted_trade_count == 3
     assert result.block.quality_summary.total_trade_count == 3
+
+
+def test_trade_id_deduplication_uses_temporary_sqlite_storage() -> None:
+    accumulator = OneSecondTradeOHLCAccumulator(
+        base="BTC",
+        hour_utc=_hour(),
+    )
+
+    try:
+        for index in range(5_000):
+            accumulator.consume(
+                _record(
+                    trade_id=f"disk-backed-{index}",
+                    milliseconds=index,
+                    price=str(100 + (index % 10)),
+                    row_number=index,
+                )
+            )
+
+        # Regression boundary: unique target-hour IDs must not be retained in
+        # an unbounded Python dictionary.
+        assert not hasattr(
+            accumulator,
+            "_trade_id_fingerprints",
+        )
+
+        store = accumulator._trade_id_store
+        connection = store._connection
+
+        assert connection is not None
+        assert store.cache_size_kib == 2_048
+
+        cache_size = connection.execute("PRAGMA cache_size").fetchone()
+
+        database_list = connection.execute("PRAGMA database_list").fetchall()
+
+        assert cache_size == (-2_048,)
+        assert database_list
+        assert database_list[0][2] == ""
+
+        block = accumulator.finish()
+    finally:
+        accumulator.close()
+
+    assert block.input_trade_count == 5_000
+    assert block.accepted_trade_count == 5_000
+    assert block.exact_duplicate_trade_count == 0
+    assert block.quality_summary.total_trade_count == 5_000
+
+
+def test_trade_id_sqlite_storage_preserves_exact_duplicate_semantics() -> None:
+    record = _record(
+        trade_id="sqlite-exact-duplicate",
+        milliseconds=100,
+        price="100.2500",
+    )
+
+    block = build_trade_ohlc_hour(
+        (
+            record,
+            record,
+        ),
+        base="BTC",
+        hour_utc=_hour(),
+    )
+
+    assert block.input_trade_count == 2
+    assert block.accepted_trade_count == 1
+    assert block.exact_duplicate_trade_count == 1
+    assert block.observations[0].trade_count == 1
+
+
+def test_trade_id_sqlite_storage_preserves_conflict_detection() -> None:
+    with pytest.raises(
+        TradeOHLCError,
+        match="conflicting normalized content",
+    ):
+        build_trade_ohlc_hour(
+            (
+                _record(
+                    trade_id="sqlite-conflict",
+                    milliseconds=100,
+                    price="100",
+                ),
+                _record(
+                    trade_id="sqlite-conflict",
+                    milliseconds=100,
+                    price="101",
+                ),
+            ),
+            base="BTC",
+            hour_utc=_hour(),
+        )

@@ -23,6 +23,7 @@ No PostgreSQL persistence or binary block encoding occurs in this module.
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -518,8 +519,193 @@ def _trade_fingerprint(record: TradeRecord) -> TradeFingerprint:
     )
 
 
+class _TradeIdFingerprintStore:
+    """Exact temporary disk-backed trade-ID deduplication.
+
+    Passing an empty SQLite filename creates a private temporary database that
+    SQLite deletes automatically when the connection closes. A small page
+    cache keeps Python/process memory bounded independently of target-hour
+    trade count while preserving exact duplicate and conflict detection.
+    """
+
+    _CACHE_SIZE_KIB: Final[int] = 2_048
+
+    def __init__(self) -> None:
+        connection: sqlite3.Connection | None = None
+
+        try:
+            connection = sqlite3.connect("")
+            connection.execute("PRAGMA journal_mode = OFF")
+            connection.execute("PRAGMA synchronous = OFF")
+            connection.execute("PRAGMA temp_store = FILE")
+            connection.execute(f"PRAGMA cache_size = {-self._CACHE_SIZE_KIB}")
+            connection.execute("""
+                CREATE TABLE trade_fingerprints (
+                    trade_id TEXT PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    price TEXT NOT NULL,
+                    quantity TEXT NOT NULL,
+                    received_time_ns INTEGER NOT NULL,
+                    event_time_ms INTEGER NOT NULL,
+                    trade_time_ms INTEGER NOT NULL,
+                    is_buyer_maker INTEGER NOT NULL,
+                    order_type TEXT
+                ) WITHOUT ROWID
+                """)
+        except sqlite3.Error as exc:
+            if connection is not None:
+                connection.close()
+
+            raise TradeOHLCError(
+                "Could not initialize temporary trade-ID deduplication storage"
+            ) from exc
+
+        self._connection: sqlite3.Connection | None = connection
+
+    @property
+    def cache_size_kib(self) -> int:
+        return self._CACHE_SIZE_KIB
+
+    def observe(
+        self,
+        trade_id: str,
+        fingerprint: TradeFingerprint,
+    ) -> bool:
+        """Record a new ID or return True for an exact duplicate.
+
+        A repeated ID with different normalized content fails closed.
+        """
+
+        connection = self._connection
+
+        if connection is None:
+            raise TradeOHLCError("Trade-ID deduplication storage is already closed")
+
+        try:
+            row = connection.execute(
+                """
+                SELECT
+                    symbol,
+                    price,
+                    quantity,
+                    received_time_ns,
+                    event_time_ms,
+                    trade_time_ms,
+                    is_buyer_maker,
+                    order_type
+                FROM trade_fingerprints
+                WHERE trade_id = ?
+                """,
+                (trade_id,),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise TradeOHLCError(
+                "Could not query temporary trade-ID deduplication storage"
+            ) from exc
+
+        if row is not None:
+            stored_fingerprint: TradeFingerprint = (
+                str(row[0]),
+                Decimal(str(row[1])),
+                Decimal(str(row[2])),
+                int(row[3]),
+                int(row[4]),
+                int(row[5]),
+                bool(row[6]),
+                str(row[7]) if row[7] is not None else None,
+            )
+
+            if stored_fingerprint != fingerprint:
+                raise TradeOHLCError(
+                    "One trade_id appears with conflicting normalized content: "
+                    f"{trade_id!r}"
+                )
+
+            return True
+
+        (
+            symbol,
+            price,
+            quantity,
+            received_time_ns,
+            event_time_ms,
+            trade_time_ms,
+            is_buyer_maker,
+            order_type,
+        ) = fingerprint
+
+        try:
+            connection.execute(
+                """
+                INSERT INTO trade_fingerprints (
+                    trade_id,
+                    symbol,
+                    price,
+                    quantity,
+                    received_time_ns,
+                    event_time_ms,
+                    trade_time_ms,
+                    is_buyer_maker,
+                    order_type
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    trade_id,
+                    symbol,
+                    format(price, "f"),
+                    format(quantity, "f"),
+                    received_time_ns,
+                    event_time_ms,
+                    trade_time_ms,
+                    int(is_buyer_maker),
+                    order_type,
+                ),
+            )
+        except sqlite3.Error as exc:
+            raise TradeOHLCError(
+                "Could not update temporary trade-ID deduplication storage"
+            ) from exc
+
+        return False
+
+    def close(self) -> None:
+        connection = self._connection
+
+        if connection is None:
+            return
+
+        self._connection = None
+
+        try:
+            connection.close()
+        except sqlite3.Error as exc:
+            raise TradeOHLCError(
+                "Could not close temporary trade-ID deduplication storage"
+            ) from exc
+
+    def __del__(self) -> None:
+        # This is only a defensive fallback for callers that abandon an
+        # accumulator after an exception. Normal paths close explicitly.
+        connection = getattr(
+            self,
+            "_connection",
+            None,
+        )
+
+        if connection is None:
+            return
+
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+        self._connection = None
+
+
 class OneSecondTradeOHLCAccumulator:
-    """Build one target UTC price hour without retaining complete trade rows."""
+    """Build one target UTC price hour with exact disk-backed trade-ID dedup."""
 
     def __init__(
         self,
@@ -555,16 +741,17 @@ class OneSecondTradeOHLCAccumulator:
         self._candles: list[_MutableCandle | None] = [
             None for _index in range(PRICE_OBSERVATIONS_PER_HOUR)
         ]
-        self._trade_id_fingerprints: dict[
-            str,
-            TradeFingerprint,
-        ] = {}
+        self._trade_id_store = _TradeIdFingerprintStore()
 
         self._input_trade_count = 0
         self._accepted_trade_count = 0
         self._exact_duplicate_trade_count = 0
         self._outside_target_hour_trade_count = 0
         self._finalized = False
+
+    def close(self) -> None:
+        """Release temporary trade-ID deduplication storage."""
+        self._trade_id_store.close()
 
     def consume(self, record: TradeRecord) -> None:
         if self._finalized:
@@ -592,19 +779,13 @@ class OneSecondTradeOHLCAccumulator:
             return
 
         fingerprint = _trade_fingerprint(record)
-        previous = self._trade_id_fingerprints.get(record.trade_id)
 
-        if previous is not None:
-            if previous != fingerprint:
-                raise TradeOHLCError(
-                    "One trade_id appears with conflicting normalized content: "
-                    f"{record.trade_id!r}"
-                )
-
+        if self._trade_id_store.observe(
+            record.trade_id,
+            fingerprint,
+        ):
             self._exact_duplicate_trade_count += 1
             return
-
-        self._trade_id_fingerprints[record.trade_id] = fingerprint
 
         bucket_index = (
             record.trade_time_ms - self._hour_start_ms
@@ -648,6 +829,10 @@ class OneSecondTradeOHLCAccumulator:
 
         _check_cancellation(self._cancellation_probe)
         self._finalized = True
+
+        # Duplicate detection is complete. Release and delete its temporary
+        # SQLite database before constructing the immutable 3,600-slot result.
+        self.close()
 
         observations: list[TradeOHLCObservation] = []
 
@@ -751,10 +936,13 @@ def build_trade_ohlc_hour(
         cancellation_check_interval_records=(cancellation_check_interval_records),
     )
 
-    for record in records:
-        accumulator.consume(record)
+    try:
+        for record in records:
+            accumulator.consume(record)
 
-    return accumulator.finish()
+        return accumulator.finish()
+    finally:
+        accumulator.close()
 
 
 def stream_trade_ohlc_hour(
@@ -835,21 +1023,24 @@ def stream_trade_ohlc_hour(
 
     reports: list[TradeReadReport] = []
 
-    for path, spec in normalized_sources:
-        report = read_trade_file(
-            path,
-            spec,
-            consumer=accumulator.consume,
-            batch_size=batch_size,
-            cancellation_probe=cancellation_probe,
-            cancellation_check_interval_rows=(cancellation_check_interval_rows),
-        )
-        reports.append(report)
+    try:
+        for path, spec in normalized_sources:
+            report = read_trade_file(
+                path,
+                spec,
+                consumer=accumulator.consume,
+                batch_size=batch_size,
+                cancellation_probe=cancellation_probe,
+                cancellation_check_interval_rows=(cancellation_check_interval_rows),
+            )
+            reports.append(report)
 
-    return StreamedTradeOHLCResult(
-        block=accumulator.finish(),
-        reader_reports=tuple(reports),
-    )
+        return StreamedTradeOHLCResult(
+            block=accumulator.finish(),
+            reader_reports=tuple(reports),
+        )
+    finally:
+        accumulator.close()
 
 
 __all__ = [
