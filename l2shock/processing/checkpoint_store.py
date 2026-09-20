@@ -647,8 +647,7 @@ class CheckpointStore:
                     SQLAlchemyProcessingSourceRepository,
                 ):
                     durable_checkpoint_digest = (
-                        source_repository
-                        .find_durable_output_checkpoint_content_sha256(
+                        source_repository.find_durable_output_checkpoint_content_sha256(
                             predecessor_spec
                         )
                     )

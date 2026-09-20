@@ -466,3 +466,49 @@ def test_bybit_skipped_final_update_id_invalidates(
 
     assert archive.invalidation_count == 1
     assert archive.retained_issues[0].kind == ("update_continuity_mismatch")
+
+
+def test_bybit_frontierless_snapshot_cannot_inherit_in_archive_snapshot_frontier(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "same-hour-frontierless-snapshot.parquet"
+
+    rows = _native_snapshot_rows(
+        hour_offset=0,
+        milliseconds=100,
+        final_update_id=500,
+        last_update_id=9_000,
+    )
+    rows.extend(
+        _boundary_snapshot_rows(
+            hour_offset=0,
+            last_update_id=9_500,
+        )
+    )
+
+    _write(
+        path,
+        rows,
+    )
+
+    report = replay_orderbook_archives(
+        (
+            (
+                path,
+                _spec(0),
+            ),
+        ),
+        batch_size=1,
+    )
+
+    assert report.finally_valid is False
+    assert report.final_checkpoint is None
+
+    archive = report.archives[0]
+
+    assert archive.snapshots_applied == 1
+    assert archive.invalidation_count == 1
+    assert any(
+        issue.kind == "snapshot_missing_replay_frontier"
+        for issue in archive.retained_issues
+    )

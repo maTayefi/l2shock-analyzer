@@ -16,6 +16,8 @@ from l2shock.analysis import (
     LiquidityMovementDetectionConfig,
     LiquidityMovementRankingConfig,
     PriceBounds,
+    LiquidityMovementAnalysisProgress,
+    LiquidityMovementAnalysisProgressPhase,
     build_aligned_analysis_dataset,
     execute_liquidity_movement_analysis,
 )
@@ -24,7 +26,9 @@ from l2shock.ingest import BookSampleQuality
 from l2shock.price import TradeSampleQuality
 from l2shock.ui.analysis_runtime import (
     AnalysisRuntimeBusyError,
+    AnalysisRuntimePhase,
     ManualAnalysisRuntime,
+    ManualAnalysisStatus,
 )
 from l2shock.ui.state import get_state, reset_state_for_tests
 
@@ -399,6 +403,15 @@ async def test_native_task_cancellation_signals_worker() -> None:
     assert runtime.is_running is False
     assert get_state().active_operation_name == ""
 
+    snapshot = runtime.snapshot()
+
+    assert snapshot.completion_sequence == 1
+    assert snapshot.last_error is None
+    assert snapshot.last_result is not None
+    assert snapshot.last_result.status is ManualAnalysisStatus.STOPPED
+    assert snapshot.last_result.stopped is True
+    assert snapshot.last_result.analysis is None
+
 
 @pytest.mark.asyncio
 async def test_default_executor_matches_direct_execution() -> None:
@@ -421,3 +434,73 @@ async def test_default_executor_matches_direct_execution() -> None:
     )
 
     assert observed.analysis == expected
+
+
+@pytest.mark.asyncio
+async def test_stop_progress_cannot_be_overwritten_by_late_worker_progress() -> None:
+    reset_state_for_tests()
+    dataset = _dataset()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def executor(
+        _dataset_value,
+        *,
+        config,
+        cancellation_probe,
+        progress_sink,
+        cache,
+    ):
+        del config, cache
+        entered.set()
+
+        while not release.is_set():
+            time.sleep(0.005)
+
+        assert progress_sink is not None
+
+        progress_sink(
+            LiquidityMovementAnalysisProgress(
+                analysis_id="b" * 64,
+                phase=LiquidityMovementAnalysisProgressPhase.COMPLETED,
+                message="Late worker completion.",
+                completed_units=1,
+                total_units=1,
+            )
+        )
+
+        if cancellation_probe is not None and cancellation_probe():
+            raise LiquidityMovementAnalysisCancelledError(
+                "stop observed after late progress"
+            )
+
+        raise AssertionError("Cancellation was not visible to the worker")
+
+    runtime = ManualAnalysisRuntime(
+        dataset_loader=lambda _request: dataset,
+        executor=executor,
+    )
+
+    task = runtime.start(
+        request=dataset.request,
+        config=_config(),
+    )
+
+    assert await asyncio.to_thread(
+        entered.wait,
+        1.0,
+    )
+
+    assert runtime.request_stop() is True
+    assert runtime.snapshot().latest_progress is not None
+    assert runtime.snapshot().latest_progress.phase is AnalysisRuntimePhase.STOPPING
+
+    release.set()
+    result = await task
+
+    assert result.status is ManualAnalysisStatus.STOPPED
+
+    snapshot = runtime.snapshot()
+
+    assert snapshot.latest_progress is not None
+    assert snapshot.latest_progress.phase is AnalysisRuntimePhase.STOPPING

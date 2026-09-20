@@ -1005,16 +1005,20 @@ class OrderBookReplayState:
             )
 
         if snapshot_frontier is None:
-            if not self._valid or self._last_update_id is None:
+            if (
+                not self._valid
+                or self._last_update_id is None
+                or self._initialization_state is not BookInitializationState.CARRIED
+            ):
                 return self._invalidate(
                     event=event,
                     hour_utc=hour_utc,
                     kind="snapshot_missing_replay_frontier",
                     message=(
                         "A snapshot without its venue replay frontier may "
-                        "replace only an already valid carried/checkpoint "
-                        "state. The replay frontier must not be inferred "
-                        "from a later update."
+                        "replace only valid state explicitly carried into "
+                        "this archive. The replay frontier must not be "
+                        "inherited from an in-archive snapshot or update."
                     ),
                 )
 

@@ -679,3 +679,24 @@ def test_rate_limit_retry_does_not_require_branch_head_change(
     assert len(api.create_commit_calls) == 2
     assert api.create_commit_calls[0]["parent_commit"] == "1" * 40
     assert api.create_commit_calls[1]["parent_commit"] == "1" * 40
+
+
+def test_publication_retry_delay_floors_zero_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import l2shock.remote.hf_repository as module
+
+    monkeypatch.setattr(
+        module.random,
+        "uniform",
+        lambda _lower, _upper: 0.0,
+    )
+
+    assert (
+        module._publication_retry_delay(
+            attempt=1,
+            rate_limited=True,
+            retry_after_seconds=0.0,
+        )
+        == module._MINIMUM_CONFLICT_RETRY_SECONDS
+    )

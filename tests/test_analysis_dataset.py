@@ -101,6 +101,7 @@ def _request(
     end_second: int,
     activity_timeframe: str = "1s",
     maximum_chart_bars: int = 400,
+    chart_timeframe_override: str | None = None,
     bounds: PriceBounds | None = None,
     context_before: int = 3,
     context_after: int = 3,
@@ -112,6 +113,7 @@ def _request(
         requested_end_utc=(_start() + timedelta(seconds=end_second)),
         activity_timeframe=activity_timeframe,
         maximum_chart_bars=maximum_chart_bars,
+        chart_timeframe_override=chart_timeframe_override,
         price_bounds=bounds or PriceBounds(),
         context_before=context_before,
         context_after=context_after,
@@ -719,3 +721,38 @@ def test_partial_market_coverage_outside_effective_ranges_is_ignored() -> None:
 
     assert dataset.activity.bars[0].core_eligible is True
     assert dataset.chart.bars[0].core_eligible is True
+
+
+def test_explicit_chart_timeframe_must_fit_chart_bar_budget() -> None:
+    request = _request(
+        end_second=20,
+        maximum_chart_bars=5,
+        chart_timeframe_override="1s",
+    )
+
+    with pytest.raises(
+        AnalysisDatasetError,
+        match="explicit chart timeframe produces 21 bars",
+    ):
+        build_aligned_analysis_dataset(
+            request,
+            l2_seconds=tuple(_valid_l2(index) for index in range(21)),
+            price_seconds=tuple(_valid_price(index) for index in range(21)),
+        )
+
+
+def test_explicit_chart_timeframe_is_retained_when_it_fits_budget() -> None:
+    request = _request(
+        end_second=20,
+        maximum_chart_bars=5,
+        chart_timeframe_override="5s",
+    )
+
+    dataset = build_aligned_analysis_dataset(
+        request,
+        l2_seconds=tuple(_valid_l2(index) for index in range(25)),
+        price_seconds=tuple(_valid_price(index) for index in range(25)),
+    )
+
+    assert dataset.chart.timeframe.label == "5s"
+    assert len(dataset.chart.bars) == 5

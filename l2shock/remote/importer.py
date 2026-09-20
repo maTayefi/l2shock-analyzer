@@ -693,9 +693,7 @@ def import_downloaded_huggingface_artifact(
         )
 
         if not isinstance(selected_checkpoint_store, CheckpointStore):
-            raise TypeError(
-                "checkpoint_store must be a CheckpointStore or null"
-            )
+            raise TypeError("checkpoint_store must be a CheckpointStore or null")
 
         return _import_l2(
             session,

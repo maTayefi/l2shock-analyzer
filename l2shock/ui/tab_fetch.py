@@ -543,7 +543,7 @@ def build_fetch_tab(
 
             ui.label(
                 "Depth fractions use exact Decimal values and must satisfy "
-                "0 ≤ lower ≤ upper < 1."
+                "0 \u2264 lower \u2264 upper < 1."
             ).classes("text-xs text-gray-500")
 
             with ui.row().classes("gap-2 mt-3"):

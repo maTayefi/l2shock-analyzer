@@ -303,6 +303,59 @@ def _accumulate_alpha(
     return 1.0 - (1.0 - current) * (1.0 - incoming)
 
 
+def _capped_opposite_direction_alphas(
+    upward: float,
+    downward: float,
+    cap: float,
+) -> tuple[float, float]:
+    """Scale two alphas so their composed opacity does not exceed cap."""
+
+    values = {
+        "upward": float(upward),
+        "downward": float(downward),
+        "cap": float(cap),
+    }
+
+    for name, value in values.items():
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise AnalysisChartError(f"{name} alpha must be finite and inside [0, 1]")
+
+    upward_value = values["upward"]
+    downward_value = values["downward"]
+    cap_value = values["cap"]
+
+    combined = 1.0 - ((1.0 - upward_value) * (1.0 - downward_value))
+
+    if combined <= cap_value or combined <= 0.0:
+        return upward_value, downward_value
+
+    total = upward_value + downward_value
+    product = upward_value * downward_value
+
+    if product <= 0.0:
+        scale = cap_value / total
+    else:
+        discriminant = max(
+            0.0,
+            total * total - 4.0 * product * cap_value,
+        )
+        denominator = total + math.sqrt(discriminant)
+        scale = 2.0 * cap_value / denominator if denominator > 0.0 else 0.0
+
+    scale = min(
+        1.0,
+        max(
+            0.0,
+            scale,
+        ),
+    )
+
+    return (
+        upward_value * scale,
+        downward_value * scale,
+    )
+
+
 def _candidate_display_indices(
     ranking: RankedLiquidityMovement,
     result: LiquidityMovementAnalysisResult,
@@ -426,14 +479,14 @@ def _highlight_alpha_by_panel(
         ]
 
         for index in range(count):
-            combined = 1.0 - ((1.0 - upward[index]) * (1.0 - downward[index]))
-
-            if combined <= cap or combined <= 0.0:
-                continue
-
-            scale = cap / combined
-            upward[index] *= scale
-            downward[index] *= scale
+            (
+                upward[index],
+                downward[index],
+            ) = _capped_opposite_direction_alphas(
+                upward[index],
+                downward[index],
+                cap,
+            )
 
     return values
 
@@ -705,7 +758,7 @@ def _discontinuity_series(
         ("Persistent data warning", warning, 21),
     ):
         series = _background_series(
-            name=f"{name} · panel {panel_index}",
+            name=f"{name} \u00b7 panel {panel_index}",
             panel_index=panel_index,
             data=data,
             z=z,
@@ -727,47 +780,58 @@ def _tooltip_formatter_js(
         separators=(",", ":"),
     )
 
-    return f"""
-    function(params) {{
-        const rows = {payload};
+    template = r"""
+    function(params) {
+        const rows = __L2SHOCK_TOOLTIP_ROWS__;
         const ps = Array.isArray(params) ? params : [params];
 
-        if (!ps.length) {{
+        if (!ps.length) {
             return '';
-        }}
+        }
 
-        const index = Number(ps[0].dataIndex);
+        const categoryParam = ps.find(
+            item =>
+                item
+                && item.seriesType !== 'custom'
+                && Number.isFinite(Number(item.dataIndex))
+        );
+
+        if (!categoryParam) {
+            return '';
+        }
+
+        const index = Number(categoryParam.dataIndex);
 
         if (
-            !Number.isFinite(index)
+            !Number.isInteger(index)
             || index < 0
             || index >= rows.length
-        ) {{
+        ) {
             return '';
-        }}
+        }
 
-        const row = rows[Math.round(index)] || {{}};
+        const row = rows[index] || {};
 
-        function escapeHtml(value) {{
+        function escapeHtml(value) {
             return String(value ?? '')
                 .replace(/&/g, '&amp;')
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;')
                 .replace(/"/g, '&quot;')
                 .replace(/'/g, '&#039;');
-        }}
+        }
 
-        function formatNumber(value) {{
+        function formatNumber(value) {
             const numeric = Number(value);
 
-            if (!Number.isFinite(numeric)) {{
+            if (!Number.isFinite(numeric)) {
                 return 'unavailable';
-            }}
+            }
 
-            return numeric.toLocaleString(undefined, {{
+            return numeric.toLocaleString(undefined, {
                 maximumFractionDigits: 10,
-            }});
-        }}
+            });
+        }
 
         let output =
             '<div style="max-width:460px;white-space:normal;">'
@@ -775,14 +839,14 @@ def _tooltip_formatter_js(
             + '<br/><span style="color:#94a3b8;">UTC '
             + escapeHtml(row.utc_time || '') + '</span>';
 
-        if (row.price) {{
+        if (row.price) {
             output +=
                 '<br/><b>Price</b>'
                 + ' O ' + formatNumber(row.price.open)
                 + ' H ' + formatNumber(row.price.high)
                 + ' L ' + formatNumber(row.price.low)
                 + ' C ' + formatNumber(row.price.close);
-        }}
+        }
 
         output +=
             '<br/><b>Bid Liquidity:</b> '
@@ -794,7 +858,7 @@ def _tooltip_formatter_js(
             + '<br/><b>Order-Book Delta:</b> '
             + formatNumber(row.delta);
 
-        if (row.discontinuity) {{
+        if (row.discontinuity) {
             output +=
                 '<div style="margin-top:6px;border-top:1px solid #475569;'
                 + 'padding-top:5px;color:'
@@ -811,12 +875,17 @@ def _tooltip_formatter_js(
                     (row.discontinuity.reasons || []).join(', ')
                 )
                 + '</div>';
-        }}
+        }
 
         output += '</div>';
         return output;
-    }}
+    }
     """
+
+    return template.replace(
+        "__L2SHOCK_TOOLTIP_ROWS__",
+        payload,
+    )
 
 
 def _chart_metadata(
@@ -901,7 +970,7 @@ def _selected_focus_series(
 
     return {
         "id": (ANALYSIS_SELECTED_FOCUS_SERIES_PREFIX + str(panel_index)),
-        "name": f"Selected LM focus · panel {panel_index}",
+        "name": f"Selected LM focus \u00b7 panel {panel_index}",
         "type": "line",
         "xAxisIndex": panel_index,
         "yAxisIndex": panel_index,
@@ -1267,7 +1336,7 @@ def build_analysis_chart_option(
                 rgb=rgb,
             )
             background = _background_series(
-                name=f"{label} · panel {panel_index}",
+                name=f"{label} \u00b7 panel {panel_index}",
                 panel_index=panel_index,
                 data=data,
                 z=2,
@@ -1306,8 +1375,8 @@ def build_analysis_chart_option(
         "title": {
             "text": (
                 f"{result.dataset.request.base} Liquidity Shock Analysis"
-                f" · chart {chart.timeframe.label}"
-                f" · activity {result.dataset.activity.timeframe.label}"
+                f" \u00b7 chart {chart.timeframe.label}"
+                f" \u00b7 activity {result.dataset.activity.timeframe.label}"
             ),
             "left": "center",
             "top": 4,
@@ -1331,8 +1400,8 @@ def build_analysis_chart_option(
                 "Total Liquidity",
                 "Positive Delta",
                 "Negative Delta",
-                "Upward LM highlights · panel 0",
-                "Downward LM highlights · panel 0",
+                "Upward LM highlights \u00b7 panel 0",
+                "Downward LM highlights \u00b7 panel 0",
             ],
         },
         "tooltip": {

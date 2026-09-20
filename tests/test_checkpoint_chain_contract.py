@@ -49,16 +49,12 @@ def test_l2_coordinator_does_not_inherit_old_output_checkpoint() -> None:
     )
 
     assert "previous_output_checkpoint" not in source
-    assert (
-        "output_checkpoint.encoding_info.content_sha256"
-        in source
-    )
+    assert "output_checkpoint.encoding_info.content_sha256" in source
 
 
 def test_sql_source_repository_exposes_durable_checkpoint_ownership() -> None:
     source = inspect.getsource(
-        SQLAlchemyProcessingSourceRepository
-        .find_durable_output_checkpoint_content_sha256,
+        SQLAlchemyProcessingSourceRepository.find_durable_output_checkpoint_content_sha256,
     )
 
     assert '"output_checkpoint_content_sha256"' in source
@@ -71,9 +67,7 @@ def test_checkpoint_discovery_checks_durable_output_ownership() -> None:
         CheckpointStore.build_search_plan,
     )
 
-    ownership_position = source.index(
-        "find_durable_output_checkpoint_content_sha256"
-    )
+    ownership_position = source.index("find_durable_output_checkpoint_content_sha256")
     found_return_position = source.index(
         "stop_reason=CheckpointSearchStopReason.CHECKPOINT_FOUND"
     )
@@ -89,10 +83,7 @@ def test_remote_l2_import_publishes_verified_checkpoint_locally() -> None:
 
     assert "decode_checkpoint" in source
     assert "checkpoint_store.publish" in source
-    assert (
-        "published_checkpoint.encoding_info.content_sha256"
-        in source
-    )
+    assert "published_checkpoint.encoding_info.content_sha256" in source
 
 
 def test_remote_import_writes_standard_and_legacy_checkpoint_keys() -> None:

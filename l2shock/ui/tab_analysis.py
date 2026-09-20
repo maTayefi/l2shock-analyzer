@@ -294,7 +294,7 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
     pending_temporal_request = None
 
     with ui.column().classes("w-full gap-3 p-4"):
-        section_header("Analysis — Price and L2 Liquidity Movements")
+        section_header("Analysis \u2014 Price and L2 Liquidity Movements")
 
         with ui.card().classes("w-full"):
             ui.label(
@@ -606,7 +606,7 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
 
             ui.label(
                 "Rows are the union of Top-N height and Top-N sharpness "
-                "within independent metric × timeframe × direction "
+                "within independent metric \u00d7 timeframe \u00d7 direction "
                 "populations. Click a column heading to sort."
             ).classes("text-sm text-gray-600")
 
@@ -631,7 +631,7 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
             ui.markdown("""
 - Price: Binance BTCUSDT/ETHUSDT USD-M perpetual trades only.
 - L2 metrics: Bid Liquidity, Ask Liquidity, Total Liquidity, Bid-Ask Imbalance.
-- Ranking populations: metric × timeframe × direction.
+- Ranking populations: metric \u00d7 timeframe \u00d7 direction.
 - Event location: actual extremum, never the later confirmation bar.
 - Invalid or filtered discontinuities cannot be crossed by an LM.
 - Analysis remains historical, offline, and post-scan.
@@ -986,7 +986,7 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
             f"Focused {metric} / {timeframe} / {direction} "
             f"population rank {population_rank}; "
             f"chart categories {window.candidate_start_index}"
-            f"–{window.candidate_end_index}."
+            f"\u2013{window.candidate_end_index}."
         )
 
     def _sync_price_inputs() -> None:

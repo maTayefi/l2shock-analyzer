@@ -615,8 +615,18 @@ class ManualAnalysisRuntime:
 
         with self._state_lock:
             operation_id = self._operation_id
+            cancellation_event = self._cancellation_event
 
             if operation_id is None:
+                return
+
+            if self._stop_requested or (
+                cancellation_event is not None and cancellation_event.is_set()
+            ):
+                # request_stop owns the visible progress phase until the
+                # operation publishes its terminal STOPPED result. Late worker
+                # progress must not move the UI back to an active/completed
+                # phase after Stop was accepted.
                 return
 
             self._latest_progress = AnalysisRuntimeProgress(
@@ -752,11 +762,22 @@ class ManualAnalysisRuntime:
         except asyncio.CancelledError:
             cancellation_event.set()
 
-            with self._state_lock:
-                self._last_error = (
-                    "Manual analysis was cancelled during " "application shutdown"
-                )
+            stopped_result = ManualAnalysisResult(
+                operation_id=operation_id,
+                request=request,
+                started_at=started_at,
+                ended_at=now_utc(),
+                status=ManualAnalysisStatus.STOPPED,
+                stopped=True,
+                analysis=None,
+            )
 
+            with self._state_lock:
+                self._last_result = stopped_result
+                self._last_error = None
+
+            # Preserve native asyncio cancellation for the task owner while
+            # publishing one immutable terminal result for UI polling.
             raise
 
         except Exception as exc:

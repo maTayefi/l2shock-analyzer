@@ -393,7 +393,7 @@ class AnalysisDatasetRequest:
 def _resolved_chart_timeframe(
     request: AnalysisDatasetRequest,
 ) -> Timeframe:
-    """Resolve the exact chart timeframe owned by one request."""
+    """Resolve a chart timeframe that satisfies the request's bar budget."""
 
     if not isinstance(request, AnalysisDatasetRequest):
         raise TypeError("request must be AnalysisDatasetRequest")
@@ -401,6 +401,20 @@ def _resolved_chart_timeframe(
     override = request.chart_timeframe_override
 
     if override is not None:
+        snapped = snap_closed_analysis_range(
+            request.requested_start_utc,
+            request.requested_end_utc,
+            override,
+        )
+
+        if snapped.bar_count > request.maximum_chart_bars:
+            raise AnalysisDatasetError(
+                "The explicit chart timeframe produces "
+                f"{snapped.bar_count} bars, exceeding maximum_chart_bars="
+                f"{request.maximum_chart_bars}. Select a coarser chart "
+                "timeframe or increase the chart-bar limit."
+            )
+
         return override
 
     return select_chart_timeframe(

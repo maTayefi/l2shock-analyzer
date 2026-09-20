@@ -510,3 +510,53 @@ def test_cancellation_during_completed_publication_removes_cached_result() -> No
         )
 
     assert len(cache) == 0
+
+
+def test_cache_hit_progress_cancellation_prevents_result_publication() -> None:
+    dataset = _dataset(
+        (
+            "100",
+            "110",
+            "108",
+            "120",
+            "116",
+        )
+    )
+    config = _bid_only_config()
+    cache = LiquidityMovementAnalysisCache(
+        maximum_entries=2,
+    )
+
+    cached = execute_liquidity_movement_analysis(
+        dataset,
+        config=config,
+        cache=cache,
+    )
+
+    cancellation_requested = False
+    phases: list[LiquidityMovementAnalysisProgressPhase] = []
+
+    def progress_sink(event) -> None:
+        nonlocal cancellation_requested
+
+        phases.append(event.phase)
+
+        if event.phase is LiquidityMovementAnalysisProgressPhase.CACHE_HIT:
+            cancellation_requested = True
+
+    with pytest.raises(
+        LiquidityMovementAnalysisCancelledError,
+        match="cancelled",
+    ):
+        execute_liquidity_movement_analysis(
+            dataset,
+            config=config,
+            cache=cache,
+            progress_sink=progress_sink,
+            cancellation_probe=lambda: cancellation_requested,
+        )
+
+    assert phases == [
+        LiquidityMovementAnalysisProgressPhase.CACHE_HIT,
+    ]
+    assert cache.get(cached.analysis_id) is cached

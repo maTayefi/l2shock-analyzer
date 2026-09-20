@@ -101,7 +101,7 @@ def open_analysis_color_legend() -> None:
     with ui.dialog().props("maximized") as dialog:
         with ui.card().classes("w-full h-full p-4 overflow-auto"):
             with ui.row().classes("w-full items-center"):
-                ui.label("Liquidity Shock Analyzer — Color Legend").classes(
+                ui.label("Liquidity Shock Analyzer \u2014 Color Legend").classes(
                     "text-xl font-bold"
                 )
                 ui.space()

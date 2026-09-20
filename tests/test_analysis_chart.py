@@ -17,6 +17,7 @@ from l2shock.price import TradeSampleQuality
 from l2shock.ui.analysis_chart import (
     ANALYSIS_SELECTED_FOCUS_SERIES_PREFIX,
     AnalysisChartVisibility,
+    _capped_opposite_direction_alphas,
     build_analysis_chart_option,
     chart_navigation_window,
 )
@@ -439,3 +440,48 @@ def test_delta_series_contains_bid_minus_ask_values() -> None:
         expected.append(None if delta is None else float(delta))
 
     assert combined == expected
+
+
+def test_opposite_direction_alpha_composition_respects_cap() -> None:
+    upward, downward = _capped_opposite_direction_alphas(
+        0.4,
+        0.4,
+        0.4,
+    )
+
+    combined = 1.0 - ((1.0 - upward) * (1.0 - downward))
+
+    assert combined <= 0.4 + 1e-12
+    assert combined >= 0.4 - 1e-12
+    assert upward == downward
+
+
+def test_alpha_cap_helper_leaves_already_bounded_values_unchanged() -> None:
+    assert _capped_opposite_direction_alphas(
+        0.1,
+        0.2,
+        0.5,
+    ) == (
+        0.1,
+        0.2,
+    )
+
+
+def test_tooltip_uses_noncustom_series_category_index() -> None:
+    option = build_analysis_chart_option(
+        _result(
+            excluded=frozenset(
+                {
+                    2,
+                    3,
+                }
+            )
+        ),
+        timezone_name="Asia/Tehran",
+    )
+
+    formatter = option["tooltip"][":formatter"]
+
+    assert "item.seriesType !== 'custom'" in formatter
+    assert "Number(categoryParam.dataIndex)" in formatter
+    assert "ps[0].dataIndex" not in formatter

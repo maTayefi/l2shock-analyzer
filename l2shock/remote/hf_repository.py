@@ -150,12 +150,22 @@ def _publication_retry_delay(
         raise ValueError("attempt must be a positive integer")
 
     if rate_limited:
-        base = (
+        requested_delay = (
             retry_after_seconds
             if retry_after_seconds is not None
             else _DEFAULT_RATE_LIMIT_RETRY_SECONDS
         )
-        jitter_limit = min(30.0, max(1.0, base * 0.05))
+        base = max(
+            _MINIMUM_CONFLICT_RETRY_SECONDS,
+            requested_delay,
+        )
+        jitter_limit = min(
+            30.0,
+            max(
+                1.0,
+                base * 0.05,
+            ),
+        )
     else:
         base = min(
             _MAXIMUM_CONFLICT_RETRY_SECONDS,

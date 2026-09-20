@@ -791,6 +791,11 @@ def execute_liquidity_movement_analysis(
                     total_units=1,
                 ),
             )
+
+            # Progress callbacks run synchronously and may request
+            # cancellation. A cache hit must obey the same publication
+            # boundary as a newly calculated result.
+            _check_cancellation(cancellation_probe)
             return cached
 
     # Re-check after cache access so cancellation requested during the lookup

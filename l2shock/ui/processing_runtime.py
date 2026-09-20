@@ -743,17 +743,13 @@ class ManualProcessingRuntime:
                         diagnostic = str(exc).strip() or type(exc).__name__
 
                         if l2_chain is not None:
-                            previous_failed_hour = failed_l2_chain_hours.get(
-                                l2_chain
-                            )
+                            previous_failed_hour = failed_l2_chain_hours.get(l2_chain)
 
                             if (
                                 previous_failed_hour is None
                                 or target.hour_utc < previous_failed_hour
                             ):
-                                failed_l2_chain_hours[l2_chain] = (
-                                    target.hour_utc
-                                )
+                                failed_l2_chain_hours[l2_chain] = target.hour_utc
 
                         items.append(
                             ProcessingItemResult(
@@ -774,17 +770,13 @@ class ManualProcessingRuntime:
                         diagnostic = f"Unexpected {type(exc).__name__}"
 
                         if l2_chain is not None:
-                            previous_failed_hour = failed_l2_chain_hours.get(
-                                l2_chain
-                            )
+                            previous_failed_hour = failed_l2_chain_hours.get(l2_chain)
 
                             if (
                                 previous_failed_hour is None
                                 or target.hour_utc < previous_failed_hour
                             ):
-                                failed_l2_chain_hours[l2_chain] = (
-                                    target.hour_utc
-                                )
+                                failed_l2_chain_hours[l2_chain] = target.hour_utc
 
                         items.append(
                             ProcessingItemResult(
