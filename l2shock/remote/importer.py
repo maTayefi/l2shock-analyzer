@@ -62,9 +62,11 @@ from l2shock.db.engine import session_scope
 from l2shock.ingest import (
     BookSampleInvalidReason,
     BookSampleQuality,
+    decode_checkpoint,
 )
 from l2shock.liquidity import decode_hourly_liquidity_blocks
 from l2shock.processing import updated_l2_analytical_output_metadata
+from l2shock.processing.checkpoint_store import CheckpointStore
 from l2shock.price import (
     TradeSampleInvalidReason,
     TradeSampleQuality,
@@ -451,6 +453,12 @@ def _update_remote_source_metadata(
                 "analytical_content_sha256": manifest.content_sha256,
                 "analytical_content_sha256s": hashes,
                 "analytical_outputs_by_preset": outputs,
+                "input_checkpoint_content_sha256": (
+                    manifest.input_checkpoint_content_sha256
+                ),
+                "output_checkpoint_content_sha256": (
+                    manifest.output_checkpoint_content_sha256
+                ),
                 "remote_input_checkpoint_content_sha256": (
                     manifest.input_checkpoint_content_sha256
                 ),
@@ -494,6 +502,8 @@ def _import_l2(
     session: Session,
     downloaded: DownloadedHuggingFaceArtifact,
     artifact: RemoteL2ProcessedArtifact,
+    *,
+    checkpoint_store: CheckpointStore,
 ) -> RemoteArtifactImportResult:
     manifest = artifact.manifest
     preset = manifest.l2_preset
@@ -502,6 +512,9 @@ def _import_l2(
         raise RemoteArtifactImportError(
             "Remote L2 artifact lacks its canonical data preset"
         )
+
+    if not isinstance(checkpoint_store, CheckpointStore):
+        raise TypeError("checkpoint_store must be a CheckpointStore")
 
     current_source = _current_source_reference(downloaded)
     current_source_spec = _source_spec(current_source)
@@ -517,6 +530,31 @@ def _import_l2(
             manifest.output_checkpoint_content_sha256,
         ),
     )
+
+    if artifact.output_checkpoint is not None:
+        try:
+            decoded_checkpoint = decode_checkpoint(
+                artifact.output_checkpoint,
+            )
+            published_checkpoint = checkpoint_store.publish(
+                decoded_checkpoint,
+            )
+        except Exception as exc:
+            raise RemoteArtifactImportError(
+                "Could not install the verified remote output checkpoint"
+            ) from exc
+
+        if (
+            published_checkpoint.encoding_info.content_sha256
+            != manifest.output_checkpoint_content_sha256
+        ):
+            raise RemoteArtifactImportError(
+                "Installed output checkpoint does not match the remote manifest"
+            )
+    elif manifest.output_checkpoint_content_sha256 is not None:
+        raise RemoteArtifactImportError(
+            "Remote manifest owns an output checkpoint without checkpoint bytes"
+        )
 
     analytical_repository = AnalyticalRepository(session)
 
@@ -623,6 +661,8 @@ def _import_price(
 def import_downloaded_huggingface_artifact(
     session: Session,
     downloaded: DownloadedHuggingFaceArtifact,
+    *,
+    checkpoint_store: CheckpointStore | None = None,
 ) -> RemoteArtifactImportResult:
     """Import one already downloaded and verified HF artifact.
 
@@ -646,10 +686,22 @@ def import_downloaded_huggingface_artifact(
         if not isinstance(artifact, RemoteL2ProcessedArtifact):
             raise RemoteArtifactImportError("L2 key does not own a remote L2 artifact")
 
+        selected_checkpoint_store = (
+            checkpoint_store
+            if checkpoint_store is not None
+            else CheckpointStore(get_settings().storage.cache_path)
+        )
+
+        if not isinstance(selected_checkpoint_store, CheckpointStore):
+            raise TypeError(
+                "checkpoint_store must be a CheckpointStore or null"
+            )
+
         return _import_l2(
             session,
             downloaded,
             artifact,
+            checkpoint_store=selected_checkpoint_store,
         )
 
     if not isinstance(artifact, RemotePriceProcessedArtifact):
@@ -669,6 +721,7 @@ def download_and_import_huggingface_artifact(
     key: RemoteArtifactKey,
     *,
     session_scope_factory: RemoteImportSessionScopeFactory = session_scope,
+    checkpoint_store: CheckpointStore | None = None,
 ) -> RemoteArtifactImportResult:
     """Pin, download, verify, and transactionally import one remote artifact."""
 
@@ -696,6 +749,7 @@ def download_and_import_huggingface_artifact(
         return import_downloaded_huggingface_artifact(
             session,
             downloaded,
+            checkpoint_store=checkpoint_store,
         )
 
 

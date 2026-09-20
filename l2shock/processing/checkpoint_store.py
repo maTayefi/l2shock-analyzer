@@ -36,6 +36,7 @@ from l2shock.processing.models import (
 from l2shock.processing.source_repository import (
     ProcessingSourceArchive,
     ProcessingSourceRepository,
+    SQLAlchemyProcessingSourceRepository,
 )
 from l2shock.timeutils import require_utc_hour
 
@@ -639,6 +640,35 @@ class CheckpointStore:
             checkpoint = self.find_exact(identity)
 
             if checkpoint is not None:
+                durable_checkpoint_digest: str | None = None
+
+                if isinstance(
+                    source_repository,
+                    SQLAlchemyProcessingSourceRepository,
+                ):
+                    durable_checkpoint_digest = (
+                        source_repository
+                        .find_durable_output_checkpoint_content_sha256(
+                            predecessor_spec
+                        )
+                    )
+
+                    if durable_checkpoint_digest is None:
+                        # The file may be an orphan left by a transaction that
+                        # failed after immutable filesystem publication. It is
+                        # not authoritative until committed source metadata
+                        # owns its exact digest.
+                        checkpoint = None
+                    elif (
+                        checkpoint.encoding_info.content_sha256
+                        != durable_checkpoint_digest
+                    ):
+                        raise CheckpointStoreError(
+                            "Checkpoint content SHA-256 does not match durable "
+                            "source-hour output ownership"
+                        )
+
+            if checkpoint is not None:
                 durable_source_digest = source_repository.find_durable_content_sha256(
                     predecessor_spec
                 )
@@ -666,7 +696,7 @@ class CheckpointStore:
                     target=target,
                     replay_sources=replay_sources,
                     inspected_checkpoint_hours=tuple(inspected_hours),
-                    stop_reason=(CheckpointSearchStopReason.CHECKPOINT_FOUND),
+                    stop_reason=CheckpointSearchStopReason.CHECKPOINT_FOUND,
                     checkpoint=checkpoint,
                 )
 

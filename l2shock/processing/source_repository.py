@@ -7,6 +7,7 @@ This repository intentionally performs no source-hour status mutation. Batch
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol, runtime_checkable
@@ -183,6 +184,65 @@ class SQLAlchemyProcessingSourceRepository:
             "content_sha256",
             row.content_sha256,
         )
+
+    def find_durable_output_checkpoint_content_sha256(
+        self,
+        spec: SourceFileSpec,
+    ) -> str | None:
+        """Return the exact checkpoint digest durably owned by a source hour.
+
+        Standard local-processing keys and legacy remote-import-prefixed keys
+        are both recognized. If both are present, they must agree.
+        """
+        if not isinstance(spec, SourceFileSpec):
+            raise TypeError("spec must be a SourceFileSpec")
+
+        row = self._session.scalar(
+            select(SourceHour).where(
+                SourceHour.provider == spec.provider,
+                SourceHour.venue == spec.venue,
+                SourceHour.data_kind == spec.data_kind.value,
+                SourceHour.instrument == spec.symbol,
+                SourceHour.hour_utc == spec.hour_utc,
+            )
+        )
+
+        if row is None:
+            return None
+
+        if str(row.remote_path or "").strip() != spec.remote_path:
+            raise SourceArchiveMetadataError(
+                "Source-hour remote path does not match its canonical identity"
+            )
+
+        raw_quality = row.quality_json
+
+        if raw_quality is None:
+            return None
+
+        if not isinstance(raw_quality, Mapping):
+            raise SourceArchiveMetadataError(
+                "Source-hour quality_json must be an object"
+            )
+
+        digests = {
+            _validated_sha256(
+                key,
+                raw_quality[key],
+            )
+            for key in (
+                "output_checkpoint_content_sha256",
+                "remote_output_checkpoint_content_sha256",
+            )
+            if raw_quality.get(key) is not None
+        }
+
+        if len(digests) > 1:
+            raise SourceArchiveMetadataError(
+                "Source-hour metadata names conflicting output checkpoints"
+            )
+
+        return next(iter(digests), None)
 
     def find_replayable(
         self,

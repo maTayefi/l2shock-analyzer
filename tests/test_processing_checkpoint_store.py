@@ -451,69 +451,6 @@ def test_checkpoint_search_accepts_digest_for_pruned_source(
     assert plan.replay_sources == (target_archive,)
 
 
-def test_exact_predecessor_terminal_cache_builds_target_only_plan(
-    tmp_path: Path,
-) -> None:
-    store = CheckpointStore(tmp_path / "cache")
-    coordinator = SingleMarketL2ProcessingCoordinator(
-        checkpoint_store=store,
-    )
-
-    predecessor = _archive(tmp_path, 0)
-    target = _archive(tmp_path, 1)
-    repository = _FakeSourceRepository(
-        (
-            predecessor,
-            target,
-        )
-    )
-
-    coordinator._terminal_state_cache[
-        coordinator._terminal_state_key(predecessor.spec)
-    ] = None
-
-    plan = coordinator._cached_search_plan(
-        target.spec,
-        repository,
-    )
-
-    assert plan is not None
-    assert plan.target == target.spec
-    assert plan.replay_sources == (target,)
-    assert plan.checkpoint is None
-    assert plan.stop_reason is (CheckpointSearchStopReason.PREDECESSOR_UNINITIALIZED)
-
-
-def test_terminal_cache_is_not_reused_across_nonadjacent_hour(
-    tmp_path: Path,
-) -> None:
-    store = CheckpointStore(tmp_path / "cache")
-    coordinator = SingleMarketL2ProcessingCoordinator(
-        checkpoint_store=store,
-    )
-
-    first = _archive(tmp_path, 0)
-    nonadjacent_target = _archive(tmp_path, 2)
-    repository = _FakeSourceRepository(
-        (
-            first,
-            nonadjacent_target,
-        )
-    )
-
-    coordinator._terminal_state_cache[coordinator._terminal_state_key(first.spec)] = (
-        None
-    )
-
-    assert (
-        coordinator._cached_search_plan(
-            nonadjacent_target.spec,
-            repository,
-        )
-        is None
-    )
-
-
 def test_old_checkpoint_is_replayed_through_intermediate_predecessors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

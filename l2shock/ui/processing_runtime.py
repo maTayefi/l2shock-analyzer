@@ -629,12 +629,40 @@ class ManualProcessingRuntime:
                     self._coordinator_progress
                 )
 
+                failed_l2_chain_hours: dict[
+                    tuple[str, str, str],
+                    datetime,
+                ] = {}
+
                 for target in targets:
                     if cancellation_event.is_set():
                         stopped = True
                         break
 
+                    l2_chain = (
+                        (
+                            target.provider,
+                            target.venue,
+                            target.symbol,
+                        )
+                        if target.data_kind is SourceDataKind.ORDERBOOK
+                        else None
+                    )
+
                     try:
+                        if l2_chain is not None:
+                            failed_hour = failed_l2_chain_hours.get(l2_chain)
+
+                            if (
+                                failed_hour is not None
+                                and target.hour_utc > failed_hour
+                            ):
+                                raise ProcessingError(
+                                    "A previous L2 hour in this exact "
+                                    "venue/instrument chain failed; later "
+                                    "checkpoint-dependent hours are blocked"
+                                )
+
                         if target.data_kind is SourceDataKind.ORDERBOOK:
                             preset_builder = {
                                 "binance_futures": (build_binance_futures_data_preset),
@@ -714,6 +742,19 @@ class ManualProcessingRuntime:
                     except ProcessingError as exc:
                         diagnostic = str(exc).strip() or type(exc).__name__
 
+                        if l2_chain is not None:
+                            previous_failed_hour = failed_l2_chain_hours.get(
+                                l2_chain
+                            )
+
+                            if (
+                                previous_failed_hour is None
+                                or target.hour_utc < previous_failed_hour
+                            ):
+                                failed_l2_chain_hours[l2_chain] = (
+                                    target.hour_utc
+                                )
+
                         items.append(
                             ProcessingItemResult(
                                 target=target,
@@ -730,9 +771,20 @@ class ManualProcessingRuntime:
                         )
 
                     except Exception as exc:
-                        # Arbitrary DB, filesystem, and transport exception
-                        # arguments are not copied into process-local UI state.
                         diagnostic = f"Unexpected {type(exc).__name__}"
+
+                        if l2_chain is not None:
+                            previous_failed_hour = failed_l2_chain_hours.get(
+                                l2_chain
+                            )
+
+                            if (
+                                previous_failed_hour is None
+                                or target.hour_utc < previous_failed_hour
+                            ):
+                                failed_l2_chain_hours[l2_chain] = (
+                                    target.hour_utc
+                                )
 
                         items.append(
                             ProcessingItemResult(

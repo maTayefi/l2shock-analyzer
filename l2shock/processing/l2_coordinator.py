@@ -32,7 +32,7 @@ import inspect
 import logging
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol, TypeAlias
 
@@ -71,7 +71,6 @@ from l2shock.presets import LiquidityDataPreset
 from l2shock.processing.checkpoint_store import (
     CheckpointArtifact,
     CheckpointSearchPlan,
-    CheckpointSearchStopReason,
     CheckpointStore,
 )
 from l2shock.processing.errors import (
@@ -298,79 +297,6 @@ class SingleMarketL2ProcessingCoordinator:
         self._cancellation_check_interval_levels = cancellation_check_interval_levels
         self._imbalance_decimal_precision = imbalance_decimal_precision
 
-        # Exact terminal replay state owned by this coordinator instance.
-        #
-        # The UTC hour is part of the key because a checkpoint through hour N
-        # may initialize only hour N+1. A provider/venue/symbol-only cache
-        # would violate immediate-hour checkpoint ownership.
-        #
-        # None is meaningful: the exact completed hour finished without a
-        # usable checkpoint, so the immediately following target must begin
-        # uninitialized unless its own archive contains a snapshot.
-        self._terminal_state_cache: dict[
-            tuple[str, str, str, datetime],
-            CheckpointArtifact | None,
-        ] = {}
-
-    @staticmethod
-    def _terminal_state_key(
-        spec: SourceFileSpec,
-    ) -> tuple[str, str, str, datetime]:
-        return (
-            spec.provider,
-            spec.venue,
-            spec.symbol,
-            spec.hour_utc,
-        )
-
-    def _cached_search_plan(
-        self,
-        target: SourceFileSpec,
-        source_repository: ProcessingSourceRepository,
-    ) -> CheckpointSearchPlan | None:
-        """Return a target-only plan from the exact predecessor terminal state.
-
-        This lookup occurs before ordinary backward discovery. Therefore a
-        sequential processing operation does not rediscover, lock, hash, and
-        replay an expanding predecessor chain for every later target.
-        """
-
-        predecessor_hour = target.hour_utc - timedelta(hours=1)
-        predecessor_key = (
-            target.provider,
-            target.venue,
-            target.symbol,
-            predecessor_hour,
-        )
-
-        if predecessor_key not in self._terminal_state_cache:
-            return None
-
-        target_archive = source_repository.find_replayable(target)
-
-        if target_archive is None:
-            raise ProcessingContractError(
-                "Target source archive is not locally replayable"
-            )
-
-        cached_checkpoint = self._terminal_state_cache[predecessor_key]
-
-        if cached_checkpoint is not None:
-            return CheckpointSearchPlan(
-                target=target,
-                replay_sources=(target_archive,),
-                inspected_checkpoint_hours=(predecessor_hour,),
-                stop_reason=CheckpointSearchStopReason.CHECKPOINT_FOUND,
-                checkpoint=cached_checkpoint,
-            )
-
-        return CheckpointSearchPlan(
-            target=target,
-            replay_sources=(target_archive,),
-            inspected_checkpoint_hours=(predecessor_hour,),
-            stop_reason=(CheckpointSearchStopReason.PREDECESSOR_UNINITIALIZED),
-        )
-
     def _emit(
         self,
         request: ProcessingRequest,
@@ -538,28 +464,12 @@ class SingleMarketL2ProcessingCoordinator:
             "Discovering checkpoint and contiguous predecessor sources.",
         )
 
-        plan = self._cached_search_plan(
+        plan = self._checkpoint_store.build_search_plan(
             target,
             source_repository,
+            max_checkpoint_search_hours=request.max_checkpoint_search_hours,
+            cancellation_probe=cancellation_probe,
         )
-        used_cached_terminal_state = plan is not None
-
-        if plan is None:
-            plan = self._checkpoint_store.build_search_plan(
-                target,
-                source_repository,
-                max_checkpoint_search_hours=(request.max_checkpoint_search_hours),
-                cancellation_probe=cancellation_probe,
-            )
-        else:
-            self._emit(
-                request,
-                ProcessingProgressPhase.DISCOVERING_CHECKPOINT,
-                (
-                    "Reused the exact immediately preceding terminal replay "
-                    "state; backward predecessor discovery is unnecessary."
-                ),
-            )
 
         for archive in sorted(
             plan.replay_sources,
@@ -570,24 +480,12 @@ class SingleMarketL2ProcessingCoordinator:
                 archive.spec,
             )
 
-        if used_cached_terminal_state:
-            locked_plan = self._cached_search_plan(
-                target,
-                source_repository,
-            )
-
-            if locked_plan is None:
-                raise ProcessingContractError(
-                    "Cached predecessor terminal state disappeared while "
-                    "source locks were being acquired"
-                )
-        else:
-            locked_plan = self._checkpoint_store.build_search_plan(
-                target,
-                source_repository,
-                max_checkpoint_search_hours=(request.max_checkpoint_search_hours),
-                cancellation_probe=cancellation_probe,
-            )
+        locked_plan = self._checkpoint_store.build_search_plan(
+            target,
+            source_repository,
+            max_checkpoint_search_hours=request.max_checkpoint_search_hours,
+            cancellation_probe=cancellation_probe,
+        )
 
         if locked_plan != plan:
             raise ProcessingContractError(
@@ -596,6 +494,18 @@ class SingleMarketL2ProcessingCoordinator:
             )
 
         plan = locked_plan
+
+        acquire_checkpoint_reference_transaction_locks(
+            session,
+            (
+                (
+                    plan.checkpoint.encoding_info.content_sha256
+                    if plan.checkpoint is not None
+                    else None
+                ),
+            ),
+        )
+
         total_sources = len(plan.replay_sources)
 
         for index, archive in enumerate(
@@ -717,17 +627,6 @@ class SingleMarketL2ProcessingCoordinator:
             )
             output_checkpoint = self._checkpoint_store.publish(final_checkpoint)
 
-        # Cache the exact target-hour terminal state for only the immediately
-        # following target processed by this coordinator.
-        #
-        # A published artifact is retained rather than only its decoded
-        # checkpoint so the next target's provenance can own the exact input
-        # checkpoint content SHA-256.
-        #
-        # None is also retained intentionally: it proves that this exact target
-        # finished without usable carried state.
-        self._terminal_state_cache[self._terminal_state_key(target)] = output_checkpoint
-
         # Do not consult the cancellation probe after checkpoint publication.
         # The remaining operations are short, idempotent persistence and source
         # finalization. Reporting cancellation here would incorrectly claim a
@@ -825,13 +724,10 @@ class SingleMarketL2ProcessingCoordinator:
             content_sha256=encoded.content_sha256,
         )
 
-        previous_output_checkpoint = _canonical_sha256_or_none(
-            previous_quality.get("output_checkpoint_content_sha256")
-        )
         output_checkpoint_content_sha256 = (
             output_checkpoint.encoding_info.content_sha256
             if output_checkpoint is not None
-            else previous_output_checkpoint
+            else None
         )
 
         updated_quality = dict(previous_quality)

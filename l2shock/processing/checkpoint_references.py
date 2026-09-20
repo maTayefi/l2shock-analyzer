@@ -67,6 +67,8 @@ def collect_referenced_checkpoint_sha256s(
         for key in (
             "input_checkpoint_content_sha256",
             "output_checkpoint_content_sha256",
+            "remote_input_checkpoint_content_sha256",
+            "remote_output_checkpoint_content_sha256",
         ):
             value = raw_quality.get(key)
 
