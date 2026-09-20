@@ -510,11 +510,20 @@ def build_settings_tab() -> None:
             delete_preset_button.disable()
             save_edited_preset_button.disable()
 
-    async def _refresh_managed_presets() -> None:
+    async def _refresh_managed_presets(
+        *,
+        allow_during_mutation: bool = False,
+    ) -> None:
         nonlocal managed_presets
         nonlocal preset_refresh_running
 
-        if preset_refresh_running or preset_mutation_running:
+        if not isinstance(allow_during_mutation, bool):
+            raise TypeError("allow_during_mutation must be bool")
+
+        if preset_refresh_running:
+            return
+
+        if preset_mutation_running and not allow_during_mutation:
             return
 
         preset_refresh_running = True
@@ -585,6 +594,14 @@ def build_settings_tab() -> None:
         if preset_mutation_running:
             return
 
+        if preset_refresh_running:
+            persistent_notify(
+                "Wait for the current preset refresh to finish.",
+                title="Data presets",
+                notification_type="warning",
+            )
+            return
+
         if state.active_operation_name:
             persistent_notify(
                 f"Another operation is active: {state.active_operation_name}",
@@ -604,12 +621,13 @@ def build_settings_tab() -> None:
             return
 
         await operation_lock.acquire()
-        preset_mutation_running = True
-        state.active_operation_name = "preset_management"
-        state.active_operation_started_at = None
-        _set_preset_controls_enabled(False)
 
         try:
+            preset_mutation_running = True
+            state.active_operation_name = "preset_management"
+            state.active_operation_started_at = None
+            _set_preset_controls_enabled(False)
+
             result = await asyncio.to_thread(action)
 
             ui.notify(
@@ -618,9 +636,9 @@ def build_settings_tab() -> None:
                 timeout=5000,
             )
 
-            preset_mutation_running = False
-            await _refresh_managed_presets()
-            preset_mutation_running = True
+            await _refresh_managed_presets(
+                allow_during_mutation=True,
+            )
 
             selected_result: ManagedPreset | None
 
@@ -660,7 +678,12 @@ def build_settings_tab() -> None:
             if operation_lock.locked():
                 operation_lock.release()
 
-            _set_preset_controls_enabled(not state.shutdown_started)
+            try:
+                _set_preset_controls_enabled(not state.shutdown_started)
+            except Exception:
+                log.exception(
+                    "Could not restore preset controls after preset mutation."
+                )
 
     async def _add_preset() -> None:
         await _run_preset_mutation(
@@ -937,13 +960,13 @@ def build_settings_tab() -> None:
         maintenance_dialog.close()
         await operation_lock.acquire()
 
-        maintenance_running = True
-        state.active_operation_name = "settings_maintenance"
-        state.active_operation_started_at = None
-        _set_maintenance_controls_enabled(False)
-        confirm_maintenance_button.disable()
-
         try:
+            maintenance_running = True
+            state.active_operation_name = "settings_maintenance"
+            state.active_operation_started_at = None
+            _set_maintenance_controls_enabled(False)
+            confirm_maintenance_button.disable()
+
             audit = await asyncio.to_thread(
                 execute_maintenance_action,
                 preview,
@@ -992,12 +1015,15 @@ def build_settings_tab() -> None:
                 state.active_operation_started_at = None
 
             maintenance_running = False
-            confirm_maintenance_button.enable()
 
             if operation_lock.locked():
                 operation_lock.release()
 
-            _set_maintenance_controls_enabled(not state.shutdown_started)
+            try:
+                confirm_maintenance_button.enable()
+                _set_maintenance_controls_enabled(not state.shutdown_started)
+            except Exception:
+                log.exception("Could not restore maintenance controls after execution.")
 
     def _export_maintenance_audit() -> None:
         audit = latest_maintenance_audit
