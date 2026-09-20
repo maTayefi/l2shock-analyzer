@@ -162,7 +162,6 @@ tests/test_analysis_multi_market.py
 tests/test_analytical_provenance.py
 tests/test_analytical_repository_postgresql.py
 tests/test_automatic_fetch_runtime.py
-tests/test_availability.py
 tests/test_availability_calendar.py
 tests/test_availability_filesystem.py
 tests/test_bybit_orderbook_replay.py
@@ -289,6 +288,19 @@ l2shock/timeutils.py
 l2shock/db/checkpoint_reference_locks.py
 ```
 
+## Important dependencies
+```text
+l2shock/config.py
+l2shock/timeutils.py
+l2shock/filesystem.py
+l2shock/logging_setup.py
+alembic.ini
+alembic/env.py
+alembic/script.py.mako
+config.yaml.example
+```
+
+
 ## Primary tests
 
 ```text
@@ -376,6 +388,23 @@ l2shock/ui/processing_runtime.py
 l2shock/ui/shutdown.py
 l2shock/ui/state.py
 l2shock/ui/tab_fetch.py
+l2shock/filesystem.py
+```
+
+## Important dependencies
+```text
+l2shock/config.py
+l2shock/timeutils.py
+l2shock/filesystem.py
+l2shock/db/engine.py
+l2shock/db/models.py
+l2shock/logging_setup.py
+l2shock/main.py
+```
+
+## Workflow files
+```text
+.github/workflows/remote-hourly-processing.yml
 ```
 
 ## Primary tests
@@ -390,7 +419,6 @@ tests/test_acquisition_rate_limit.py
 tests/test_acquisition_repository_postgresql.py
 tests/test_acquisition_validation.py
 tests/test_automatic_fetch_runtime.py
-tests/test_availability.py
 tests/test_availability_calendar.py
 tests/test_availability_filesystem.py
 tests/test_processing_target_planning.py
@@ -456,6 +484,14 @@ l2shock/processing/checkpoint_store.py
 l2shock/processing/integrity.py
 l2shock/processing/l2_coordinator.py
 l2shock/processing/price_coordinator.py
+```
+
+## Important dependencies
+```text
+l2shock/acquisition/models.py
+l2shock/timeutils.py
+l2shock/config.py
+l2shock/filesystem.py
 ```
 
 ## Primary tests
@@ -535,6 +571,18 @@ l2shock/db/price_repository.py
 l2shock/presets/identity.py
 l2shock/ui/analysis_controls.py
 l2shock/ui/analysis_runtime.py
+```
+
+## Important dependencies
+```text
+l2shock/db/analytical_repository.py
+l2shock/db/price_repository.py
+l2shock/db/engine.py
+l2shock/presets/identity.py
+l2shock/liquidity/block_codec.py
+l2shock/price/block_codec.py
+l2shock/timeutils.py
+l2shock/config.py
 ```
 
 ## Primary tests
@@ -638,6 +686,16 @@ tests/test_ui_processing_runtime.py
 tests/test_ui_shutdown.py
 ```
 
+## Important dependencies
+```text
+l2shock/config.py
+l2shock/timeutils.py
+l2shock/logging_setup.py
+l2shock/main.py
+l2shock/db/engine.py
+l2shock/filesystem.py
+```
+
 ## Focus areas
 
 1. Undefined elements, stale closures, and wrong NiceGUI client context.
@@ -677,8 +735,51 @@ tests/test_ui_shutdown.py
 
 ## Primary scope
 
+Cross-cutting contracts, concurrency, cancellation, and integration
 Core 6 may inspect every file in the global inventories. Its purpose is to find
 failures that cannot be established from one subsystem alone.
+
+## Primary modules
+```text
+l2shock/ui/state.py
+l2shock/ui/shutdown.py
+l2shock/ui/components.py
+l2shock/ui/fetch_runtime.py
+l2shock/ui/processing_runtime.py
+l2shock/ui/analysis_runtime.py
+l2shock/ui/automatic_fetch_runtime.py
+l2shock/ui/remote_import_runtime.py
+l2shock/processing/checkpoint_references.py
+l2shock/db/checkpoint_reference_locks.py
+l2shock/acquisition/locks.py
+l2shock/db/engine.py
+l2shock/filesystem.py
+l2shock/main.py
+```
+
+## Important dependencies
+```text
+l2shock/config.py
+l2shock/timeutils.py
+l2shock/logging_setup.py
+l2shock/acquisition/coordinator.py
+l2shock/acquisition/downloader.py
+l2shock/processing/l2_coordinator.py
+l2shock/processing/price_coordinator.py
+l2shock/remote/hf_repository.py
+l2shock/remote/importer.py
+l2shock/remote_worker.py
+l2shock/db/models.py
+l2shock/db/analytical_repository.py
+l2shock/db/price_repository.py
+l2shock/presets/identity.py
+```
+
+## Workflow files
+```text
+.github/workflows/remote-hourly-processing.yml
+.github/workflows/bybit-contract-diagnostics.yml
+```
 
 ## Primary tests
 
@@ -700,6 +801,10 @@ tests/test_ui_analysis_runtime.py
 tests/test_ui_fetch_runtime.py
 tests/test_ui_processing_runtime.py
 tests/test_ui_shutdown.py
+tests/test_checkpoint_reference_lock_contract.py
+tests/test_checkpoint_reference_locks_postgresql.py
+tests/test_remote_workflow_contract.py
+tests/test_bybit_orderbook_replay.py
 tests/test_processing_post_stream_integrity.py
 ```
 
@@ -753,6 +858,7 @@ l2shock/remote/source_acquisition.py
 l2shock/remote_worker.py
 l2shock/remote_cli.py
 l2shock/ui/remote_import_runtime.py
+l2shock/filesystem.py
 ```
 
 ## Important dependencies
