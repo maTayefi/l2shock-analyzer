@@ -475,7 +475,7 @@ def _read_arrow_table(
             batches,
             schema=expected_schema,
         )
-    except (PriceBlockCodecError, PriceBlockCorruptionError):
+    except PriceBlockCodecError, PriceBlockCorruptionError:
         raise
     except Exception as exc:
         raise PriceBlockCorruptionError(

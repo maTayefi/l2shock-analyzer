@@ -497,7 +497,7 @@ def _read_arrow_table(
             batches,
             schema=expected_schema,
         )
-    except (HourlyBlockCodecError, HourlyBlockCorruptionError):
+    except HourlyBlockCodecError, HourlyBlockCorruptionError:
         raise
     except Exception as exc:
         raise HourlyBlockCorruptionError(
