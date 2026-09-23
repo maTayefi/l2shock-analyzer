@@ -562,14 +562,30 @@ class ManualProcessingRuntime:
         except asyncio.CancelledError:
             cancellation_event.set()
 
-            try:
-                await asyncio.shield(worker)
-            except ProcessingCancelledError:
-                pass
-            except Exception:
-                log.exception(
-                    "Processing worker failed while responding to task cancellation."
-                )
+            # Cancelling the asyncio waiter cannot stop a worker thread.
+            # Retain operation ownership through repeated cancellation until
+            # synchronous processing has actually finished.
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    cancellation_event.set()
+                    continue
+                except ProcessingCancelledError:
+                    break
+                except Exception:
+                    break
+
+            if not worker.cancelled():
+                try:
+                    worker.result()
+                except ProcessingCancelledError:
+                    pass
+                except Exception:
+                    log.exception(
+                        "Processing worker failed while responding "
+                        "to task cancellation."
+                    )
 
             raise
 

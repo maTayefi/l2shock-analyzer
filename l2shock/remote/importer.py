@@ -285,6 +285,65 @@ def _source_quality_mapping(value: object) -> dict[str, object]:
     return {str(key): item for key, item in value.items() if isinstance(key, str)}
 
 
+def _reconciled_output_checkpoint_references(
+    previous_quality: Mapping[str, object],
+    incoming_digest: str | None,
+) -> tuple[str | None, str | None]:
+    """Preserve prior output ownership; reject a conflicting remote output."""
+    standard_key = "output_checkpoint_content_sha256"
+    remote_key = "remote_output_checkpoint_content_sha256"
+
+    previous: dict[str, str | None] = {}
+
+    for key in (standard_key, remote_key):
+        value = previous_quality.get(key)
+
+        if value is None:
+            previous[key] = None
+            continue
+
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise RemoteArtifactImportError(
+                "Existing output checkpoint reference is not a "
+                "canonical lowercase SHA-256"
+            )
+
+        previous[key] = value
+
+    existing = {digest for digest in previous.values() if digest is not None}
+
+    if len(existing) > 1:
+        raise RemoteArtifactImportError(
+            "Existing source metadata names conflicting output checkpoints"
+        )
+
+    if incoming_digest is not None:
+        if (
+            not isinstance(incoming_digest, str)
+            or len(incoming_digest) != 64
+            or any(character not in "0123456789abcdef" for character in incoming_digest)
+        ):
+            raise RemoteArtifactImportError(
+                "Incoming output checkpoint is not a canonical lowercase SHA-256"
+            )
+
+        if existing and incoming_digest not in existing:
+            raise RemoteArtifactImportError(
+                "Remote output checkpoint conflicts with the source hour's "
+                "existing durable output checkpoint"
+            )
+
+    existing_digest = next(iter(existing), None)
+    standard_digest = existing_digest or incoming_digest
+    remote_digest = incoming_digest or previous[remote_key]
+
+    return standard_digest, remote_digest
+
+
 def _verify_existing_local_source_attachment(
     row,
     spec: SourceFileSpec,
@@ -442,6 +501,13 @@ def _update_remote_source_metadata(
             valid_count=valid_count,
             degraded_count=degraded_count,
         )
+        (
+            output_checkpoint_digest,
+            remote_output_checkpoint_digest,
+        ) = _reconciled_output_checkpoint_references(
+            previous_quality,
+            manifest.output_checkpoint_content_sha256,
+        )
 
         updated_quality.update(
             {
@@ -456,14 +522,12 @@ def _update_remote_source_metadata(
                 "input_checkpoint_content_sha256": (
                     manifest.input_checkpoint_content_sha256
                 ),
-                "output_checkpoint_content_sha256": (
-                    manifest.output_checkpoint_content_sha256
-                ),
+                "output_checkpoint_content_sha256": (output_checkpoint_digest),
                 "remote_input_checkpoint_content_sha256": (
                     manifest.input_checkpoint_content_sha256
                 ),
                 "remote_output_checkpoint_content_sha256": (
-                    manifest.output_checkpoint_content_sha256
+                    remote_output_checkpoint_digest
                 ),
             }
         )
