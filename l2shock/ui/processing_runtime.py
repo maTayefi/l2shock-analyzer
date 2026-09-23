@@ -278,13 +278,42 @@ async def _production_target_loader(
     lower_depth_fraction: Decimal,
     upper_depth_fraction: Decimal,
 ) -> tuple[SourceFileSpec, ...]:
-    return await asyncio.to_thread(
-        load_materialization_processing_targets,
-        start_utc,
-        end_utc,
-        lower_depth_fraction,
-        upper_depth_fraction,
+    worker = asyncio.create_task(
+        asyncio.to_thread(
+            load_materialization_processing_targets,
+            start_utc,
+            end_utc,
+            lower_depth_fraction,
+            upper_depth_fraction,
+        ),
+        name="l2shock-processing-target-loader",
     )
+
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        # The caller still owns the operation lock. Cancelling its asyncio
+        # waiter cannot stop the synchronous database-loading thread.
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+
+        # Retrieve a worker failure so it does not become an unobserved task
+        # exception. Cancellation remains the outcome for the caller.
+        if not worker.cancelled():
+            try:
+                worker.result()
+            except Exception:
+                log.exception(
+                    "Processing target loader failed while responding "
+                    "to task cancellation."
+                )
+
+        raise
 
 
 def _production_l2_factory(
