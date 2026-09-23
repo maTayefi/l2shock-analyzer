@@ -541,3 +541,45 @@ def test_arrow_payload_trailing_bytes_are_rejected() -> None:
         match="trailing bytes",
     ):
         decode_hourly_liquidity_blocks(forged)
+
+
+def test_arrow_reader_accepts_split_hour_but_rejects_extra_batch() -> None:
+    import pyarrow as pa
+    import pyarrow.ipc as ipc
+
+    import l2shock.liquidity.block_codec as codec_module
+
+    channel = HourlyLiquidityChannel.SOURCE_COUNT
+    schema = codec_module._schema_for_channel(channel)
+
+    def payload_for_batch_sizes(*sizes: int) -> bytes:
+        sink = pa.BufferOutputStream()
+        options = ipc.IpcWriteOptions(
+            compression="zstd",
+            use_legacy_format=False,
+        )
+
+        with ipc.new_stream(sink, schema, options=options) as writer:
+            for size in sizes:
+                batch = pa.RecordBatch.from_arrays(
+                    [pa.array([1] * size, type=pa.uint16())],
+                    schema=schema,
+                )
+                writer.write_batch(batch)
+
+        return sink.getvalue().to_pybytes()
+
+    split_hour = codec_module._read_arrow_table(
+        payload_for_batch_sizes(1_800, 1_800),
+        channel=channel,
+    )
+    assert split_hour.num_rows == OBSERVATIONS_PER_HOUR
+
+    with pytest.raises(
+        HourlyBlockCorruptionError,
+        match="row count is not 3,600",
+    ):
+        codec_module._read_arrow_table(
+            payload_for_batch_sizes(3_600, 1),
+            channel=channel,
+        )

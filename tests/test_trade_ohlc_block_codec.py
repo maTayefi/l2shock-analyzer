@@ -395,3 +395,45 @@ def test_trade_times_must_belong_to_observation_bucket() -> None:
             first_trade_time_ms=start_ms + 1_000,
             last_trade_time_ms=start_ms + 1_000,
         )
+
+
+def test_price_arrow_reader_accepts_split_hour_but_rejects_extra_batch() -> None:
+    import pyarrow as pa
+    import pyarrow.ipc as ipc
+
+    import l2shock.price.block_codec as codec_module
+
+    channel = PriceBlockChannel.TRADE_COUNT
+    schema = codec_module._schema_for_channel(channel)
+
+    def payload_for_batch_sizes(*sizes: int) -> bytes:
+        sink = pa.BufferOutputStream()
+        options = ipc.IpcWriteOptions(
+            compression="zstd",
+            use_legacy_format=False,
+        )
+
+        with ipc.new_stream(sink, schema, options=options) as writer:
+            for size in sizes:
+                batch = pa.RecordBatch.from_arrays(
+                    [pa.array([0] * size, type=pa.uint32())],
+                    schema=schema,
+                )
+                writer.write_batch(batch)
+
+        return sink.getvalue().to_pybytes()
+
+    split_hour = codec_module._read_arrow_table(
+        payload_for_batch_sizes(1_800, 1_800),
+        channel=channel,
+    )
+    assert split_hour.num_rows == PRICE_OBSERVATIONS_PER_HOUR
+
+    with pytest.raises(
+        PriceBlockCorruptionError,
+        match="row count is not 3,600",
+    ):
+        codec_module._read_arrow_table(
+            payload_for_batch_sizes(3_600, 1),
+            channel=channel,
+        )

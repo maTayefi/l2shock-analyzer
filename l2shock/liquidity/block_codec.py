@@ -461,7 +461,44 @@ def _read_arrow_table(
 
     try:
         reader = ipc.open_stream(source)
-        table = reader.read_all()
+
+        if not reader.schema.equals(
+            expected_schema,
+            check_metadata=True,
+        ):
+            raise HourlyBlockCodecError(
+                f"Decoded {channel.name} schema or metadata is unsupported"
+            )
+
+        batches: list[pa.RecordBatch] = []
+        row_count = 0
+
+        while True:
+            try:
+                batch = reader.read_next_batch()
+            except StopIteration:
+                break
+
+            row_count += batch.num_rows
+
+            if row_count > OBSERVATIONS_PER_HOUR:
+                raise HourlyBlockCorruptionError(
+                    f"Decoded {channel.name} row count is not 3,600"
+                )
+
+            batches.append(batch)
+
+        if row_count != OBSERVATIONS_PER_HOUR:
+            raise HourlyBlockCorruptionError(
+                f"Decoded {channel.name} row count is not 3,600"
+            )
+
+        table = pa.Table.from_batches(
+            batches,
+            schema=expected_schema,
+        )
+    except (HourlyBlockCodecError, HourlyBlockCorruptionError):
+        raise
     except Exception as exc:
         raise HourlyBlockCorruptionError(
             f"Could not decode {channel.name} Arrow IPC payload"
@@ -470,19 +507,6 @@ def _read_arrow_table(
     if source.tell() != len(payload):
         raise HourlyBlockCorruptionError(
             f"{channel.name} Arrow IPC payload contains trailing bytes"
-        )
-
-    if not table.schema.equals(
-        expected_schema,
-        check_metadata=True,
-    ):
-        raise HourlyBlockCodecError(
-            f"Decoded {channel.name} schema or metadata is unsupported"
-        )
-
-    if table.num_rows != OBSERVATIONS_PER_HOUR:
-        raise HourlyBlockCorruptionError(
-            f"Decoded {channel.name} row count is not 3,600"
         )
 
     return table
