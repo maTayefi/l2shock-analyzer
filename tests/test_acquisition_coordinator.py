@@ -846,3 +846,65 @@ async def test_repeated_cancellation_waits_for_interrupted_source_cleanup() -> N
     )
 
     assert persistence.completed
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_waits_for_fetch_run_completion(
+    tmp_path: Path,
+) -> None:
+    class BlockingCompletionPersistence(FakePersistence):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def complete_fetch_run(self, **kwargs) -> None:
+            self.entered.set()
+            await self.release.wait()
+            await super().complete_fetch_run(**kwargs)
+
+    persistence = BlockingCompletionPersistence()
+    operation_lock = asyncio.Lock()
+
+    async def download_immediately(
+        spec,
+        _cancel_event,
+    ):
+        return _artifact(
+            tmp_path,
+            spec,
+            disposition=DownloadDisposition.DOWNLOADED,
+        )
+
+    coordinator = ManualFetchCoordinator(
+        operation_lock=operation_lock,
+        persistence=persistence,
+        downloader_factory=_factory(FakeDownloader(download_immediately)),
+    )
+
+    task = asyncio.create_task(
+        coordinator.run(
+            requested_start_utc=_utc(12),
+            requested_end_utc=_utc(13),
+        )
+    )
+
+    await asyncio.wait_for(persistence.entered.wait(), timeout=2.0)
+
+    try:
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+
+        assert not task.done()
+        assert operation_lock.locked()
+        assert persistence.completions == []
+    finally:
+        persistence.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert len(persistence.completions) == 1
+    assert operation_lock.locked() is False

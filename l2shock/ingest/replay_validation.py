@@ -108,7 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--symbol",
         required=True,
-        choices=("BTCUSDT", "ETHUSDT"),
+        help="Instrument supported by the selected venue.",
     )
     parser.add_argument(
         "--archive",

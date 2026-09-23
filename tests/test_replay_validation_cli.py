@@ -83,3 +83,51 @@ def test_cli_writes_report_for_update_only_archive(
     assert payload["checkpoint_output"]["written"] is False
     assert payload["archives"][0]["snapshots_applied"] == 0
     assert payload["archives"][0]["updates_skipped_uninitialized"] == 1
+
+
+def test_cli_accepts_okx_symbol_and_rejects_wrong_venue_symbol(
+    tmp_path: Path,
+) -> None:
+    import pytest
+
+    from l2shock.ingest.replay_validation import (
+        _build_sources,
+        build_parser,
+    )
+
+    archive = tmp_path / "BTC-USDT-SWAP_orderbook.parquet"
+    archive.write_bytes(b"parser-only fixture")
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--venue",
+            "okx_futures",
+            "--symbol",
+            "BTC-USDT-SWAP",
+            "--archive",
+            "2026-09-02T12:00:00Z",
+            str(archive),
+        ]
+    )
+
+    sources = _build_sources(args)
+
+    assert len(sources) == 1
+    assert sources[0][1].venue == "okx_futures"
+    assert sources[0][1].symbol == "BTC-USDT-SWAP"
+
+    wrong_venue_args = parser.parse_args(
+        [
+            "--venue",
+            "binance_futures",
+            "--symbol",
+            "BTC-USDT-SWAP",
+            "--archive",
+            "2026-09-02T12:00:00Z",
+            str(archive),
+        ]
+    )
+
+    with pytest.raises(ValueError):
+        _build_sources(wrong_venue_args)

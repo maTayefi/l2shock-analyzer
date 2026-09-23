@@ -654,17 +654,20 @@ class ManualFetchCoordinator:
             name=f"persist-fetch-completion-{operation_id}",
         )
 
-        # Shield the short final DB transaction from ordinary task
-        # cancellation so a running fetch row is not abandoned.
-        try:
-            await asyncio.shield(completion_task)
-        except asyncio.CancelledError as exc:
-            if native_cancellation is None:
-                native_cancellation = exc
+        # Shield the final DB transaction from task cancellation. A cancelled
+        # waiter cannot cancel the shielded persistence task, so retain fetch
+        # ownership through every repeated cancellation until it finishes.
+        while not completion_task.done():
+            try:
+                await asyncio.shield(completion_task)
+            except asyncio.CancelledError as exc:
+                if native_cancellation is None:
+                    native_cancellation = exc
+                continue
 
-            # The shield kept the persistence task alive. Explicitly wait for
-            # its durable boundary before releasing operation ownership.
-            await asyncio.shield(completion_task)
+        # Do not report completion or release the operation lock if durable
+        # fetch-run finalization failed.
+        completion_task.result()
 
         ended_at = now_utc()
 

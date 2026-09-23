@@ -1424,9 +1424,9 @@ async def process_remote_hour(
         # prove that the target is unusable: the target archive may contain a
         # complete opening snapshot.
         #
-        # Fail-closed ownership remains below. An update-only target without a
-        # predecessor cannot produce an output checkpoint and is never
-        # published.
+        # Without a predecessor, an update-only target cannot advance a
+        # checkpoint frontier. It may still be published as an explicit
+        # checkpoint-less, all-invalid blocked-hour artifact.
         checkpoint_bytes = await _predecessor_checkpoint(
             repository,
             target_key=target_l2_key,

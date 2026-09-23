@@ -14,6 +14,7 @@ import sys
 
 from alembic import command
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
 
 from l2shock.config import get_settings, load_settings
 from l2shock.db.engine import get_engine, reset_engine
@@ -68,10 +69,34 @@ def _ensure_database_exists() -> bool:
                 log.info("Database %r already exists.", database.database)
             else:
                 log.info("Creating database %r.", database.database)
-                connection.execute(
-                    text("CREATE DATABASE " + _quote_identifier(database.database))
-                )
-                created = True
+
+                try:
+                    connection.execute(
+                        text("CREATE DATABASE " + _quote_identifier(database.database))
+                    )
+                except DBAPIError as exc:
+                    # Another bootstrap may have created the database after
+                    # our existence check. Accept only PostgreSQL's exact
+                    # duplicate_database error, and verify the resulting
+                    # database rather than masking another creation failure.
+                    if getattr(exc.orig, "sqlstate", None) != "42P04":
+                        raise
+
+                    connection.rollback()
+                    created_by_other = connection.execute(
+                        text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                        {"name": database.database},
+                    ).scalar()
+
+                    if not created_by_other:
+                        raise
+
+                    log.info(
+                        "Database %r was created concurrently.",
+                        database.database,
+                    )
+                else:
+                    created = True
 
             connection.execute(
                 text(

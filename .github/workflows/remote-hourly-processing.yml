@@ -129,7 +129,7 @@ jobs:
     concurrency:
       group: l2shock-remote-${{ matrix.chain }}
       cancel-in-progress: false
-      queue: single
+      queue: max
 
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
