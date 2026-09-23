@@ -958,9 +958,8 @@ def build_settings_tab() -> None:
             return
 
         maintenance_dialog.close()
-        await operation_lock.acquire()
-
         worker_task: asyncio.Task[MaintenanceActionReport] | None = None
+        await operation_lock.acquire()
 
         try:
             maintenance_running = True

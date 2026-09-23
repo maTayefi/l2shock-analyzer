@@ -967,3 +967,154 @@ async def test_processed_repeat_fetch_reports_reuse_without_rewriting_source(
     assert persistence.missing == []
     assert persistence.errors == []
     assert persistence.completions[0]["status"] is FetchRunStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_run_creation_waits_then_finalizes() -> None:
+    class BlockingCreationPersistence(FakePersistence):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def create_fetch_run(self, **kwargs):
+            self.entered.set()
+            await self.release.wait()
+            return await super().create_fetch_run(**kwargs)
+
+    persistence = BlockingCreationPersistence()
+    operation_lock = asyncio.Lock()
+    downloader_entered = False
+
+    async def unexpected_download(_spec, _cancel_event):
+        nonlocal downloader_entered
+        downloader_entered = True
+        raise AssertionError("Cancellation preceded downloader admission")
+
+    coordinator = ManualFetchCoordinator(
+        operation_lock=operation_lock,
+        persistence=persistence,
+        downloader_factory=_factory(FakeDownloader(unexpected_download)),
+    )
+
+    task = asyncio.create_task(
+        coordinator.run(
+            requested_start_utc=_utc(12),
+            requested_end_utc=_utc(13),
+        )
+    )
+    await asyncio.wait_for(persistence.entered.wait(), timeout=2.0)
+
+    try:
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert operation_lock.locked()
+        assert persistence.completions == []
+    finally:
+        persistence.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert len(persistence.created_runs) == 1
+    assert len(persistence.completions) == 1
+    assert persistence.completions[0]["status"] is FetchRunStatus.STOPPED
+    assert downloader_entered is False
+    assert not operation_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_source_admission_closes_marked_source() -> None:
+    class BlockingAdmissionPersistence(FakePersistence):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def mark_downloading(self, spec: SourceFileSpec) -> bool:
+            self.entered.set()
+            await self.release.wait()
+            self.downloading.append(spec)
+            return False
+
+    persistence = BlockingAdmissionPersistence()
+    operation_lock = asyncio.Lock()
+    downloader = FakeDownloader(lambda _spec, _cancel_event: asyncio.sleep(0))
+
+    coordinator = ManualFetchCoordinator(
+        operation_lock=operation_lock,
+        persistence=persistence,
+        downloader_factory=_factory(downloader),
+    )
+
+    task = asyncio.create_task(
+        coordinator.run(
+            requested_start_utc=_utc(12),
+            requested_end_utc=_utc(13),
+        )
+    )
+    await asyncio.wait_for(persistence.entered.wait(), timeout=2.0)
+
+    try:
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert operation_lock.locked()
+        assert persistence.errors == []
+    finally:
+        persistence.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert len(persistence.downloading) == 1
+    assert len(persistence.errors) == 1
+    assert persistence.errors[0][0] == persistence.downloading[0]
+    assert persistence.completions[0]["status"] is FetchRunStatus.STOPPED
+    assert downloader.calls == []
+    assert not operation_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_in_downloading_progress_closes_source() -> None:
+    persistence = FakePersistence()
+    entered_progress = asyncio.Event()
+    operation_lock = asyncio.Lock()
+
+    async def progress_sink(event: FetchProgress) -> None:
+        if event.phase is FetchProgressPhase.DOWNLOADING:
+            entered_progress.set()
+            await asyncio.Event().wait()
+
+    async def unexpected_download(_spec, _cancel_event):
+        raise AssertionError("Cancellation preceded the download handler")
+
+    coordinator = ManualFetchCoordinator(
+        operation_lock=operation_lock,
+        persistence=persistence,
+        downloader_factory=_factory(FakeDownloader(unexpected_download)),
+        progress_sink=progress_sink,
+    )
+
+    task = asyncio.create_task(
+        coordinator.run(
+            requested_start_utc=_utc(12),
+            requested_end_utc=_utc(13),
+        )
+    )
+    await asyncio.wait_for(entered_progress.wait(), timeout=2.0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert len(persistence.downloading) == 1
+    assert len(persistence.errors) == 1
+    assert persistence.errors[0][0] == persistence.downloading[0]
+    assert persistence.completions[0]["status"] is FetchRunStatus.STOPPED
+    assert not operation_lock.locked()

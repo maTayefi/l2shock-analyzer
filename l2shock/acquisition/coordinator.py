@@ -373,56 +373,104 @@ class ManualFetchCoordinator:
             )
         )
 
-        await self._persistence.create_fetch_run(
-            operation_id=operation_id,
-            kind=run_kind,
-            requested_start_utc=start_utc,
-            requested_end_utc=end_utc,
-            files_requested=files_requested,
-            details={
-                "provider": "cryptohftdata",
-                "venues": planned_venues,
-                "markets": planned_markets,
-                "bases": ["BTC", "ETH"],
-                "data_kinds": planned_data_kinds,
-                "range_semantics": "[start_utc, end_utc)",
-                "phase": "started",
-            },
-        )
-
-        await self._emit(
-            self._progress(
-                operation_id=operation_id,
-                phase=FetchProgressPhase.STARTED,
-                message=f"{run_kind.value.capitalize()} fetch started.",
-                files_requested=files_requested,
-                items=items,
-            )
-        )
-
         native_cancellation: asyncio.CancelledError | None = None
 
+        creation_task = asyncio.create_task(
+            self._persistence.create_fetch_run(
+                operation_id=operation_id,
+                kind=run_kind,
+                requested_start_utc=start_utc,
+                requested_end_utc=end_utc,
+                files_requested=files_requested,
+                details={
+                    "provider": "cryptohftdata",
+                    "venues": planned_venues,
+                    "markets": planned_markets,
+                    "bases": ["BTC", "ETH"],
+                    "data_kinds": planned_data_kinds,
+                    "range_semantics": "[start_utc, end_utc)",
+                    "phase": "started",
+                },
+            ),
+            name=f"persist-fetch-creation-{operation_id}",
+        )
+
+        # The production coroutine awaits a worker-thread transaction.
+        # Cancellation of this waiter must not release operation ownership
+        # before we know whether a running fetch-run row was committed.
+        while not creation_task.done():
+            try:
+                await asyncio.shield(creation_task)
+            except asyncio.CancelledError as exc:
+                if native_cancellation is None:
+                    native_cancellation = exc
+                cancel_event.set()
+
+        # If creation failed, there is no confirmed run to finalize. Propagate
+        # that failure rather than issuing a completion for an unknown row.
+        creation_task.result()
+
         try:
+            if native_cancellation is not None:
+                raise native_cancellation
+
+            await self._emit(
+                self._progress(
+                    operation_id=operation_id,
+                    phase=FetchProgressPhase.STARTED,
+                    message=f"{run_kind.value.capitalize()} fetch started.",
+                    files_requested=files_requested,
+                    items=items,
+                )
+            )
+
             async with self._downloader_factory() as downloader:
                 for spec in plan:
                     if cancel_event.is_set():
                         stopped = True
                         break
 
-                    already_processed = bool(
-                        await self._persistence.mark_downloading(spec)
+                    admission_task = asyncio.create_task(
+                        self._persistence.mark_downloading(spec),
+                        name=f"persist-fetch-admission-{spec.symbol}",
                     )
 
-                    await self._emit(
-                        self._progress(
-                            operation_id=operation_id,
-                            phase=FetchProgressPhase.DOWNLOADING,
-                            message=f"Fetching {spec.remote_path}",
-                            files_requested=files_requested,
-                            items=items,
-                            current_spec=spec,
+                    # Shielding alone is insufficient: a second cancellation
+                    # can interrupt the waiter while its DB thread continues.
+                    while not admission_task.done():
+                        try:
+                            await asyncio.shield(admission_task)
+                        except asyncio.CancelledError as exc:
+                            if native_cancellation is None:
+                                native_cancellation = exc
+                            cancel_event.set()
+                            stopped = True
+
+                    already_processed = bool(admission_task.result())
+
+                    if native_cancellation is not None:
+                        if not already_processed:
+                            await self._record_interrupted_source(spec)
+                        break
+
+                    try:
+                        await self._emit(
+                            self._progress(
+                                operation_id=operation_id,
+                                phase=FetchProgressPhase.DOWNLOADING,
+                                message=f"Fetching {spec.remote_path}",
+                                files_requested=files_requested,
+                                items=items,
+                                current_spec=spec,
+                            )
                         )
-                    )
+                    except asyncio.CancelledError as exc:
+                        cancel_event.set()
+                        stopped = True
+                        native_cancellation = exc
+                        if not already_processed:
+                            await self._record_interrupted_source(spec)
+                        break
 
                     try:
                         artifact = await downloader.download(
@@ -591,16 +639,22 @@ class ManualFetchCoordinator:
                 operation_id,
             )
 
-        if stopped:
-            await self._emit(
-                self._progress(
-                    operation_id=operation_id,
-                    phase=FetchProgressPhase.STOPPING,
-                    message="Manual fetch is stopping safely.",
-                    files_requested=files_requested,
-                    items=items,
+        if stopped and native_cancellation is None:
+            try:
+                await self._emit(
+                    self._progress(
+                        operation_id=operation_id,
+                        phase=FetchProgressPhase.STOPPING,
+                        message="Manual fetch is stopping safely.",
+                        files_requested=files_requested,
+                        items=items,
+                    )
                 )
-            )
+            except asyncio.CancelledError as exc:
+                # Progress is not durable truth. Continue to the existing
+                # shielded fetch-run completion before propagating cancellation.
+                cancel_event.set()
+                native_cancellation = exc
 
         successful = downloaded + reused
 

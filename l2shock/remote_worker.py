@@ -1388,18 +1388,22 @@ async def process_remote_hour(
         existing.price_artifact is not None,
     )
 
+    l2_missing = existing.l2_artifact is None
+    price_missing = bool(price_required and existing.price_artifact is None)
+
     if (
         existing.l2_artifact is not None
         and existing.l2_artifact.output_checkpoint is None
+        and not price_missing
     ):
         raise RemoteWorkerCheckpointBlockedError(
             "The existing target L2 artifact has no output checkpoint; "
             "the chain cannot advance"
         )
 
-    l2_missing = existing.l2_artifact is None
-    price_missing = bool(price_required and existing.price_artifact is None)
-
+    # A missing Binance price artifact is independent of L2 checkpoint
+    # continuation. With existing L2, the source plan below requests only
+    # trades; it neither replays L2 nor publishes a usable L2 checkpoint.
     if not l2_missing and not price_missing:
         return RemoteWorkerResult(
             venue=normalized_venue,
