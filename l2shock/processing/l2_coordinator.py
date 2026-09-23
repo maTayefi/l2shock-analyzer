@@ -619,7 +619,15 @@ class SingleMarketL2ProcessingCoordinator:
         output_checkpoint: CheckpointArtifact | None = None
         final_checkpoint = sampled.replay_report.final_checkpoint
 
-        if final_checkpoint is not None:
+        # Match the remote-worker publication policy. Sequence replay may
+        # retain a checkpoint-eligible book even when every analytical second
+        # is unusable, for example when the retained book is locked or crossed.
+        # Such an hour remains an explicit INVALID analytical result but must
+        # not advance continuation state into the next hour.
+        if (
+            final_checkpoint is not None
+            and target_block.quality_summary.valid_count > 0
+        ):
             self._emit(
                 request,
                 ProcessingProgressPhase.PUBLISHING_CHECKPOINT,

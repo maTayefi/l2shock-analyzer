@@ -705,13 +705,31 @@ class RemoteImportRuntime:
         except asyncio.CancelledError:
             cancellation_event.set()
 
-            try:
-                await asyncio.shield(worker)
-            except Exception:
-                log.exception(
-                    "Remote import worker failed while responding "
-                    "to task cancellation."
-                )
+            # Cancelling an asyncio.to_thread waiter cannot terminate the
+            # underlying Python thread. Retain operation ownership until that
+            # thread has actually exited, even if shutdown issues additional
+            # cancellation requests while this join is in progress.
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    cancellation_event.set()
+                    continue
+                except Exception:
+                    log.exception(
+                        "Remote import worker failed while responding "
+                        "to task cancellation."
+                    )
+                    break
+
+            if worker.done() and not worker.cancelled():
+                try:
+                    worker.result()
+                except Exception:
+                    log.exception(
+                        "Remote import worker failed while responding "
+                        "to task cancellation."
+                    )
 
             raise
 

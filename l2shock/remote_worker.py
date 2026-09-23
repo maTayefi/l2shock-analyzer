@@ -698,31 +698,42 @@ def _catch_up_target_from_observations(
         )
 
     if frontier is None:
-        if blocked_hours:
-            raise RemoteWorkerCheckpointBlockedError(
-                "Remote L2 artifacts without output checkpoints exist, but "
-                "no older usable checkpoint frontier was found inside the "
-                f"bounded search window; blocked_hours="
-                f"{[hour.isoformat() for hour in blocked_hours]}"
-            )
-
-        if normalized_venue in {
+        if normalized_venue not in {
             "binance_futures",
             "bybit",
             "okx_futures",
         }:
-            log.info(
-                "No remote L2 artifact exists in the bounded window for "
-                "venue=%s. Selecting the oldest inspected hour for a strict "
-                "source-owned initialization attempt. Publication remains "
-                "blocked unless replay produces a usable output checkpoint.",
-                normalized_venue,
+            raise RemoteWorkerCheckpointBlockedError(
+                "No verified L2/checkpoint seed exists inside the bounded "
+                f"remote catch-up search window for venue={normalized_venue}"
             )
-            return values[-1].hour_utc
+
+        # A checkpoint-less artifact is not a continuation frontier, but it
+        # must not permanently prevent a later missing source hour from proving
+        # that it can initialize independently. Select the oldest missing hour
+        # in the bounded window and let strict headless replay prove or reject
+        # its venue-specific snapshot contract.
+        for observation in reversed(values):
+            if observation.l2_exists:
+                continue
+
+            log.info(
+                "No usable checkpoint frontier exists for venue=%s. "
+                "Selecting missing hour=%s for a strict source-owned "
+                "initialization attempt; blocked_hours=%s. Publication "
+                "remains non-authoritative unless replay produces a usable "
+                "output checkpoint.",
+                normalized_venue,
+                observation.hour_utc.isoformat(),
+                [hour.isoformat() for hour in blocked_hours],
+            )
+            return observation.hour_utc
 
         raise RemoteWorkerCheckpointBlockedError(
-            "No verified L2/checkpoint seed exists inside the bounded "
-            f"remote catch-up search window for venue={normalized_venue}"
+            "Every inspected remote L2 hour is occupied by an artifact "
+            "without an output checkpoint, and no older usable checkpoint "
+            f"frontier exists; blocked_hours="
+            f"{[hour.isoformat() for hour in blocked_hours]}"
         )
 
     if price_required and not frontier.price_exists:

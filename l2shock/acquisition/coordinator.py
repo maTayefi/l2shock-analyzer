@@ -226,24 +226,42 @@ class ManualFetchCoordinator:
             name=f"persist-interrupted-source-{spec.symbol}",
         )
 
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            # A first task cancellation may have interrupted the download. The
-            # short persistence task remains shielded so the durable source row
-            # has a chance to leave its transient downloading state.
+        cancellation_count = 0
+
+        while not task.done():
             try:
                 await asyncio.shield(task)
             except asyncio.CancelledError:
-                log.warning(
-                    "Repeated cancellation interrupted source-state cleanup " "for %s.",
-                    spec.remote_path,
-                )
+                cancellation_count += 1
+
+                # The persistence task is still alive because shield prevents
+                # cancellation from propagating into it. Continue joining it
+                # so fetch ownership cannot end while the source-state write
+                # remains outstanding.
+                continue
             except Exception:
                 log.exception(
                     "Could not persist interrupted source state for %s.",
                     spec.remote_path,
                 )
+                return
+
+        if cancellation_count > 1:
+            log.warning(
+                "Repeated cancellation was deferred until source-state "
+                "cleanup completed for %s.",
+                spec.remote_path,
+            )
+
+        if task.cancelled():
+            log.warning(
+                "Interrupted source-state cleanup task was cancelled for %s.",
+                spec.remote_path,
+            )
+            return
+
+        try:
+            task.result()
         except Exception:
             log.exception(
                 "Could not persist interrupted source state for %s.",

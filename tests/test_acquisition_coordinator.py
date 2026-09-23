@@ -777,3 +777,72 @@ async def test_production_source_planner_can_fetch_eight_file_universe(
             "orderbook",
         ),
     }
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_waits_for_interrupted_source_cleanup() -> None:
+    from datetime import datetime, timezone
+
+    from l2shock.acquisition import SourceDataKind, SourceFileSpec
+    from l2shock.acquisition.coordinator import ManualFetchCoordinator
+
+    class BlockingPersistence:
+        def __init__(self) -> None:
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+            self.completed = False
+
+        async def record_error(
+            self,
+            spec: SourceFileSpec,
+            *,
+            message: object,
+        ) -> None:
+            assert spec.symbol == "BTCUSDT"
+            assert "stopped" in str(message).lower()
+
+            self.entered.set()
+            await self.release.wait()
+            self.completed = True
+
+    persistence = BlockingPersistence()
+    coordinator = object.__new__(ManualFetchCoordinator)
+    coordinator._persistence = persistence
+
+    spec = SourceFileSpec(
+        provider="cryptohftdata",
+        venue="binance_futures",
+        symbol="BTCUSDT",
+        data_kind=SourceDataKind.ORDERBOOK,
+        hour_utc=datetime(
+            2026,
+            9,
+            14,
+            12,
+            tzinfo=timezone.utc,
+        ),
+    )
+
+    task = asyncio.create_task(coordinator._record_interrupted_source(spec))
+
+    await asyncio.wait_for(
+        persistence.entered.wait(),
+        timeout=1.0,
+    )
+
+    task.cancel()
+    await asyncio.sleep(0)
+
+    task.cancel()
+    await asyncio.sleep(0)
+
+    assert not persistence.completed
+    assert not task.done()
+
+    persistence.release.set()
+    await asyncio.wait_for(
+        task,
+        timeout=1.0,
+    )
+
+    assert persistence.completed

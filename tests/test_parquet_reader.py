@@ -786,3 +786,88 @@ def test_nullable_integer_parser_retains_nan_null_compatibility(
     )
 
     assert observed is None
+
+
+def test_okx_snapshot_rejects_mixed_raw_reset_sentinel_representation(
+    tmp_path: Path,
+) -> None:
+    from datetime import datetime, timezone
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    import pytest
+
+    from l2shock.acquisition import SourceDataKind, SourceFileSpec
+    from l2shock.ingest.parquet_reader import (
+        StreamedParquetReadError,
+        read_orderbook_file,
+    )
+
+    hour = datetime(
+        2026,
+        9,
+        14,
+        12,
+        tzinfo=timezone.utc,
+    )
+    received_time_ns = 1_789_372_800_100_000_000
+    event_time_ms = received_time_ns // 1_000_000
+    path = tmp_path / "mixed-okx-snapshot.parquet"
+
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "received_time": received_time_ns,
+                    "event_time": event_time_ms,
+                    "transaction_time": None,
+                    "symbol": "BTC-USDT-SWAP",
+                    "event_type": "snapshot",
+                    "first_update_id": None,
+                    "final_update_id": 500,
+                    "prev_final_update_id": None,
+                    "last_update_id": -1,
+                    "side": "bid",
+                    "price": "100",
+                    "quantity": "2",
+                    "order_count": None,
+                },
+                {
+                    "received_time": received_time_ns,
+                    "event_time": event_time_ms,
+                    "transaction_time": None,
+                    "symbol": "BTC-USDT-SWAP",
+                    "event_type": "snapshot",
+                    "first_update_id": None,
+                    "final_update_id": 500,
+                    "prev_final_update_id": None,
+                    "last_update_id": 500,
+                    "side": "ask",
+                    "price": "101",
+                    "quantity": "3",
+                    "order_count": None,
+                },
+            ]
+        ),
+        path,
+        compression="zstd",
+        row_group_size=1,
+    )
+
+    spec = SourceFileSpec(
+        provider="cryptohftdata",
+        venue="okx_futures",
+        symbol="BTC-USDT-SWAP",
+        data_kind=SourceDataKind.ORDERBOOK,
+        hour_utc=hour,
+    )
+
+    with pytest.raises(
+        StreamedParquetReadError,
+        match="mixes raw last_update_id=-1",
+    ):
+        read_orderbook_file(
+            path,
+            spec,
+            batch_size=1,
+        )

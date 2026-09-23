@@ -299,6 +299,7 @@ class _OrderBookEventBuilder:
     final_update_id: int | None
     prev_final_update_id: int | None
     last_update_id: int | None
+    okx_snapshot_reset_normalized: bool
     changes: list[OrderBookLevelChange]
     level_identities: set[tuple[BookSide, Decimal]]
     first_row_number: int
@@ -1212,6 +1213,25 @@ def read_orderbook_file(
             )
             rows_read += 1
 
+            okx_snapshot_reset_normalized = bool(
+                event_values["_okx_snapshot_reset_normalized"]
+            )
+
+            if (
+                builder is not None
+                and key == builder.key
+                and (
+                    okx_snapshot_reset_normalized
+                    != builder.okx_snapshot_reset_normalized
+                )
+            ):
+                raise StreamedParquetReadError(
+                    "One OKX snapshot event mixes raw last_update_id=-1 "
+                    "sentinel rows with already-normalized frontier rows",
+                    path=source,
+                    row_number=row_number,
+                )
+
             if builder is None or key != builder.key:
                 # Validate the newly encountered event before publishing the
                 # preceding event. This preserves the existing fail-fast
@@ -1236,6 +1256,7 @@ def read_orderbook_file(
                     final_update_id=event_values["final_update_id"],
                     prev_final_update_id=(event_values["prev_final_update_id"]),
                     last_update_id=event_values["last_update_id"],
+                    okx_snapshot_reset_normalized=(okx_snapshot_reset_normalized),
                     changes=[],
                     level_identities=set(),
                     first_row_number=row_number,

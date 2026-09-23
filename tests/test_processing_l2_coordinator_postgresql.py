@@ -65,7 +65,11 @@ def _spec() -> SourceFileSpec:
     )
 
 
-def _write_snapshot(path: Path) -> None:
+def _write_snapshot(
+    path: Path,
+    *,
+    ask_price: str = "101",
+) -> None:
     received = _epoch_ns(_hour()) + 100_000_000
     event_time = received // 1_000_000
 
@@ -97,7 +101,7 @@ def _write_snapshot(path: Path) -> None:
                 "prev_final_update_id": None,
                 "last_update_id": 100,
                 "side": "ask",
-                "price": "101",
+                "price": ask_price,
                 "quantity": "3",
                 "order_count": None,
             },
@@ -347,3 +351,63 @@ def test_local_coordinator_and_headless_l2_outputs_are_identical(
         == headless.artifact.manifest.output_checkpoint_content_sha256
     )
     assert headless.artifact.manifest.source_hours[0].content_sha256 == digest
+
+
+def test_all_invalid_locked_hour_does_not_publish_checkpoint(
+    database_session: Session,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "BTCUSDT_locked_orderbook.parquet"
+
+    # Equal best bid and ask retain sequence-valid replay state while making
+    # every sampled second analytically invalid because the book is locked.
+    _write_snapshot(
+        source,
+        ask_price="100",
+    )
+    _register_source(
+        database_session,
+        source,
+    )
+
+    @contextmanager
+    def scope():
+        yield database_session
+
+    cache_root = tmp_path / "locked-cache"
+    coordinator = SingleMarketL2ProcessingCoordinator(
+        checkpoint_store=CheckpointStore(cache_root),
+        session_scope_factory=scope,
+        batch_size=1,
+    )
+
+    preset = build_binance_futures_data_preset(
+        base="BTC",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0"),
+    )
+
+    result = coordinator.run(
+        ProcessingRequest(
+            operation_id=uuid4(),
+            target=_spec(),
+            max_checkpoint_search_hours=24,
+        ),
+        preset,
+    )
+
+    assert result.quality_state is ProcessingQualityState.INVALID
+    assert result.valid_count == 0
+    assert result.invalid_count == 3_600
+    assert result.output_checkpoint_content_sha256 is None
+
+    row = AcquisitionRepository(
+        database_session,
+    ).get_source_hour(_spec())
+
+    assert row is not None
+    assert row.status == SourceHourStatus.PROCESSED.value
+    assert row.quality_state == ProcessingQualityState.INVALID.value
+    assert row.quality_json["output_checkpoint_content_sha256"] is None
+
+    assert not tuple(cache_root.rglob("*.l2checkpoint"))

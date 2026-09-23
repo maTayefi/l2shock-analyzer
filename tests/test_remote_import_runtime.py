@@ -387,3 +387,58 @@ async def test_runtime_reports_stop_requested_during_final_artifact() -> None:
     assert result.missing_count == 4
     assert result.status == "stopped"
     assert result.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_waits_for_thread_boundary_exit() -> None:
+    import threading
+
+    from l2shock.ui.remote_import_runtime import RemoteImportRuntime
+
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def worker() -> object:
+        entered.set()
+
+        try:
+            if not release.wait(timeout=5.0):
+                raise TimeoutError("Test did not release the worker thread")
+            return object()
+        finally:
+            finished.set()
+
+    runtime = object.__new__(RemoteImportRuntime)
+    cancellation_event = threading.Event()
+
+    task = asyncio.create_task(
+        runtime._run_thread_boundary(
+            worker,
+            task_name="test-repeated-remote-import-cancellation",
+            cancellation_event=cancellation_event,
+        )
+    )
+
+    assert await asyncio.to_thread(
+        entered.wait,
+        1.0,
+    )
+
+    try:
+        task.cancel()
+        await asyncio.sleep(0)
+
+        task.cancel()
+        await asyncio.sleep(0)
+
+        assert cancellation_event.is_set()
+        assert not finished.is_set()
+        assert not task.done()
+    finally:
+        release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert finished.is_set()

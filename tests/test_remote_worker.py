@@ -1001,3 +1001,27 @@ def test_remote_worker_routes_l2_through_blocked_marker_policy() -> None:
     assert "_l2_artifact_for_publication(" in source
     assert "REMOTE L2 BLOCKED-HOUR MARKER" in source
     assert "checkpoint_published=false" in source
+
+
+def test_blocked_artifact_without_frontier_allows_later_self_init_attempt() -> None:
+    selected = _catch_up_target_from_observations(
+        venue="okx_futures",
+        latest_eligible_hour_utc=_hour(1),
+        observations=(
+            _observation(
+                1,
+                l2_exists=False,
+                checkpoint_exists=False,
+                price_exists=False,
+            ),
+            _observation(
+                0,
+                l2_exists=True,
+                checkpoint_exists=False,
+                price_exists=False,
+            ),
+        ),
+        price_required=False,
+    )
+
+    assert selected == _hour(1)
