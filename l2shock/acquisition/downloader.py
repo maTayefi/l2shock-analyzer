@@ -71,6 +71,10 @@ _RETRYABLE_NETWORK_ERRORS: Final[tuple[type[BaseException], ...]] = (
 )
 
 
+class _NonRetryableRemoteRequestError(RemoteRequestError):
+    """A terminal HTTP response for which repeating this request cannot help."""
+
+
 def _default_free_bytes(path: Path) -> int:
     return int(shutil.disk_usage(path).free)
 
@@ -410,6 +414,9 @@ class CryptoHFTDownloader:
             except asyncio.CancelledError:
                 raise
 
+            except _NonRetryableRemoteRequestError:
+                raise
+
             except RemoteRequestError as exc:
                 last_remote_error = exc
 
@@ -483,7 +490,7 @@ class CryptoHFTDownloader:
                     raise error
 
                 if status < 200 or status >= 300:
-                    raise RemoteRequestError(
+                    raise _NonRetryableRemoteRequestError(
                         "CryptoHFTData returned HTTP status "
                         f"{status} for {spec.remote_path}"
                     )

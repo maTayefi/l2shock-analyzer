@@ -960,6 +960,8 @@ def build_settings_tab() -> None:
         maintenance_dialog.close()
         await operation_lock.acquire()
 
+        worker_task: asyncio.Task[MaintenanceActionReport] | None = None
+
         try:
             maintenance_running = True
             state.active_operation_name = "settings_maintenance"
@@ -967,10 +969,14 @@ def build_settings_tab() -> None:
             _set_maintenance_controls_enabled(False)
             confirm_maintenance_button.disable()
 
-            audit = await asyncio.to_thread(
-                execute_maintenance_action,
-                preview,
+            worker_task = asyncio.create_task(
+                asyncio.to_thread(
+                    execute_maintenance_action,
+                    preview,
+                ),
+                name="l2shock-settings-maintenance-worker",
             )
+            audit = await asyncio.shield(worker_task)
             latest_maintenance_audit = audit
             pending_maintenance_preview = None
 
@@ -994,6 +1000,43 @@ def build_settings_tab() -> None:
                 title="Maintenance completed",
                 notification_type=notification_type,
             )
+
+        except asyncio.CancelledError:
+            if worker_task is not None:
+                # Cancellation of the NiceGUI handler cannot stop synchronous
+                # maintenance already running in a worker thread. Retain the
+                # operation lock through its real completion, including when
+                # the handler receives cancellation repeatedly.
+                while not worker_task.done():
+                    try:
+                        await asyncio.shield(worker_task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+
+                # A completed action must not be offered for confirmation again.
+                pending_maintenance_preview = None
+
+                if not worker_task.cancelled():
+                    try:
+                        audit = worker_task.result()
+                    except Exception:
+                        log.exception(
+                            "Maintenance worker failed after UI cancellation."
+                        )
+                    else:
+                        latest_maintenance_audit = audit
+                        maintenance_audit_status.set_text(
+                            f"Last action: {audit.action.value}; "
+                            f"status={audit.status}; "
+                            f"succeeded={audit.succeeded_count}; "
+                            f"failed={audit.failed_count}; "
+                            f"affected bytes={audit.affected_bytes:,}."
+                        )
+                        export_maintenance_audit_button.enable()
+
+            raise
 
         except Exception as exc:
             log.exception("Maintenance execution failed.")

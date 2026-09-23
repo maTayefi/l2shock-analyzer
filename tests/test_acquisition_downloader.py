@@ -20,6 +20,7 @@ from l2shock.acquisition import (
     ParquetValidationError,
     ParquetValidationReport,
     RemoteFileNotFoundError,
+    RemoteRequestError,
     SourceFileSpec,
 )
 from l2shock.config import CryptoHFTConfig, StorageConfig
@@ -555,3 +556,37 @@ async def test_intermediate_symlink_destination_is_rejected_before_http(
 
     assert request_count == 0
     assert not (external_parent / destination.name).exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", (400, 401, 403))
+async def test_terminal_http_status_is_not_retried(
+    tmp_path: Path,
+    status_code: int,
+) -> None:
+    attempts = 0
+    sleeps: list[float] = []
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(status_code)
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        async with CryptoHFTDownloader(
+            cryptohft=_cryptohft(attempts=3),
+            storage=_storage(tmp_path),
+            client=client,
+            sleeper=fake_sleep,
+            free_bytes_provider=lambda _path: 10 * 1024**3,
+        ) as downloader:
+            with pytest.raises(RemoteRequestError):
+                await downloader.download(_spec())
+
+    assert attempts == 1
+    assert sleeps == []
