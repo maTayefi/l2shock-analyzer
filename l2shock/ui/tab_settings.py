@@ -620,6 +620,7 @@ def build_settings_tab() -> None:
             )
             return
 
+        worker_task: asyncio.Task[object] | None = None
         await operation_lock.acquire()
 
         try:
@@ -628,7 +629,11 @@ def build_settings_tab() -> None:
             state.active_operation_started_at = None
             _set_preset_controls_enabled(False)
 
-            result = await asyncio.to_thread(action)
+            worker_task = asyncio.create_task(
+                asyncio.to_thread(action),
+                name="l2shock-settings-preset-mutation-worker",
+            )
+            result = await asyncio.shield(worker_task)
 
             ui.notify(
                 success_message,
@@ -652,6 +657,31 @@ def build_settings_tab() -> None:
             if selected_result is not None:
                 preset_select.value = selected_result.preset_hash
                 preset_select.update()
+
+        except asyncio.CancelledError:
+            if worker_task is not None:
+                # Cancelling this handler cannot stop a mutation already
+                # executing in a thread. Keep operation ownership until the
+                # thread-backed task finishes, even after further cancellation.
+                while not worker_task.done():
+                    try:
+                        await asyncio.shield(worker_task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        # The task is finished with an exception. Inspect it
+                        # below rather than releasing ownership early.
+                        break
+
+                if not worker_task.cancelled():
+                    try:
+                        worker_task.result()
+                    except Exception:
+                        log.exception(
+                            "Preset mutation worker failed after UI cancellation."
+                        )
+
+            raise
 
         except PresetManagementError as exc:
             persistent_notify(

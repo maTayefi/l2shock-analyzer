@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TAB_SETTINGS_PATH = PROJECT_ROOT / "l2shock" / "ui" / "tab_settings.py"
 
@@ -141,3 +143,108 @@ def test_refresh_has_explicit_internal_mutation_override() -> None:
     assert (
         "if preset_mutation_running and not allow_during_mutation:" in function_source
     )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_preset_mutation_keeps_lock_until_thread_finishes() -> None:
+    import asyncio
+    import logging
+    import threading
+    from collections.abc import Callable
+    from types import SimpleNamespace
+
+    import pytest
+
+    _source, tree = _module_tree()
+    mutation = _async_function(tree, "_run_preset_mutation")
+
+    # The production function is nested and declares nonlocal
+    # preset_mutation_running. Put that exact function AST into a minimal
+    # enclosing function so the test exercises its real cancellation body.
+    wrapper = ast.parse(
+        "def _make_test_mutator():\n"
+        "    preset_mutation_running = False\n"
+        "    return _run_preset_mutation\n"
+    )
+    factory = wrapper.body[0]
+    assert isinstance(factory, ast.FunctionDef)
+    factory.body.insert(1, mutation)
+    ast.fix_missing_locations(wrapper)
+
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    operation_lock = asyncio.Lock()
+
+    state = SimpleNamespace(
+        shutdown_started=False,
+        active_operation_name="",
+        active_operation_started_at=None,
+        operation_lock=operation_lock,
+    )
+
+    async def unused_refresh(*, allow_during_mutation: bool = False) -> None:
+        assert allow_during_mutation
+
+    namespace: dict[str, object] = {
+        "asyncio": asyncio,
+        "Callable": Callable,
+        "state": state,
+        "preset_refresh_running": False,
+        "persistent_notify": lambda *args, **kwargs: None,
+        "ui": SimpleNamespace(notify=lambda *args, **kwargs: None),
+        "PresetManagementError": type(
+            "PresetManagementError",
+            (Exception,),
+            {},
+        ),
+        "log": logging.getLogger(__name__),
+        "_set_preset_controls_enabled": lambda enabled: None,
+        "_refresh_managed_presets": unused_refresh,
+    }
+    exec(
+        compile(wrapper, str(TAB_SETTINGS_PATH), "exec"),
+        namespace,
+    )
+    make_mutator = namespace["_make_test_mutator"]
+    assert callable(make_mutator)
+    run_mutation = make_mutator()
+
+    def blocking_action() -> object:
+        entered.set()
+        try:
+            if not release.wait(timeout=10.0):
+                raise TimeoutError("Test did not release the preset action")
+            return object()
+        finally:
+            finished.set()
+
+    task = asyncio.create_task(
+        run_mutation(
+            blocking_action,
+            success_message="Preset mutation completed.",
+        )
+    )
+
+    try:
+        assert await asyncio.to_thread(entered.wait, 2.0)
+        assert operation_lock.locked()
+
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+
+        assert not finished.is_set()
+        assert not task.done()
+        assert operation_lock.locked()
+        assert state.active_operation_name == "preset_management"
+    finally:
+        release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=5.0)
+
+    assert finished.is_set()
+    assert not operation_lock.locked()
+    assert state.active_operation_name == ""
