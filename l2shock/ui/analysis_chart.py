@@ -1070,7 +1070,20 @@ def build_analysis_chart_option(
     visible = _visible_chart_bars(result)
 
     if not visible.source_indices:
-        return empty_analysis_chart_option("No continuous eligible chart bars")
+        chart = result.dataset.chart
+        option = empty_analysis_chart_option("No continuous eligible chart bars")
+        option["l2shockChartMetadata"] = {
+            "analysis_id": result.analysis_id,
+            "dataset_analysis_id": result.dataset.analysis_id,
+            "chart_timeframe": chart.timeframe.label,
+            "activity_timeframe": result.dataset.activity.timeframe.label,
+            "visible_bar_count": 0,
+            "source_bar_indices": [],
+            "visible_start_times_utc": [],
+            "bar_duration_seconds": chart.timeframe.seconds,
+            "discontinuities": {},
+        }
+        return option
 
     chart = result.dataset.chart
     bars = chart.bars

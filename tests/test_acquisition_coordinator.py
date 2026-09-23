@@ -908,3 +908,62 @@ async def test_repeated_cancellation_waits_for_fetch_run_completion(
 
     assert len(persistence.completions) == 1
     assert operation_lock.locked() is False
+
+
+@pytest.mark.asyncio
+async def test_processed_repeat_fetch_reports_reuse_without_rewriting_source(
+    tmp_path: Path,
+) -> None:
+    class ProcessedPersistence(FakePersistence):
+        async def mark_downloading(
+            self,
+            spec: SourceFileSpec,
+        ) -> bool:
+            self.downloading.append(spec)
+            return True
+
+        async def record_missing(
+            self,
+            spec: SourceFileSpec,
+            *,
+            message: object,
+        ) -> None:
+            raise AssertionError("Processed source must not become missing")
+
+        async def record_error(
+            self,
+            spec: SourceFileSpec,
+            *,
+            message: object,
+        ) -> None:
+            raise AssertionError("Processed source must not become error")
+
+    persistence = ProcessedPersistence()
+
+    async def reuse(
+        spec: SourceFileSpec,
+        _cancel_event: asyncio.Event | None,
+    ) -> DownloadArtifact:
+        return _artifact(
+            tmp_path,
+            spec,
+            disposition=DownloadDisposition.REUSED,
+        )
+
+    coordinator = ManualFetchCoordinator(
+        operation_lock=asyncio.Lock(),
+        persistence=persistence,
+        downloader_factory=_factory(FakeDownloader(reuse)),
+    )
+
+    result = await coordinator.run(
+        requested_start_utc=_utc(12),
+        requested_end_utc=_utc(13),
+    )
+
+    assert result.status == "ok"
+    assert result.files_reused == 4
+    assert len(persistence.artifacts) == 4
+    assert persistence.missing == []
+    assert persistence.errors == []
+    assert persistence.completions[0]["status"] is FetchRunStatus.OK

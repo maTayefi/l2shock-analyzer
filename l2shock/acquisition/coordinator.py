@@ -409,7 +409,9 @@ class ManualFetchCoordinator:
                         stopped = True
                         break
 
-                    await self._persistence.mark_downloading(spec)
+                    already_processed = bool(
+                        await self._persistence.mark_downloading(spec)
+                    )
 
                     await self._emit(
                         self._progress(
@@ -430,7 +432,8 @@ class ManualFetchCoordinator:
                     except AcquisitionCancelledError:
                         stopped = True
                         cancel_event.set()
-                        await self._record_interrupted_source(spec)
+                        if not already_processed:
+                            await self._record_interrupted_source(spec)
                         break
                     except RemoteFileNotFoundError as exc:
                         diagnostic = (
@@ -438,10 +441,11 @@ class ManualFetchCoordinator:
                             or "Remote hourly archive is unavailable"
                         )
 
-                        await self._persistence.record_missing(
-                            spec,
-                            message=diagnostic,
-                        )
+                        if not already_processed:
+                            await self._persistence.record_missing(
+                                spec,
+                                message=diagnostic,
+                            )
 
                         item = FetchItemResult(
                             spec=spec,
@@ -467,10 +471,11 @@ class ManualFetchCoordinator:
                     except AcquisitionError as exc:
                         diagnostic = _safe_unexpected_error(exc)
 
-                        await self._persistence.record_error(
-                            spec,
-                            message=diagnostic,
-                        )
+                        if not already_processed:
+                            await self._persistence.record_error(
+                                spec,
+                                message=diagnostic,
+                            )
 
                         item = FetchItemResult(
                             spec=spec,
@@ -497,17 +502,19 @@ class ManualFetchCoordinator:
                         cancel_event.set()
                         stopped = True
                         native_cancellation = exc
-                        await self._record_interrupted_source(spec)
+                        if not already_processed:
+                            await self._record_interrupted_source(spec)
                         break
                     except Exception as exc:
                         # Do not expose arbitrary exception text. An httpx
                         # request or DB exception may include credentials.
                         diagnostic = _safe_unexpected_error(exc)
 
-                        await self._persistence.record_error(
-                            spec,
-                            message=diagnostic,
-                        )
+                        if not already_processed:
+                            await self._persistence.record_error(
+                                spec,
+                                message=diagnostic,
+                            )
 
                         item = FetchItemResult(
                             spec=spec,

@@ -209,10 +209,21 @@ class AcquisitionRepository:
         self,
         spec: SourceFileSpec,
     ) -> SourceHour:
-        return self.transition_source_hour(
-            spec,
+        acquire_source_hour_transaction_lock(self._session, spec)
+        row = self.upsert_discovered(spec)
+
+        if row.status == SourceHourStatus.PROCESSED.value:
+            # A repeat fetch may verify or reattach the immutable raw archive.
+            # It must not withdraw existing analytical/checkpoint ownership.
+            return row
+
+        validate_source_hour_transition(
+            row.status,
             SourceHourStatus.DOWNLOADING,
         )
+        row.status = SourceHourStatus.DOWNLOADING.value
+        self._session.flush()
+        return row
 
     def record_artifact(
         self,
@@ -224,9 +235,10 @@ class AcquisitionRepository:
         content SHA-256. Normal acquisition may reattach identical bytes, but
         it must never rebind that identity to different source content.
 
-        Returning the row to ``downloaded`` clears processing-derived scalar
-        metadata. Durable analytical and checkpoint references are retained so
-        maintenance cannot orphan still-referenced immutable artifacts.
+        For an already-processed source, identical bytes may reattach a
+        pruned raw archive without changing its processed status, timestamps,
+        quality, or analytical/checkpoint ownership. A different digest is
+        always a conflict.
         """
         spec = artifact.spec
         _validate_artifact_identity(spec, artifact)
@@ -235,6 +247,27 @@ class AcquisitionRepository:
         row = self.upsert_discovered(spec)
 
         existing_digest = str(row.content_sha256 or "").strip()
+
+        if row.status == SourceHourStatus.PROCESSED.value:
+            if not existing_digest or existing_digest != artifact.content_sha256:
+                raise DownloadConflictError(
+                    "A processed source-hour identity cannot be rebound to "
+                    f"different or unverified source content: {spec.remote_path}."
+                )
+
+            if (
+                row.file_size_bytes is not None
+                and row.file_size_bytes != artifact.file_size_bytes
+            ):
+                raise DownloadConflictError(
+                    "Reacquired source size conflicts with processed source "
+                    f"metadata: {spec.remote_path}."
+                )
+
+            row.local_path = str(artifact.local_path)
+            row.file_size_bytes = artifact.file_size_bytes
+            self._session.flush()
+            return row
 
         if existing_digest and existing_digest != artifact.content_sha256:
             raise DownloadConflictError(

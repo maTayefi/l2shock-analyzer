@@ -50,7 +50,9 @@ class FetchPersistenceProtocol(Protocol):
     async def mark_downloading(
         self,
         spec: SourceFileSpec,
-    ) -> None: ...
+    ) -> bool:
+        """Return whether the source was already processed at admission."""
+        ...
 
     async def record_artifact(
         self,
@@ -139,12 +141,13 @@ class SQLAlchemyFetchPersistence:
     async def mark_downloading(
         self,
         spec: SourceFileSpec,
-    ) -> None:
-        def _write() -> None:
+    ) -> bool:
+        def _write() -> bool:
             with session_scope() as session:
-                self._repository(session).mark_downloading(spec)
+                row = self._repository(session).mark_downloading(spec)
+                return row.status == "processed"
 
-        await asyncio.to_thread(_write)
+        return await asyncio.to_thread(_write)
 
     async def record_artifact(
         self,

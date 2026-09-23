@@ -374,13 +374,24 @@ async def _write_retry_cursor_durably(
         name="l2shock-automatic-fetch-retry-cursor",
     )
 
-    try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        # Native cancellation cannot terminate the synchronous DB worker.
-        # Explicitly await its durable boundary before preserving cancellation.
-        await asyncio.shield(task)
-        raise
+    cancelled: asyncio.CancelledError | None = None
+
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            # A second cancellation can interrupt a shielded wait too.
+            # Keep ownership until the synchronous database task has exited.
+            if cancelled is None:
+                cancelled = exc
+        except Exception:
+            # Inspect and propagate the worker's actual failure below.
+            break
+
+    task.result()
+
+    if cancelled is not None:
+        raise cancelled
 
 
 def _clear_retry_cursor_sync() -> None:
