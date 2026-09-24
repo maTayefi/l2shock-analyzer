@@ -536,7 +536,6 @@ def test_l2_candle_tooltip_contains_four_ohlc_metrics() -> None:
         timezone_name="Asia/Tehran",
     )
     formatter = option["tooltip"][":formatter"]
-
     for key in (
         "bid_ohlc",
         "ask_ohlc",
@@ -544,11 +543,10 @@ def test_l2_candle_tooltip_contains_four_ohlc_metrics() -> None:
         "delta_ohlc",
     ):
         assert key in formatter
-
     assert "candleText('Bid Liquidity', row.bid_ohlc)" in formatter
     assert "candleText('Order-Book Delta', row.delta_ohlc)" in formatter
-    assert "formatNumber(candle.high)" in formatter
-    assert "formatNumber(candle.low)" in formatter
+    assert "escapeHtml(candle.high)" in formatter
+    assert "escapeHtml(candle.low)" in formatter
 
 
 def test_chart_legend_has_one_delta_candle_series() -> None:
@@ -570,3 +568,55 @@ def test_chart_legend_has_one_delta_candle_series() -> None:
     assert len(principal) == 1
     assert principal[0]["type"] == "candlestick"
     assert principal[0]["itemStyle"]["color"] != (principal[0]["itemStyle"]["color0"])
+
+
+def test_l2_tooltip_metadata_preserves_decimal_digits_lost_by_float() -> None:
+    from decimal import Decimal
+
+    from l2shock.analysis.aggregation import L2OHLC
+    from l2shock.ui.analysis_chart import (
+        _l2_candle_data,
+        _l2_candle_metadata,
+    )
+
+    value = L2OHLC(
+        open=Decimal("100.0000000000000000001"),
+        high=Decimal("100.0000000000000000004"),
+        low=Decimal("100.0000000000000000000"),
+        close=Decimal("100.0000000000000000002"),
+    )
+
+    # Browser coordinates cannot represent all these decimal distinctions.
+    coordinates = _l2_candle_data(value, metric_name="Bid Liquidity")
+    assert coordinates == [100.0, 100.0, 100.0, 100.0]
+
+    # The separately supplied tooltip must not lose the original digits.
+    metadata = _l2_candle_metadata(value, metric_name="Bid Liquidity")
+    assert metadata == {
+        "open": "100.0000000000000000001",
+        "close": "100.0000000000000000002",
+        "low": "100.0000000000000000000",
+        "high": "100.0000000000000000004",
+    }
+
+
+def test_l2_tooltip_escapes_exact_decimal_text_without_number_conversion() -> None:
+    from l2shock.ui.analysis_chart import _tooltip_formatter_js
+
+    formatter = _tooltip_formatter_js(
+        [
+            {
+                "bid_ohlc": {
+                    "open": "100.0000000000000000001",
+                    "high": "100.0000000000000000004",
+                    "low": "100.0000000000000000000",
+                    "close": "100.0000000000000000002",
+                }
+            }
+        ]
+    )
+
+    assert '"100.0000000000000000004"' in formatter
+    assert "' H ' + escapeHtml(candle.high)" in formatter
+    assert "' C ' + escapeHtml(candle.close)" in formatter
+    assert "formatNumber(candle.high)" not in formatter

@@ -211,3 +211,45 @@ def test_delta_candle_close_uses_existing_34_digit_policy() -> None:
     assert bar.delta_ohlc.low == expected_delta
     assert bar.delta_ohlc.close == expected_delta
     assert bar.delta_ohlc.close == bar.bid_ask_delta()
+
+
+def test_running_l2_ohlc_matches_iterable_reducer_for_signed_values() -> None:
+    from l2shock.analysis.aggregation import (
+        _RunningL2OHLC,
+        _reduce_l2_ohlc,
+    )
+
+    values = (
+        Decimal("0"),
+        Decimal("-7.0000000000000000001"),
+        Decimal("3.0000000000000000002"),
+        Decimal("-2"),
+    )
+
+    running = _RunningL2OHLC()
+    assert running.finish() is None
+
+    for value in values:
+        running.accept(value)
+
+    assert running.finish() == _reduce_l2_ohlc(iter(values))
+    assert running.finish() == L2OHLC(
+        open=Decimal("0"),
+        high=Decimal("3.0000000000000000002"),
+        low=Decimal("-7.0000000000000000001"),
+        close=Decimal("-2"),
+    )
+
+
+def test_running_l2_ohlc_preserves_one_valid_zero_second() -> None:
+    from l2shock.analysis.aggregation import _RunningL2OHLC
+
+    running = _RunningL2OHLC()
+    running.accept(Decimal("0"))
+
+    assert running.finish() == L2OHLC(
+        open=Decimal("0"),
+        high=Decimal("0"),
+        low=Decimal("0"),
+        close=Decimal("0"),
+    )

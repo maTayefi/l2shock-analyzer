@@ -274,49 +274,58 @@ class L2OHLC:
             raise ValueError("L2OHLC values have inconsistent candle geometry")
 
 
-def _reduce_l2_ohlc(values: Iterable[Decimal]) -> L2OHLC | None:
-    """Reduce ordered, usable one-second metric values in a single pass.
+@dataclass(slots=True)
+class _RunningL2OHLC:
+    """Mutable, bucket-local reduction state; never published as a bar."""
 
-    The caller owns timestamp ordering, bar membership, and exclusion of
-    invalid or missing seconds. An empty input has no candle. This function
-    never interpolates values or converts exact Decimals to floats.
-    """
     first: Decimal | None = None
     lowest: Decimal | None = None
     highest: Decimal | None = None
     last: Decimal | None = None
 
-    for value in values:
+    def accept(self, value: Decimal) -> None:
         if not isinstance(value, Decimal) or not value.is_finite():
             raise ValueError("L2 OHLC input values must be finite Decimals")
 
-        if first is None:
-            first = value
-            lowest = value
-            highest = value
+        if self.first is None:
+            self.first = value
+            self.lowest = value
+            self.highest = value
         else:
-            assert lowest is not None
-            assert highest is not None
-            if value < lowest:
-                lowest = value
-            if value > highest:
-                highest = value
+            assert self.lowest is not None
+            assert self.highest is not None
 
-        last = value
+            if value < self.lowest:
+                self.lowest = value
+            if value > self.highest:
+                self.highest = value
 
-    if first is None:
-        return None
+        self.last = value
 
-    assert lowest is not None
-    assert highest is not None
-    assert last is not None
+    def finish(self) -> L2OHLC | None:
+        if self.first is None:
+            return None
 
-    return L2OHLC(
-        open=first,
-        high=highest,
-        low=lowest,
-        close=last,
-    )
+        assert self.lowest is not None
+        assert self.highest is not None
+        assert self.last is not None
+
+        return L2OHLC(
+            open=self.first,
+            high=self.highest,
+            low=self.lowest,
+            close=self.last,
+        )
+
+
+def _reduce_l2_ohlc(values: Iterable[Decimal]) -> L2OHLC | None:
+    """Reduce ordered usable seconds without retaining intermediate values."""
+    running = _RunningL2OHLC()
+
+    for value in values:
+        running.accept(value)
+
+    return running.finish()
 
 
 @dataclass(frozen=True, slots=True)
@@ -653,10 +662,10 @@ def aggregate_l2_seconds(
             for observation in bucket_values
         )
 
-        bid_values: list[Decimal] = []
-        ask_values: list[Decimal] = []
-        total_values: list[Decimal] = []
-        delta_values: list[Decimal] = []
+        bid_running = _RunningL2OHLC()
+        ask_running = _RunningL2OHLC()
+        total_running = _RunningL2OHLC()
+        delta_running = _RunningL2OHLC()
 
         # _bucket_observations preserves timestamp order. Only numerically
         # usable seconds contribute: do not synthesize missing observations
@@ -671,9 +680,9 @@ def aggregate_l2_seconds(
             assert bid_value is not None
             assert ask_value is not None
 
-            bid_values.append(bid_value)
-            ask_values.append(ask_value)
-            total_values.append(_exact_nonnegative_decimal_sum(bid_value, ask_value))
+            bid_running.accept(bid_value)
+            ask_running.accept(ask_value)
+            total_running.accept(_exact_nonnegative_decimal_sum(bid_value, ask_value))
 
             # Match AggregatedL2Bar.bid_ask_delta() at the endpoint. In
             # particular, do not change LM's established Delta precision.
@@ -683,12 +692,12 @@ def aggregate_l2_seconds(
                     rounding=ROUND_HALF_EVEN,
                 )
             ):
-                delta_values.append(bid_value - ask_value)
+                delta_running.accept(bid_value - ask_value)
 
-        bid_ohlc = _reduce_l2_ohlc(bid_values)
-        ask_ohlc = _reduce_l2_ohlc(ask_values)
-        total_ohlc = _reduce_l2_ohlc(total_values)
-        delta_ohlc = _reduce_l2_ohlc(delta_values)
+        bid_ohlc = bid_running.finish()
+        ask_ohlc = ask_running.finish()
+        total_ohlc = total_running.finish()
+        delta_ohlc = delta_running.finish()
 
         if endpoint is not None and endpoint.quality is BookSampleQuality.VALID:
             quality = (

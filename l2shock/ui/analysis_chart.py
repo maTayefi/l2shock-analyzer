@@ -857,11 +857,13 @@ def _tooltip_formatter_js(
                 return '<br/><b>' + escapeHtml(label) + ':</b> unavailable';
             }
 
+            // These four fields are exact decimal text from Python. Do not
+            // pass them through Number(), which can round their digits.
             return '<br/><b>' + escapeHtml(label) + '</b>'
-                + ' O ' + formatNumber(candle.open)
-                + ' H ' + formatNumber(candle.high)
-                + ' L ' + formatNumber(candle.low)
-                + ' C ' + formatNumber(candle.close);
+                + ' O ' + escapeHtml(candle.open)
+                + ' H ' + escapeHtml(candle.high)
+                + ' L ' + escapeHtml(candle.low)
+                + ' C ' + escapeHtml(candle.close);
         }
 
         output +=
@@ -989,15 +991,18 @@ def _l2_candle_metadata(
     value: L2OHLC | None,
     *,
     metric_name: str,
-) -> dict[str, float]:
-    candle = _l2_candle_data(value, metric_name=metric_name)
-    assert isinstance(candle, list)
+) -> dict[str, str]:
+    # Validate that the same candle can also be rendered by ECharts. Its
+    # tooltip, however, retains the original exact Decimal values rather
+    # than round-tripping them through binary floating point.
+    _l2_candle_data(value, metric_name=metric_name)
+    assert value is not None
 
     return {
-        "open": candle[0],
-        "close": candle[1],
-        "low": candle[2],
-        "high": candle[3],
+        "open": format(value.open, "f"),
+        "close": format(value.close, "f"),
+        "low": format(value.low, "f"),
+        "high": format(value.high, "f"),
     }
 
 

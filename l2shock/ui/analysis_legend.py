@@ -46,22 +46,22 @@ def open_analysis_color_legend() -> None:
         _row(
             "Bid Liquidity candle up",
             colors.bid_line,
-            "One-second bid-liquidity OHLC; close is above/equal to open.",
+            "OHLC of one-second Bid samples within a chart bar; close is above/equal to open.",
         ),
         _row(
             "Bid Liquidity candle down",
             colors.bid_down,
-            "One-second bid-liquidity OHLC; close is below open.",
+            "OHLC of one-second Bid samples within a chart bar; close is below open.",
         ),
         _row(
             "Ask Liquidity candle up",
             colors.ask_line,
-            "One-second ask-liquidity OHLC; close is above/equal to open.",
+            "OHLC of one-second Ask samples within a chart bar; close is above/equal to open.",
         ),
         _row(
             "Ask Liquidity candle down",
             colors.ask_down,
-            "One-second ask-liquidity OHLC; close is below open.",
+            "OHLC of one-second Ask samples within a chart bar; close is below open.",
         ),
         _row(
             "Total Liquidity candle up",
