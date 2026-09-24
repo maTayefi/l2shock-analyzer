@@ -29,6 +29,7 @@ from l2shock.analysis import (
     RankedLiquidityMovement,
     get_timeframe,
 )
+from l2shock.analysis.aggregation import L2OHLC
 from l2shock.config import LMConfig
 from l2shock.timeutils import utc_to_local
 
@@ -68,8 +69,11 @@ class AnalysisChartColors:
     price_down: str = "#ef4444"
 
     bid_line: str = "#38bdf8"
+    bid_down: str = "#0e7490"
     ask_line: str = "#f97316"
+    ask_down: str = "#c2410c"
     total_line: str = "#a78bfa"
+    total_down: str = "#7c3aed"
 
     delta_positive: str = "#22c55e"
     delta_negative: str = "#ef4444"
@@ -848,15 +852,23 @@ def _tooltip_formatter_js(
                 + ' C ' + formatNumber(row.price.close);
         }
 
+        function candleText(label, candle) {
+            if (!candle) {
+                return '<br/><b>' + escapeHtml(label) + ':</b> unavailable';
+            }
+
+            return '<br/><b>' + escapeHtml(label) + '</b>'
+                + ' O ' + formatNumber(candle.open)
+                + ' H ' + formatNumber(candle.high)
+                + ' L ' + formatNumber(candle.low)
+                + ' C ' + formatNumber(candle.close);
+        }
+
         output +=
-            '<br/><b>Bid Liquidity:</b> '
-            + formatNumber(row.bid_liquidity)
-            + '<br/><b>Ask Liquidity:</b> '
-            + formatNumber(row.ask_liquidity)
-            + '<br/><b>Total Liquidity:</b> '
-            + formatNumber(row.total_liquidity)
-            + '<br/><b>Order-Book Delta:</b> '
-            + formatNumber(row.delta);
+            candleText('Bid Liquidity', row.bid_ohlc)
+            + candleText('Ask Liquidity', row.ask_ohlc)
+            + candleText('Total Liquidity', row.total_ohlc)
+            + candleText('Order-Book Delta', row.delta_ohlc);
 
         if (row.discontinuity) {
             output +=
@@ -923,6 +935,22 @@ def _chart_metadata(
                 "ask_liquidity": _decimal_float(bar.ask_liquidity),
                 "total_liquidity": _decimal_float(bar.total_liquidity),
                 "delta": _decimal_float(bar.l2.bid_ask_delta()),
+                "bid_ohlc": _l2_candle_metadata(
+                    bar.l2.bid_ohlc,
+                    metric_name="Bid Liquidity",
+                ),
+                "ask_ohlc": _l2_candle_metadata(
+                    bar.l2.ask_ohlc,
+                    metric_name="Ask Liquidity",
+                ),
+                "total_ohlc": _l2_candle_metadata(
+                    bar.l2.total_ohlc,
+                    metric_name="Total Liquidity",
+                ),
+                "delta_ohlc": _l2_candle_metadata(
+                    bar.l2.delta_ohlc,
+                    metric_name="Order-Book Delta",
+                ),
                 "discontinuity": discontinuities.get(display_index),
             }
         )
@@ -930,37 +958,72 @@ def _chart_metadata(
     return result_rows
 
 
-def _line_series(
+def _l2_candle_data(
+    value: L2OHLC | None,
+    *,
+    metric_name: str,
+) -> list[float] | str:
+    """Return ECharts' [open, close, low, high] candle representation."""
+
+    if value is None:
+        raise AnalysisChartError(
+            f"Core-eligible chart bar has no {metric_name} L2 OHLC"
+        )
+
+    converted = (
+        _decimal_float(value.open),
+        _decimal_float(value.close),
+        _decimal_float(value.low),
+        _decimal_float(value.high),
+    )
+
+    if any(item is None for item in converted):
+        raise AnalysisChartError(
+            f"{metric_name} L2 OHLC cannot be represented as finite chart floats"
+        )
+
+    return [float(item) for item in converted]
+
+
+def _l2_candle_metadata(
+    value: L2OHLC | None,
+    *,
+    metric_name: str,
+) -> dict[str, float]:
+    candle = _l2_candle_data(value, metric_name=metric_name)
+    assert isinstance(candle, list)
+
+    return {
+        "open": candle[0],
+        "close": candle[1],
+        "low": candle[2],
+        "high": candle[3],
+    }
+
+
+def _l2_candle_series(
     *,
     name: str,
     panel_index: int,
-    data: list[float | None],
-    color: str,
-    area_color: str | None = None,
+    data: list[list[float]],
+    up_color: str,
+    down_color: str,
 ) -> dict[str, object]:
-    result: dict[str, object] = {
+    return {
         "name": name,
-        "type": "line",
+        "type": "candlestick",
         "xAxisIndex": panel_index,
         "yAxisIndex": panel_index,
         "data": data,
-        "showSymbol": False,
-        "connectNulls": False,
-        "lineStyle": {
-            "width": 1.5,
-            "color": color,
+        "itemStyle": {
+            "color": up_color,
+            "color0": down_color,
+            "borderColor": up_color,
+            "borderColor0": down_color,
         },
-        "sampling": "lttb",
         "progressive": 5_000,
         "z": 30,
     }
-
-    if area_color is not None:
-        result["areaStyle"] = {
-            "color": area_color,
-        }
-
-    return result
 
 
 def _selected_focus_series(
@@ -1098,11 +1161,10 @@ def build_analysis_chart_option(
     ]
 
     price_data: list[object] = []
-    bid_data: list[float | None] = []
-    ask_data: list[float | None] = []
-    total_data: list[float | None] = []
-    delta_positive: list[float | None] = []
-    delta_negative: list[float | None] = []
+    bid_data: list[list[float]] = []
+    ask_data: list[list[float]] = []
+    total_data: list[list[float]] = []
+    delta_data: list[list[float]] = []
 
     for source_index in visible.source_indices:
         bar = bars[source_index]
@@ -1120,14 +1182,32 @@ def build_analysis_chart_option(
                 ]
             )
 
-        bid_data.append(_decimal_float(bar.bid_liquidity))
-        ask_data.append(_decimal_float(bar.ask_liquidity))
-        total_data.append(_decimal_float(bar.total_liquidity))
+        bid_candle = _l2_candle_data(
+            bar.l2.bid_ohlc,
+            metric_name="Bid Liquidity",
+        )
+        ask_candle = _l2_candle_data(
+            bar.l2.ask_ohlc,
+            metric_name="Ask Liquidity",
+        )
+        total_candle = _l2_candle_data(
+            bar.l2.total_ohlc,
+            metric_name="Total Liquidity",
+        )
+        delta_candle = _l2_candle_data(
+            bar.l2.delta_ohlc,
+            metric_name="Order-Book Delta",
+        )
 
-        delta = _decimal_float(bar.l2.bid_ask_delta())
+        assert isinstance(bid_candle, list)
+        assert isinstance(ask_candle, list)
+        assert isinstance(total_candle, list)
+        assert isinstance(delta_candle, list)
 
-        delta_positive.append(delta if delta is not None and delta >= 0.0 else None)
-        delta_negative.append(delta if delta is not None and delta < 0.0 else None)
+        bid_data.append(bid_candle)
+        ask_data.append(ask_candle)
+        total_data.append(total_candle)
+        delta_data.append(delta_candle)
 
     grids = [
         {
@@ -1256,54 +1336,47 @@ def build_analysis_chart_option(
             "progressive": 5_000,
             "z": 30,
         },
-        _line_series(
+        _l2_candle_series(
             name="Bid Liquidity",
             panel_index=_BID_GRID_INDEX,
             data=bid_data,
-            color=colors.bid_line,
-            area_color="rgba(56,189,248,0.07)",
+            up_color=colors.bid_line,
+            down_color=colors.bid_down,
         ),
-        _line_series(
+        _l2_candle_series(
             name="Ask Liquidity",
             panel_index=_ASK_GRID_INDEX,
             data=ask_data,
-            color=colors.ask_line,
-            area_color="rgba(249,115,22,0.07)",
+            up_color=colors.ask_line,
+            down_color=colors.ask_down,
         ),
-        _line_series(
+        _l2_candle_series(
             name="Total Liquidity",
             panel_index=_TOTAL_GRID_INDEX,
             data=total_data,
-            color=colors.total_line,
-            area_color="rgba(167,139,250,0.07)",
+            up_color=colors.total_line,
+            down_color=colors.total_down,
         ),
-        _line_series(
-            name="Positive Delta",
+        _l2_candle_series(
+            name="Order-Book Delta",
             panel_index=_DELTA_GRID_INDEX,
-            data=delta_positive,
-            color=colors.delta_positive,
-            area_color="rgba(34,197,94,0.09)",
-        ),
-        _line_series(
-            name="Negative Delta",
-            panel_index=_DELTA_GRID_INDEX,
-            data=delta_negative,
-            color=colors.delta_negative,
-            area_color="rgba(239,68,68,0.09)",
+            data=delta_data,
+            up_color=colors.delta_positive,
+            down_color=colors.delta_negative,
         ),
     ]
 
     series.extend(_selected_focus_series(panel_index) for panel_index in range(5))
 
-    negative_delta_series = next(
-        (item for item in series if item.get("name") == "Negative Delta"),
+    delta_series = next(
+        (item for item in series if item.get("name") == "Order-Book Delta"),
         None,
     )
 
-    if negative_delta_series is None:
-        raise AnalysisChartError("Negative Delta series is missing")
+    if delta_series is None:
+        raise AnalysisChartError("Order-Book Delta series is missing")
 
-    negative_delta_series["markLine"] = {
+    delta_series["markLine"] = {
         "silent": True,
         "symbol": "none",
         "data": [
@@ -1411,8 +1484,7 @@ def build_analysis_chart_option(
                 "Bid Liquidity",
                 "Ask Liquidity",
                 "Total Liquidity",
-                "Positive Delta",
-                "Negative Delta",
+                "Order-Book Delta",
                 "Upward LM highlights \u00b7 panel 0",
                 "Downward LM highlights \u00b7 panel 0",
             ],

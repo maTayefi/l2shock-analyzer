@@ -252,6 +252,74 @@ def _exact_nonnegative_decimal_sum(
 
 
 @dataclass(frozen=True, slots=True)
+class L2OHLC:
+    """Exact OHLC of observed one-second values for one L2 metric."""
+
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+
+    def __post_init__(self) -> None:
+        for name in ("open", "high", "low", "close"):
+            value = getattr(self, name)
+            if not isinstance(value, Decimal) or not value.is_finite():
+                raise ValueError(f"L2OHLC.{name} must be a finite Decimal")
+
+        if (
+            self.low > self.high
+            or not self.low <= self.open <= self.high
+            or not self.low <= self.close <= self.high
+        ):
+            raise ValueError("L2OHLC values have inconsistent candle geometry")
+
+
+def _reduce_l2_ohlc(values: Iterable[Decimal]) -> L2OHLC | None:
+    """Reduce ordered, usable one-second metric values in a single pass.
+
+    The caller owns timestamp ordering, bar membership, and exclusion of
+    invalid or missing seconds. An empty input has no candle. This function
+    never interpolates values or converts exact Decimals to floats.
+    """
+    first: Decimal | None = None
+    lowest: Decimal | None = None
+    highest: Decimal | None = None
+    last: Decimal | None = None
+
+    for value in values:
+        if not isinstance(value, Decimal) or not value.is_finite():
+            raise ValueError("L2 OHLC input values must be finite Decimals")
+
+        if first is None:
+            first = value
+            lowest = value
+            highest = value
+        else:
+            assert lowest is not None
+            assert highest is not None
+            if value < lowest:
+                lowest = value
+            if value > highest:
+                highest = value
+
+        last = value
+
+    if first is None:
+        return None
+
+    assert lowest is not None
+    assert highest is not None
+    assert last is not None
+
+    return L2OHLC(
+        open=first,
+        high=highest,
+        low=lowest,
+        close=last,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class AggregatedL2Bar:
     """One larger end-of-bucket L2 state with coverage diagnostics."""
 
@@ -274,6 +342,14 @@ class AggregatedL2Bar:
     hard_discontinuity: bool
 
     endpoint_invalid_reason: BookSampleInvalidReason | None
+
+    # Numerical summaries of usable one-second observations in this bucket.
+    # These do not change endpoint ownership, quality, coverage, or whether
+    # the aligned bar is eligible for chart display or LM analysis.
+    bid_ohlc: L2OHLC | None = None
+    ask_ohlc: L2OHLC | None = None
+    total_ohlc: L2OHLC | None = None
+    delta_ohlc: L2OHLC | None = None
 
     @property
     def total_liquidity(self) -> Decimal | None:
@@ -577,6 +653,43 @@ def aggregate_l2_seconds(
             for observation in bucket_values
         )
 
+        bid_values: list[Decimal] = []
+        ask_values: list[Decimal] = []
+        total_values: list[Decimal] = []
+        delta_values: list[Decimal] = []
+
+        # _bucket_observations preserves timestamp order. Only numerically
+        # usable seconds contribute: do not synthesize missing observations
+        # or coerce an invalid observation to zero. Coverage and display
+        # eligibility remain governed by the existing logic below.
+        for observation in bucket_values:
+            if observation.quality is not BookSampleQuality.VALID:
+                continue
+
+            bid_value = observation.bid_liquidity
+            ask_value = observation.ask_liquidity
+            assert bid_value is not None
+            assert ask_value is not None
+
+            bid_values.append(bid_value)
+            ask_values.append(ask_value)
+            total_values.append(_exact_nonnegative_decimal_sum(bid_value, ask_value))
+
+            # Match AggregatedL2Bar.bid_ask_delta() at the endpoint. In
+            # particular, do not change LM's established Delta precision.
+            with localcontext(
+                Context(
+                    prec=34,
+                    rounding=ROUND_HALF_EVEN,
+                )
+            ):
+                delta_values.append(bid_value - ask_value)
+
+        bid_ohlc = _reduce_l2_ohlc(bid_values)
+        ask_ohlc = _reduce_l2_ohlc(ask_values)
+        total_ohlc = _reduce_l2_ohlc(total_values)
+        delta_ohlc = _reduce_l2_ohlc(delta_values)
+
         if endpoint is not None and endpoint.quality is BookSampleQuality.VALID:
             quality = (
                 AnalysisBarQuality.VALID
@@ -616,6 +729,10 @@ def aggregate_l2_seconds(
                 maximum_invalid_run_seconds=maximum_invalid_run,
                 hard_discontinuity=invalid_seconds > 0,
                 endpoint_invalid_reason=endpoint_reason,
+                bid_ohlc=bid_ohlc,
+                ask_ohlc=ask_ohlc,
+                total_ohlc=total_ohlc,
+                delta_ohlc=delta_ohlc,
             )
         )
 

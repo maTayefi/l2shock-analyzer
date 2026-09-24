@@ -148,11 +148,12 @@ def test_chart_contains_price_and_four_liquidity_metrics() -> None:
     series = _series_by_name(option)
 
     assert series["Binance perpetual price"]["type"] == "candlestick"
-    assert series["Bid Liquidity"]["type"] == "line"
-    assert series["Ask Liquidity"]["type"] == "line"
-    assert series["Total Liquidity"]["type"] == "line"
-    assert series["Positive Delta"]["type"] == "line"
-    assert series["Negative Delta"]["type"] == "line"
+    assert series["Bid Liquidity"]["type"] == "candlestick"
+    assert series["Ask Liquidity"]["type"] == "candlestick"
+    assert series["Total Liquidity"]["type"] == "candlestick"
+    assert series["Order-Book Delta"]["type"] == "candlestick"
+    assert "Positive Delta" not in series
+    assert "Negative Delta" not in series
 
 
 def test_chart_uses_local_timezone_labels() -> None:
@@ -303,10 +304,10 @@ def test_delta_zero_reference_belongs_to_delta_series() -> None:
     )
     series = _series_by_name(option)
 
-    negative = series["Negative Delta"]
+    delta = series["Order-Book Delta"]
 
-    assert "markLine" in negative
-    assert negative["markLine"]["data"][0]["yAxis"] == 0
+    assert "markLine" in delta
+    assert delta["markLine"]["data"][0]["yAxis"] == 0
 
     focus = [
         item
@@ -331,8 +332,7 @@ def test_principal_series_are_bound_to_independent_panel_axes() -> None:
         "Bid Liquidity": 1,
         "Ask Liquidity": 2,
         "Total Liquidity": 3,
-        "Positive Delta": 4,
-        "Negative Delta": 4,
+        "Order-Book Delta": 4,
     }
 
     for name, expected_index in expected_axes.items():
@@ -410,36 +410,36 @@ def test_custom_background_colors_are_style_not_axis_data() -> None:
             assert "packed_rgba" not in item
 
 
-def test_delta_series_contains_bid_minus_ask_values() -> None:
+def test_delta_candles_match_per_bar_ohlc_and_existing_delta_close() -> None:
+    result = _result()
     option = build_analysis_chart_option(
-        _result(),
+        result,
         timezone_name="Asia/Tehran",
     )
     series = _series_by_name(option)
 
-    positive = series["Positive Delta"]["data"]
-    negative = series["Negative Delta"]["data"]
+    candles = series["Order-Book Delta"]["data"]
+    source_indices = option["l2shockChartMetadata"]["source_bar_indices"]
 
-    combined = [
-        positive_value if positive_value is not None else negative_value
-        for positive_value, negative_value in zip(
-            positive,
-            negative,
-            strict=True,
-        )
-    ]
+    assert len(candles) == len(source_indices)
 
-    result = _result()
-    expected = []
+    for candle, source_index in zip(
+        candles,
+        source_indices,
+        strict=True,
+    ):
+        bar = result.dataset.chart.bars[source_index]
+        ohlc = bar.l2.delta_ohlc
 
-    for bar in result.dataset.chart.bars:
-        if not bar.core_eligible:
-            continue
-
-        delta = bar.l2.bid_ask_delta()
-        expected.append(None if delta is None else float(delta))
-
-    assert combined == expected
+        assert bar.core_eligible
+        assert ohlc is not None
+        assert candle == [
+            float(ohlc.open),
+            float(ohlc.close),
+            float(ohlc.low),
+            float(ohlc.high),
+        ]
+        assert candle[1] == float(bar.l2.bid_ask_delta())
 
 
 def test_opposite_direction_alpha_composition_respects_cap() -> None:
@@ -485,3 +485,88 @@ def test_tooltip_uses_noncustom_series_category_index() -> None:
     assert "item.seriesType !== 'custom'" in formatter
     assert "Number(categoryParam.dataIndex)" in formatter
     assert "ps[0].dataIndex" not in formatter
+
+
+def test_all_l2_candles_follow_visible_source_indices_and_keep_full_range() -> None:
+    result = _result(excluded=frozenset({2, 3}))
+    option = build_analysis_chart_option(
+        result,
+        timezone_name="Asia/Tehran",
+    )
+    series = _series_by_name(option)
+    source_indices = option["l2shockChartMetadata"]["source_bar_indices"]
+
+    for name, field in (
+        ("Bid Liquidity", "bid_ohlc"),
+        ("Ask Liquidity", "ask_ohlc"),
+        ("Total Liquidity", "total_ohlc"),
+        ("Order-Book Delta", "delta_ohlc"),
+    ):
+        candles = series[name]["data"]
+        assert len(candles) == len(source_indices)
+
+        for candle, source_index in zip(
+            candles,
+            source_indices,
+            strict=True,
+        ):
+            bar = result.dataset.chart.bars[source_index]
+            ohlc = getattr(bar.l2, field)
+
+            assert bar.core_eligible
+            assert ohlc is not None
+            assert candle == [
+                float(ohlc.open),
+                float(ohlc.close),
+                float(ohlc.low),
+                float(ohlc.high),
+            ]
+            assert candle[2] <= candle[0] <= candle[3]
+            assert candle[2] <= candle[1] <= candle[3]
+
+    assert [item["filterMode"] for item in option["dataZoom"]] == [
+        "none",
+        "none",
+    ]
+
+
+def test_l2_candle_tooltip_contains_four_ohlc_metrics() -> None:
+    option = build_analysis_chart_option(
+        _result(),
+        timezone_name="Asia/Tehran",
+    )
+    formatter = option["tooltip"][":formatter"]
+
+    for key in (
+        "bid_ohlc",
+        "ask_ohlc",
+        "total_ohlc",
+        "delta_ohlc",
+    ):
+        assert key in formatter
+
+    assert "candleText('Bid Liquidity', row.bid_ohlc)" in formatter
+    assert "candleText('Order-Book Delta', row.delta_ohlc)" in formatter
+    assert "formatNumber(candle.high)" in formatter
+    assert "formatNumber(candle.low)" in formatter
+
+
+def test_chart_legend_has_one_delta_candle_series() -> None:
+    option = build_analysis_chart_option(
+        _result(),
+        timezone_name="Asia/Tehran",
+    )
+
+    legend = option["legend"]["data"]
+    assert legend.count("Order-Book Delta") == 1
+    assert "Positive Delta" not in legend
+    assert "Negative Delta" not in legend
+
+    principal = [
+        item
+        for item in option["series"]
+        if isinstance(item, dict) and item.get("name") == "Order-Book Delta"
+    ]
+    assert len(principal) == 1
+    assert principal[0]["type"] == "candlestick"
+    assert principal[0]["itemStyle"]["color"] != (principal[0]["itemStyle"]["color0"])

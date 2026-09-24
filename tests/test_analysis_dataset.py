@@ -24,6 +24,7 @@ from l2shock.price import (
     TradeSampleQuality,
 )
 from l2shock.analysis import L2Second, PriceSecond
+from l2shock.analysis.aggregation import L2OHLC, _reduce_l2_ohlc
 
 
 def _start() -> datetime:
@@ -756,3 +757,56 @@ def test_explicit_chart_timeframe_is_retained_when_it_fits_budget() -> None:
 
     assert dataset.chart.timeframe.label == "5s"
     assert len(dataset.chart.bars) == 5
+
+
+def test_l2_ohlc_reducer_tracks_first_extremes_and_last_without_rounding() -> None:
+    values = iter(
+        (
+            Decimal("100.0000000000000000001"),
+            Decimal("104.0000000000000000001"),
+            Decimal("90.0000000000000000001"),
+            Decimal("101.0000000000000000001"),
+        )
+    )
+
+    assert _reduce_l2_ohlc(values) == L2OHLC(
+        open=Decimal("100.0000000000000000001"),
+        high=Decimal("104.0000000000000000001"),
+        low=Decimal("90.0000000000000000001"),
+        close=Decimal("101.0000000000000000001"),
+    )
+
+
+def test_l2_ohlc_reducer_accepts_zero_and_signed_delta_values() -> None:
+    assert _reduce_l2_ohlc(
+        iter((Decimal("0"), Decimal("-7"), Decimal("3"), Decimal("-2")))
+    ) == L2OHLC(
+        open=Decimal("0"),
+        high=Decimal("3"),
+        low=Decimal("-7"),
+        close=Decimal("-2"),
+    )
+
+
+def test_l2_ohlc_reducer_handles_empty_and_single_second() -> None:
+    assert _reduce_l2_ohlc(iter(())) is None
+
+    assert _reduce_l2_ohlc(iter((Decimal("0"),))) == L2OHLC(
+        open=Decimal("0"),
+        high=Decimal("0"),
+        low=Decimal("0"),
+        close=Decimal("0"),
+    )
+
+
+def test_l2_ohlc_rejects_invalid_geometry_and_nonfinite_inputs() -> None:
+    with pytest.raises(ValueError, match="geometry"):
+        L2OHLC(
+            open=Decimal("10"),
+            high=Decimal("9"),
+            low=Decimal("0"),
+            close=Decimal("5"),
+        )
+
+    with pytest.raises(ValueError, match="finite Decimals"):
+        _reduce_l2_ohlc(iter((Decimal("1"), Decimal("NaN"))))
