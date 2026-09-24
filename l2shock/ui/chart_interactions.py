@@ -1718,6 +1718,11 @@ class AnalysisChartController:
         self._emphasis_owner_id = None
         self._emphasis_window = None
 
+    def clear_emphasis(self) -> None:
+        """Clear selected-LM emphasis without invalidating the chart commit."""
+        self._emphasis_owner_id = None
+        self._emphasis_window = None
+
     async def publish(
         self,
         option: dict[str, Any],

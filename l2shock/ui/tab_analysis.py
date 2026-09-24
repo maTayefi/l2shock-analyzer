@@ -372,7 +372,6 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
                     value=settings.analysis.default_activity_timeframe,
                     label="Activity timeframe",
                 ).classes("w-48")
-
                 chart_timeframe_override = ui.select(
                     options={
                         "": "Automatic",
@@ -380,10 +379,9 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
                             timeframe.label: timeframe.label for timeframe in TIMEFRAMES
                         },
                     },
-                    value="",
+                    value="1s",
                     label="Chart timeframe",
                 ).classes("w-48")
-
                 maximum_chart_bars = ui.number(
                     label="Maximum automatic chart bars",
                     value=settings.analysis.default_chart_max_bars,
@@ -603,6 +601,20 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
                     value=True,
                 )
 
+            with ui.row().classes("w-full gap-4 flex-wrap"):
+                show_discontinuity_markers = ui.checkbox(
+                    "Timeline-jump markers (amber)",
+                    value=True,
+                )
+                show_persistent_warnings = ui.checkbox(
+                    "Persistent data warnings (red)",
+                    value=True,
+                )
+                show_selected_lm_focus = ui.checkbox(
+                    "Selected LM focus (amber outline)",
+                    value=True,
+                )
+
             analysis_chart = (
                 ui.echart(empty_analysis_chart_option())
                 .classes("w-full h-[78vh] min-h-[680px]")
@@ -686,22 +698,21 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
         show_ask_highlights,
         show_total_highlights,
         show_imbalance_highlights,
+        show_discontinuity_markers,
+        show_persistent_warnings,
+        show_selected_lm_focus,
     )
 
     def _chart_visibility() -> AnalysisChartVisibility:
         from l2shock.analysis import LiquidityMetric
 
         metrics = set()
-
         if show_bid_highlights.value:
             metrics.add(LiquidityMetric.BID_LIQUIDITY)
-
         if show_ask_highlights.value:
             metrics.add(LiquidityMetric.ASK_LIQUIDITY)
-
         if show_total_highlights.value:
             metrics.add(LiquidityMetric.TOTAL_LIQUIDITY)
-
         if show_imbalance_highlights.value:
             metrics.add(LiquidityMetric.BID_ASK_DELTA)
 
@@ -712,6 +723,9 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
             show_chart_candidates=bool(show_chart_highlights.value),
             show_height_selected=bool(show_height_highlights.value),
             show_sharpness_selected=bool(show_sharpness_highlights.value),
+            show_discontinuity_markers=bool(show_discontinuity_markers.value),
+            show_persistent_warnings=bool(show_persistent_warnings.value),
+            show_selected_lm_focus=bool(show_selected_lm_focus.value),
             highlighted_metrics=frozenset(metrics),
         )
 
@@ -965,10 +979,19 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
             ranking,
             padding_bars=5,
         )
-
         if window is None:
             table_navigation_status.text = (
                 "This LM does not overlap the visible chart-timeframe core."
+            )
+            return
+
+        if not show_selected_lm_focus.value:
+            result_table.selected = [row]
+            result_table.update()
+            table_navigation_status.text = (
+                f"Row selected but Selected LM focus is disabled. "
+                f"{metric} / {timeframe} / {direction} "
+                f"population rank {population_rank}."
             )
             return
 
@@ -1306,12 +1329,20 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
     minimum_price_enabled.on_value_change(lambda _event: _sync_price_inputs())
     maximum_price_enabled.on_value_change(lambda _event: _sync_price_inputs())
 
+    def _on_selected_lm_focus_change(_event) -> None:
+        if not show_selected_lm_focus.value:
+            chart_controller.clear_emphasis()
+        _schedule_latest_chart_render(preserve_viewport=True)
+
     for visibility_input in chart_visibility_inputs:
-        visibility_input.on_value_change(
-            lambda _event: _schedule_latest_chart_render(
-                preserve_viewport=True,
+        if visibility_input is show_selected_lm_focus:
+            visibility_input.on_value_change(_on_selected_lm_focus_change)
+        else:
+            visibility_input.on_value_change(
+                lambda _event: _schedule_latest_chart_render(
+                    preserve_viewport=True,
+                )
             )
-        )
 
     result_table.on(
         "rowClick",

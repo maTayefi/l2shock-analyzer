@@ -657,7 +657,7 @@ class AnalysisConfig(StrictConfigModel):
         default_factory=lambda: ["1s", "5s", "10s", "15s", "30s"]
     )
     default_activity_timeframe: str = "1s"
-    default_chart_max_bars: int = 400
+    default_chart_max_bars: int = 2000
     price_context_bars_before: int = 3
     price_context_bars_after: int = 3
     l2_long_invalid_warning_seconds: int = 60

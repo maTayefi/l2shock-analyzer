@@ -101,13 +101,13 @@ class AnalysisChartVisibility:
 
     show_price_highlights: bool = True
     show_liquidity_highlights: bool = True
-
     show_activity_candidates: bool = True
     show_chart_candidates: bool = True
-
     show_height_selected: bool = True
     show_sharpness_selected: bool = True
-
+    show_discontinuity_markers: bool = True
+    show_persistent_warnings: bool = True
+    show_selected_lm_focus: bool = True
     highlighted_metrics: frozenset[LiquidityMetric] = frozenset(LiquidityMetric)
 
     def __post_init__(self) -> None:
@@ -118,6 +118,9 @@ class AnalysisChartVisibility:
             "show_chart_candidates",
             "show_height_selected",
             "show_sharpness_selected",
+            "show_discontinuity_markers",
+            "show_persistent_warnings",
+            "show_selected_lm_focus",
         ):
             if not isinstance(getattr(self, field_name), bool):
                 raise AnalysisChartError(f"{field_name} must be bool")
@@ -730,15 +733,15 @@ def _discontinuity_series(
     *,
     panel_index: int,
     colors: AnalysisChartColors,
+    show_ordinary: bool = True,
+    show_warning: bool = True,
 ) -> list[dict[str, object]]:
     ordinary: list[dict[str, object]] = []
     warning: list[dict[str, object]] = []
-
     for display_index, item in metadata.items():
         is_warning = bool(item["persistent_warning"])
         alpha = 0.24 if is_warning else 0.16
         rgb = (239, 68, 68) if is_warning else (245, 158, 11)
-
         target = warning if is_warning else ordinary
         target.append(
             {
@@ -756,21 +759,20 @@ def _discontinuity_series(
         )
 
     result: list[dict[str, object]] = []
-
-    for name, data, z in (
-        ("Discontinuity", ordinary, 20),
-        ("Persistent data warning", warning, 21),
-    ):
+    entries: list[tuple[str, list[dict[str, object]], int]] = []
+    if show_ordinary:
+        entries.append(("Discontinuity", ordinary, 20))
+    if show_warning:
+        entries.append(("Persistent data warning", warning, 21))
+    for name, data, z in entries:
         series = _background_series(
             name=f"{name} \u00b7 panel {panel_index}",
             panel_index=panel_index,
             data=data,
             z=z,
         )
-
         if series is not None:
             result.append(series)
-
     return result
 
 
@@ -1371,16 +1373,15 @@ def build_analysis_chart_option(
         ),
     ]
 
-    series.extend(_selected_focus_series(panel_index) for panel_index in range(5))
+    if selected_visibility.show_selected_lm_focus:
+        series.extend(_selected_focus_series(panel_index) for panel_index in range(5))
 
     delta_series = next(
         (item for item in series if item.get("name") == "Order-Book Delta"),
         None,
     )
-
     if delta_series is None:
         raise AnalysisChartError("Order-Book Delta series is missing")
-
     delta_series["markLine"] = {
         "silent": True,
         "symbol": "none",
@@ -1432,7 +1433,6 @@ def build_analysis_chart_option(
                 data=data,
                 z=2,
             )
-
             if background is not None:
                 series.append(background)
 
@@ -1442,15 +1442,20 @@ def build_analysis_chart_option(
         l2_warning_seconds=l2_warning_seconds,
         price_warning_seconds=price_warning_seconds,
     )
-
-    for panel_index in range(5):
-        series.extend(
-            _discontinuity_series(
-                discontinuity_metadata,
-                panel_index=panel_index,
-                colors=colors,
+    if (
+        selected_visibility.show_discontinuity_markers
+        or selected_visibility.show_persistent_warnings
+    ):
+        for panel_index in range(5):
+            series.extend(
+                _discontinuity_series(
+                    discontinuity_metadata,
+                    panel_index=panel_index,
+                    colors=colors,
+                    show_ordinary=(selected_visibility.show_discontinuity_markers),
+                    show_warning=(selected_visibility.show_persistent_warnings),
+                )
             )
-        )
 
     tooltip_metadata = _chart_metadata(
         result,

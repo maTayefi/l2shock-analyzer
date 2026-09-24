@@ -59,7 +59,7 @@ analysis:
   base_sampling_interval_ms: 1000
   activity_timeframes: ["1s", "5s", "10s", "15s", "30s"]
   default_activity_timeframe: "1s"
-  default_chart_max_bars: 400
+  default_chart_max_bars: 2000
   price_context_bars_before: 3
   price_context_bars_after: 3
   l2_long_invalid_warning_seconds: 60
