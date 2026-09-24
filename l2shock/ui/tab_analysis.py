@@ -18,6 +18,7 @@ from l2shock.timeutils import (
     utc_to_local,
 )
 from l2shock.analysis import TIMEFRAMES
+from l2shock.analysis.timeframes import snap_closed_analysis_range
 from l2shock.ui.analysis_chart import (
     AnalysisChartVisibility,
     build_analysis_chart_option,
@@ -342,10 +343,10 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
                 )
                 start_time = (
                     ui.input(
-                        label="Start time",
+                        label="Start time (24-hour HH:MM:SS)",
                         value=start_time_value,
                     )
-                    .props("type=time step=1")
+                    .props('type=text inputmode=numeric placeholder="HH:MM:SS"')
                     .classes("w-44")
                 )
                 end_date = (
@@ -358,10 +359,10 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
                 )
                 end_time = (
                     ui.input(
-                        label="End time",
+                        label="End time (24-hour HH:MM:SS)",
                         value=end_time_value,
                     )
-                    .props("type=time step=1")
+                    .props('type=text inputmode=numeric placeholder="HH:MM:SS"')
                     .classes("w-44")
                 )
 
@@ -550,6 +551,13 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
                 "linked zoom, and linked vertical pointer. Timeline jumps "
                 "mark filtered or invalid elapsed time."
             ).classes("text-sm text-gray-600")
+
+            ui.label(
+                "The highlight toggles control LM backgrounds only. Amber "
+                "timeline jumps and red persistent-data warnings remain "
+                "visible to show skipped or invalid data. Clicking an LM "
+                "table row can also add a separate amber selected-row focus."
+            ).classes("text-xs text-amber-700")
 
             with ui.row().classes("w-full gap-4 flex-wrap mt-2"):
                 show_price_highlights = ui.checkbox(
@@ -1212,8 +1220,48 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
                 lm_settings=settings.analysis.lm,
             )
 
-            temporal_viewport = await capture_analysis_chart_temporal_viewport(
-                analysis_chart,
+            if request.chart_timeframe_override is not None:
+                snapped = snap_closed_analysis_range(
+                    request.requested_start_utc,
+                    request.requested_end_utc,
+                    request.chart_timeframe_override,
+                )
+
+                if snapped.bar_count > request.maximum_chart_bars:
+                    raise AnalysisControlError(
+                        "The explicit chart timeframe produces "
+                        f"{snapped.bar_count} bars, exceeding "
+                        f"maximum_chart_bars={request.maximum_chart_bars}. "
+                        "Select a coarser chart timeframe or increase "
+                        "the chart-bar limit."
+                    )
+
+            previous_result = runtime.snapshot().last_result
+            previous_analysis = (
+                previous_result.analysis if previous_result is not None else None
+            )
+            chart_commit = chart_controller.commit
+
+            same_chart_window = bool(
+                previous_analysis is not None
+                and chart_commit is not None
+                and chart_commit.owner_id == previous_analysis.analysis_id
+                and previous_result.request.base == request.base
+                and previous_result.request.preset_hash == request.preset_hash
+                and (
+                    previous_result.request.requested_start_utc
+                    == request.requested_start_utc
+                )
+                and (
+                    previous_result.request.requested_end_utc
+                    == request.requested_end_utc
+                )
+            )
+
+            temporal_viewport = (
+                await capture_analysis_chart_temporal_viewport(analysis_chart)
+                if same_chart_window
+                else None
             )
 
             runtime.start(
@@ -1221,9 +1269,9 @@ def build_analysis_tab() -> AnalysisHandoffHandler:
                 config=config,
             )
 
-            # Bind the old viewport to this exact immutable request. A stopped,
-            # failed, or superseded operation must not transfer it into another
-            # result.
+            # Preserve temporal navigation only for the same rendered
+            # base/preset/time window. A new window starts fully zoomed out.
+            # Bind any captured viewport to this exact immutable request.
             pending_temporal_request = request
             pending_temporal_viewport = temporal_viewport
 

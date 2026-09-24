@@ -415,8 +415,11 @@ def is_excluded(
     exclude_exts: set[str],
     exclude_names: set[str],
 ) -> bool:
-    name_l = path.name.lower()
+    excluded_export_rel_paths = {
+        "tools/diagnose_bybit_contract.py",
+    }
 
+    name_l = path.name.lower()
     if name_l in exclude_names:
         return True
     if is_generated_output_name(name_l):
@@ -429,11 +432,14 @@ def is_excluded(
     except ValueError:
         rel = path
 
+    rel_posix_l = rel.as_posix().lower().replace("\\", "/")
+    if rel_posix_l in excluded_export_rel_paths:
+        return True
+
     # Case-insensitive dir matching, important on Windows and for .vscodecounter.
     for part in rel.parts[:-1]:
         if part.lower() in exclude_dirs:
             return True
-
     return False
 
 
@@ -2854,7 +2860,6 @@ def main() -> int:
         extension.lower() if extension.startswith(".") else f".{extension.lower()}"
         for extension in args.exclude_exts
     }
-
     exclude_names = {
         ".env",
         "context_export_manifest.md",
@@ -2862,8 +2867,18 @@ def main() -> int:
         "ai_review_readme.txt",
         "scan_string_literals_report.txt",
         "logger_calls.txt",
+        # Never bundle these files into AI context TXT files.
+        "context_exporter.py",
+        "scan_string_literals.py",
+        "inspect_bybit_bitget_contract.py",
+        "inspect_bybit_contract",
+        "inspect_local_bybit_bitget.py",
+        "probe_cryptohft_depth.py",
+        "inspect_multi_venue.py",
+        "inspect_bybit_latest.py",
+        "inspect_bybit_bitget_local.py",
+        "probe_bybit_history.py",
     }
-
     removed_outputs = cleanup_generated_outputs(out_dir)
 
     global_cap_bytes = mib_to_bytes(args.global_files_cap)

@@ -249,10 +249,10 @@ def build_fetch_tab(
                 )
                 remote_start_time = (
                     ui.input(
-                        label="Remote import start time",
+                        label="Remote import start time (24-hour HH:MM)",
                         value=start_time_value,
                     )
-                    .props("type=time step=60")
+                    .props('type=text inputmode=numeric placeholder="HH:MM"')
                     .classes("w-44")
                 )
                 remote_end_date = (
@@ -265,10 +265,10 @@ def build_fetch_tab(
                 )
                 remote_end_time = (
                     ui.input(
-                        label="Remote import end time",
+                        label="Remote import end time (24-hour HH:MM)",
                         value=end_time_value,
                     )
-                    .props("type=time step=60")
+                    .props('type=text inputmode=numeric placeholder="HH:MM"')
                     .classes("w-44")
                 )
 
@@ -284,7 +284,7 @@ def build_fetch_tab(
                 )
                 remote_eth = ui.checkbox(
                     "ETH",
-                    value=True,
+                    value=False,
                 )
 
                 remote_depth_lower = (
@@ -362,10 +362,10 @@ def build_fetch_tab(
                 )
                 start_time = (
                     ui.input(
-                        label="Start time",
+                        label="Start time (24-hour HH:MM)",
                         value=start_time_value,
                     )
-                    .props("type=time step=60")
+                    .props('type=text inputmode=numeric placeholder="HH:MM"')
                     .classes("w-40")
                 )
                 end_date = (
@@ -378,10 +378,10 @@ def build_fetch_tab(
                 )
                 end_time = (
                     ui.input(
-                        label="End time",
+                        label="End time (24-hour HH:MM)",
                         value=end_time_value,
                     )
-                    .props("type=time step=60")
+                    .props('type=text inputmode=numeric placeholder="HH:MM"')
                     .classes("w-40")
                 )
 
