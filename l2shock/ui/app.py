@@ -32,6 +32,7 @@ from l2shock.ui.remote_import_runtime import peek_remote_import_runtime
 from l2shock.ui.shutdown import shutdown_runtime
 from l2shock.ui.state import get_state
 from l2shock.ui.tab_analysis import build_analysis_tab
+from l2shock.ui.tab_shock_review import build_shock_review_section
 from l2shock.ui.tab_fetch import build_fetch_tab
 from l2shock.ui.tab_settings import build_settings_tab
 
@@ -379,6 +380,7 @@ def index_page() -> None:
             # the ui.tabs declarations above.
             with ui.tab_panel(analysis_tab):
                 analysis_handoff = build_analysis_tab()
+                build_shock_review_section()
 
             async def _apply_availability_handoff(
                 handoff,

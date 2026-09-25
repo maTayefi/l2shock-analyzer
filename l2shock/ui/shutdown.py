@@ -35,6 +35,7 @@ from nicegui import app as nicegui_app
 
 from l2shock.db.engine import reset_engine
 from l2shock.ui.analysis_runtime import peek_manual_analysis_runtime
+from l2shock.ui.shock_runtime import peek_manual_shock_runtime
 from l2shock.ui.components import cancel_and_wait_for_tracked_tasks
 from l2shock.ui.fetch_runtime import peek_manual_fetch_runtime
 from l2shock.ui.automatic_fetch_runtime import (
@@ -218,6 +219,28 @@ async def shutdown_runtime(
                         "cancellation timeout."
                     )
 
+        shock_runtime = peek_manual_shock_runtime()
+
+        if (
+            shock_runtime is not None
+            and shock_runtime.snapshot().is_running
+        ):
+            log.info("Requesting cooperative Shock-Start review stop.")
+
+            shock_stopped = await shock_runtime.stop_and_wait(
+                grace_seconds=analysis_grace_seconds,
+            )
+
+            if not shock_stopped:
+                # The synchronous detector has no cancellation callback.
+                # In particular, do not mark this owner stopped or dispose
+                # the SQLAlchemy engine while its worker may still run.
+                all_operation_owners_stopped = False
+                log.error(
+                    "Shock-Start worker did not exit within %.3f seconds; "
+                    "database engine disposal is blocked.",
+                    analysis_grace_seconds,
+                )
         pending = await cancel_and_wait_for_tracked_tasks(
             timeout_seconds=other_task_timeout_seconds,
         )

@@ -208,6 +208,31 @@ def test_single_market_processing_persists_target_and_checkpoint(
     assert stored is not None
     assert stored.encoded.content_sha256 == result.analytical_content_sha256
 
+    # Exercise the new production shock path against the actual persisted,
+    # codec-verified L2 row. No price hour is written by this test.
+    from l2shock.analysis.shock_dataset import ShockDatasetRequest
+    from l2shock.analysis.shock_execution import run_verified_shock_scan
+
+    shock_scan = run_verified_shock_scan(
+        database_session,
+        ShockDatasetRequest(
+            base="BTC",
+            preset_hash=preset.preset_hash,
+            requested_start_utc=_hour(),
+            requested_end_utc=_hour(),
+        ),
+    )
+
+    assert len(shock_scan.dataset.seconds) == 1
+    assert shock_scan.dataset.seconds[0].timestamp_utc == _hour()
+    assert shock_scan.dataset.component_hours[0].content_sha256 == (
+        stored.encoded.content_sha256
+    )
+    assert len(shock_scan.scan_id) == 64
+    # One second cannot contain an A-B-C leg. That is expected; this
+    # assertion tests the real verified loader/execution boundary.
+    assert shock_scan.hypotheses == ()
+
     row = AcquisitionRepository(database_session).get_source_hour(_spec())
 
     assert row is not None
