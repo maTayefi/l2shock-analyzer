@@ -61,7 +61,9 @@ def test_runtime_shared_admission_and_success(monkeypatch):
     review = _review(
         (
             _hypothesis(
-                2, 5, 10,
+                2,
+                5,
+                10,
                 scale="major",
                 scan_range=scan_range,
             ),

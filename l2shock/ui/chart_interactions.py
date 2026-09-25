@@ -606,16 +606,170 @@ async def restore_analysis_chart_temporal_viewport(
     return acknowledged_render_token(chart) == token
 
 
-def _chart_metadata(
-    option: dict[str, Any],
-) -> dict[str, object]:
-    value = option.get("l2shockChartMetadata")
+def _shock_time_axis_bounds(
+    chart: Any,
+) -> tuple[datetime, datetime, int] | None:
+    """Read explicit UTC bounds of a five-panel Shock time-axis chart."""
+    option = _server_chart_option(chart)
 
-    if not isinstance(value, dict):
-        raise AnalysisChartInteractionError(
-            "Analysis chart option lacks l2shockChartMetadata"
+    if option is None:
+        return None
+
+    axes = option.get("xAxis")
+
+    if not isinstance(axes, list) or len(axes) != 5:
+        return None
+
+    bounds: tuple[datetime, datetime] | None = None
+
+    for axis in axes:
+        if not isinstance(axis, dict) or axis.get("type") != "time":
+            return None
+
+        start = _metadata_utc_datetime(axis.get("min"))
+        end = _metadata_utc_datetime(axis.get("max"))
+
+        if start is None or end is None or end <= start:
+            return None
+
+        if bounds is None:
+            bounds = (start, end)
+        elif bounds != (start, end):
+            return None
+
+    metadata = option.get("l2shockChartMetadata")
+
+    if not isinstance(metadata, dict):
+        return None
+
+    raw_bar_seconds = metadata.get("bar_duration_seconds")
+
+    if (
+        isinstance(raw_bar_seconds, bool)
+        or not isinstance(raw_bar_seconds, int)
+        or raw_bar_seconds <= 0
+    ):
+        return None
+
+    assert bounds is not None
+    return bounds[0], bounds[1], raw_bar_seconds
+
+
+async def capture_shock_time_viewport(
+    chart: Any,
+) -> AnalysisChartTemporalViewport | None:
+    """Capture browser zoom as elapsed UTC time, never category indices."""
+    token = acknowledged_render_token(chart)
+
+    if not token or str(getattr(chart, "_l2shock_render_token", "") or "") != token:
+        return None
+
+    bounds = _shock_time_axis_bounds(chart)
+
+    if bounds is None:
+        return None
+
+    start_utc, end_utc, bar_seconds = bounds
+
+    # Read the live browser zoom: server-side option percentages may be
+    # stale after the user pans or zooms.
+    viewport = await capture_analysis_chart_viewport(chart)
+
+    if viewport is None or acknowledged_render_token(chart) != token:
+        return None
+
+    span_seconds = (end_utc - start_utc).total_seconds()
+    left = start_utc + timedelta(seconds=span_seconds * viewport.start_percent / 100.0)
+    visible_seconds = (
+        span_seconds * (viewport.end_percent - viewport.start_percent) / 100.0
+    )
+
+    if not math.isfinite(visible_seconds) or visible_seconds <= 0:
+        return None
+
+    return AnalysisChartTemporalViewport(
+        left_edge_utc=left,
+        visible_duration_seconds=visible_seconds,
+        source_timeframe_seconds=bar_seconds,
+    )
+
+
+async def restore_shock_time_viewport(
+    chart: Any,
+    viewport: AnalysisChartTemporalViewport,
+    *,
+    expected_render_token: str,
+) -> bool:
+    """Restore a UTC interval onto a newly acknowledged Shock time axis."""
+    if not isinstance(viewport, AnalysisChartTemporalViewport):
+        raise TypeError("viewport must be AnalysisChartTemporalViewport")
+
+    token = str(expected_render_token or "").strip()
+
+    if (
+        not token
+        or acknowledged_render_token(chart) != token
+        or str(getattr(chart, "_l2shock_render_token", "") or "") != token
+    ):
+        return False
+
+    bounds = _shock_time_axis_bounds(chart)
+
+    if bounds is None:
+        return False
+
+    source_start, source_end, _bar_seconds = bounds
+    source_span = source_end - source_start
+    visible_span = min(
+        timedelta(seconds=viewport.visible_duration_seconds),
+        source_span,
+    )
+
+    # Keep the old left edge where possible. If the requested viewport
+    # has changed and that edge is outside it, clip to the new bounds.
+    left = max(source_start, min(viewport.left_edge_utc, source_end - visible_span))
+    right = left + visible_span
+
+    if right <= left:
+        return False
+
+    # Numeric Unix milliseconds are unambiguous for an ECharts time axis.
+    start_ms = int(round(left.timestamp() * 1000))
+    end_ms = int(round(right.timestamp() * 1000))
+
+    action = {
+        "type": "dataZoom",
+        "batch": [
+            {
+                "dataZoomIndex": 0,
+                "startValue": start_ms,
+                "endValue": end_ms,
+            }
+        ],
+    }
+
+    if acknowledged_render_token(chart) != token:
+        return False
+
+    try:
+        await _run_chart_method(
+            chart,
+            ":dispatchAction",
+            "(" + json.dumps(action, allow_nan=False, separators=(",", ":")) + ")",
         )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.debug("Could not restore Shock time-axis zoom.", exc_info=True)
+        return False
 
+    return acknowledged_render_token(chart) == token
+
+
+def _chart_metadata(option: dict[str, Any]) -> dict[str, object] | None:
+    value = option.get("l2shockChartMetadata")
+    if not isinstance(value, dict):
+        return None
     return value
 
 
@@ -1730,59 +1884,72 @@ class AnalysisChartController:
         owner_id: str,
         preserve_viewport: bool,
         temporal_viewport: AnalysisChartTemporalViewport | None = None,
+        shock_time_viewport: AnalysisChartTemporalViewport | None = None,
     ) -> AnalysisChartCommit | None:
         """Publish and commit one browser-acknowledged chart generation."""
         owner = str(owner_id or "").strip()
-
         if not owner:
             raise AnalysisChartInteractionError(
                 "Chart publication owner_id cannot be blank"
             )
-
         if not isinstance(option, dict):
             raise TypeError("option must be a dictionary")
-
         self._request_generation += 1
         request_generation = self._request_generation
-
         # No chart generation owns export/navigation while a replacement is
         # still being acknowledged and post-processed.
         self._commit = None
-
-        if preserve_viewport and temporal_viewport is not None:
-            raise AnalysisChartInteractionError(
-                "A publication cannot request percentage and temporal "
-                "viewport restoration simultaneously"
+        if (
+            sum(
+                (
+                    bool(preserve_viewport),
+                    temporal_viewport is not None,
+                    shock_time_viewport is not None,
+                )
             )
-
+            > 1
+        ):
+            raise AnalysisChartInteractionError(
+                "A publication can request only one viewport " "restoration mode"
+            )
         viewport = (
             await capture_analysis_chart_viewport(self._chart)
             if preserve_viewport
             else None
         )
-
         if request_generation != self._request_generation:
             return None
-
         publication = set_echart_options(
             self._chart,
             option,
         )
-
+        # Yield once so the outgoing setOption WebSocket frame is flushed
+        # before confirm_echart_render_identity queries getOption.
+        await asyncio.sleep(0)
         acknowledged, reason = await confirm_echart_render_identity(
             self._chart,
             publication,
         )
-
         if request_generation != self._request_generation:
             return None
-
         if not acknowledged:
             raise AnalysisChartInteractionError(
                 "Browser did not acknowledge the chart publication: " + reason
             )
-
         metadata = _chart_metadata(option)
+        if metadata is None:
+            # Options built outside the Analysis tab (e.g. Shock Review)
+            # may omit l2shockChartMetadata.  Derive a minimal fallback
+            # from the x-axis data so the commit can still be created.
+            x_axes = option.get("xAxis", [])
+            if isinstance(x_axes, list) and x_axes and isinstance(x_axes[0], dict):
+                data = x_axes[0].get("data", [])
+                visible_count = len(data) if isinstance(data, list) else 0
+            else:
+                visible_count = 0
+            metadata = {
+                "visible_bar_count": visible_count,
+            }
         raw_count = metadata.get("visible_bar_count")
 
         if (
@@ -1800,7 +1967,13 @@ class AnalysisChartController:
             visible_category_count=raw_count,
         )
 
-        if temporal_viewport is not None:
+        if shock_time_viewport is not None:
+            await restore_shock_time_viewport(
+                self._chart,
+                shock_time_viewport,
+                expected_render_token=publication.render_token,
+            )
+        elif temporal_viewport is not None:
             await restore_analysis_chart_temporal_viewport(
                 self._chart,
                 temporal_viewport,
@@ -1903,10 +2076,12 @@ __all__ = [
     "AnalysisChartViewport",
     "capture_analysis_chart_temporal_viewport",
     "capture_analysis_chart_viewport",
+    "capture_shock_time_viewport",
     "emphasize_analysis_chart_window",
     "export_analysis_chart_image",
     "install_analysis_gapped_crosshair",
     "navigate_analysis_chart",
     "restore_analysis_chart_temporal_viewport",
     "restore_analysis_chart_viewport",
+    "restore_shock_time_viewport",
 ]

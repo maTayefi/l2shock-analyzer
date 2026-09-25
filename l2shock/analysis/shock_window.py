@@ -134,8 +134,7 @@ class ShockAreaWindow:
             "representative_b_position": self.representative_b_position,
             "representative_c_position": self.representative_c_position,
             "member_abc_positions": [
-                {"a": a, "b": b, "c": c}
-                for a, b, c in self.member_abc_positions
+                {"a": a, "b": b, "c": c} for a, b, c in self.member_abc_positions
             ],
             "seconds": [second.to_dict() for second in self.seconds],
         }
@@ -178,9 +177,7 @@ def build_shock_area_window(
     members = area.members
 
     if not members or area.representative not in members:
-        raise ShockWindowError(
-            "B area requires its representative among its members"
-        )
+        raise ShockWindowError("B area requires its representative among its members")
 
     dataset = review.evidence_result.candidate_scan.dataset
     observations = dataset.seconds
@@ -202,14 +199,11 @@ def build_shock_area_window(
 
     for member in members:
         if not (
-            0 <= member.a_index < member.b_index < member.c_index
-            < len(observations)
+            0 <= member.a_index < member.b_index < member.c_index < len(observations)
         ):
             raise ShockWindowError("B-area member has invalid A/B/C indices")
 
-        if not (
-            area.first_b_index <= member.b_index <= area.last_b_index
-        ):
+        if not (area.first_b_index <= member.b_index <= area.last_b_index):
             raise ShockWindowError("B-area member B is outside the B interval")
 
         if (
@@ -249,13 +243,8 @@ def build_shock_area_window(
             )
 
         if observation.quality is BookSampleQuality.VALID:
-            if (
-                observation.bid_liquidity is None
-                or observation.ask_liquidity is None
-            ):
-                raise ShockWindowError(
-                    "VALID L2 second has no Bid or Ask liquidity"
-                )
+            if observation.bid_liquidity is None or observation.ask_liquidity is None:
+                raise ShockWindowError("VALID L2 second has no Bid or Ask liquidity")
 
             bid = Fraction(observation.bid_liquidity)
             ask = Fraction(observation.ask_liquidity)

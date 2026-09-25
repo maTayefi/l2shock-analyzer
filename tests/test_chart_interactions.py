@@ -1,5 +1,11 @@
 from __future__ import annotations
 from datetime import datetime, timezone
+import json
+
+from l2shock.ui.chart_interactions import (
+    capture_shock_time_viewport,
+    restore_shock_time_viewport,
+)
 from l2shock.ui.analysis_chart import ChartNavigationWindow
 from l2shock.ui.chart_interactions import (
     AnalysisChartCommit,
@@ -334,3 +340,164 @@ async def test_temporal_restore_rejects_superseded_generation() -> None:
 
     assert restored is False
     assert not any(method == ":dispatchAction" for method, _args in chart.calls)
+
+
+def _time_axis_chart(
+    *,
+    token: str,
+    start_percent: float = 0.0,
+    end_percent: float = 100.0,
+) -> _TemporalChart:
+    chart = _TemporalChart(
+        token=token,
+        timestamps=["2026-09-02T12:00:00Z"],
+        bar_duration_seconds=60,
+        start_percent=start_percent,
+        end_percent=end_percent,
+    )
+    chart._props["options"]["xAxis"] = [
+        {
+            "type": "time",
+            "min": "2026-09-02T12:00:00Z",
+            "max": "2026-09-02T12:20:00Z",
+        }
+        for _ in range(5)
+    ]
+    return chart
+
+
+async def test_shock_time_capture_uses_live_browser_percentages() -> None:
+    chart = _time_axis_chart(
+        token="1" * 32,
+        start_percent=25,
+        end_percent=75,
+    )
+
+    captured = await capture_shock_time_viewport(chart)
+
+    assert captured is not None
+    assert captured.left_edge_utc == datetime(2026, 9, 2, 12, 5, tzinfo=timezone.utc)
+    assert captured.visible_duration_seconds == 600
+    assert captured.source_timeframe_seconds == 60
+
+
+async def test_shock_time_restore_dispatches_utc_milliseconds() -> None:
+    token = "2" * 32
+    chart = _time_axis_chart(token=token)
+    viewport = AnalysisChartTemporalViewport(
+        left_edge_utc=datetime(2026, 9, 2, 12, 5, tzinfo=timezone.utc),
+        visible_duration_seconds=600,
+        source_timeframe_seconds=300,
+    )
+
+    assert await restore_shock_time_viewport(
+        chart,
+        viewport,
+        expected_render_token=token,
+    )
+
+    dispatches = [args for method, args in chart.calls if method == ":dispatchAction"]
+    assert len(dispatches) == 1
+
+    action = json.loads(str(dispatches[0][0])[1:-1])
+    zoom = action["batch"][0]
+
+    assert zoom["dataZoomIndex"] == 0
+    assert zoom["startValue"] == int(
+        datetime(2026, 9, 2, 12, 5, tzinfo=timezone.utc).timestamp() * 1000
+    )
+    assert zoom["endValue"] == int(
+        datetime(2026, 9, 2, 12, 15, tzinfo=timezone.utc).timestamp() * 1000
+    )
+
+
+async def test_shock_time_restore_rejects_superseded_browser_token() -> None:
+    token = "3" * 32
+    chart = _time_axis_chart(token=token)
+    chart._l2shock_acknowledged_render_token = "4" * 32
+
+    restored = await restore_shock_time_viewport(
+        chart,
+        AnalysisChartTemporalViewport(
+            left_edge_utc=datetime(2026, 9, 2, 12, 5, tzinfo=timezone.utc),
+            visible_duration_seconds=600,
+            source_timeframe_seconds=60,
+        ),
+        expected_render_token=token,
+    )
+
+    assert restored is False
+    assert not any(method == ":dispatchAction" for method, _args in chart.calls)
+
+
+async def test_shock_time_capture_rejects_category_axis() -> None:
+    chart = _time_axis_chart(token="5" * 32)
+    chart._props["options"]["xAxis"][0]["type"] = "category"
+
+    assert await capture_shock_time_viewport(chart) is None
+
+
+async def test_shock_time_restore_clips_left_edge_to_new_bounds() -> None:
+    token = "6" * 32
+    chart = _time_axis_chart(token=token)
+
+    restored = await restore_shock_time_viewport(
+        chart,
+        AnalysisChartTemporalViewport(
+            left_edge_utc=datetime(2026, 9, 2, 12, 17, tzinfo=timezone.utc),
+            visible_duration_seconds=600,
+            source_timeframe_seconds=5,
+        ),
+        expected_render_token=token,
+    )
+
+    assert restored is True
+
+    dispatches = [args for method, args in chart.calls if method == ":dispatchAction"]
+    assert len(dispatches) == 1
+
+    action = json.loads(str(dispatches[0][0])[1:-1])
+    zoom = action["batch"][0]
+
+    # The original 10-minute span fits, but 12:17–12:27 does not.
+    # Preserve its duration and move its left edge to 12:10.
+    assert zoom["startValue"] == int(
+        datetime(2026, 9, 2, 12, 10, tzinfo=timezone.utc).timestamp() * 1000
+    )
+    assert zoom["endValue"] == int(
+        datetime(2026, 9, 2, 12, 20, tzinfo=timezone.utc).timestamp() * 1000
+    )
+
+
+async def test_shock_time_restore_clips_span_to_shorter_new_source() -> None:
+    token = "7" * 32
+    chart = _time_axis_chart(token=token)
+
+    for axis in chart._props["options"]["xAxis"]:
+        axis["min"] = "2026-09-02T12:07:00Z"
+        axis["max"] = "2026-09-02T12:12:00Z"
+
+    restored = await restore_shock_time_viewport(
+        chart,
+        AnalysisChartTemporalViewport(
+            left_edge_utc=datetime(2026, 9, 2, 12, 5, tzinfo=timezone.utc),
+            visible_duration_seconds=600,
+            source_timeframe_seconds=60,
+        ),
+        expected_render_token=token,
+    )
+
+    assert restored is True
+
+    dispatches = [args for method, args in chart.calls if method == ":dispatchAction"]
+    assert len(dispatches) == 1
+
+    action = json.loads(str(dispatches[0][0])[1:-1])
+    zoom = action["batch"][0]
+
+    assert zoom["startValue"] == int(
+        datetime(2026, 9, 2, 12, 7, tzinfo=timezone.utc).timestamp() * 1000
+    )
+    assert zoom["endValue"] == int(
+        datetime(2026, 9, 2, 12, 12, tzinfo=timezone.utc).timestamp() * 1000
+    )

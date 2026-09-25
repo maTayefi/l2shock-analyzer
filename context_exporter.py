@@ -69,7 +69,7 @@ DELIMITER = "#####################"
 DEFAULT_FULL_VERSIONS = 0
 
 DEFAULT_SEGMENT_COUNT = 0
-DEFAULT_SEGMENT_TARGET_BYTES = 900 * 1024
+DEFAULT_SEGMENT_TARGET_BYTES = 1100 * 1024
 
 # Some upload platforms expose only a limited amount of each uploaded file.
 DEFAULT_SMALL_SEGMENT_TARGET_BYTES = 400 * 1024
@@ -2642,7 +2642,7 @@ def main() -> int:
         type=int,
         default=None,
         help=(
-            "Maximum physical TXT size target. Defaults to 900 KiB, or "
+            "Maximum physical TXT size target. Defaults to 1100 KiB, or "
             "400 KiB with --small-chunks."
         ),
     )

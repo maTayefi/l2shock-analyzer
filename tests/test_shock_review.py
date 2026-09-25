@@ -312,9 +312,7 @@ def test_plot_window_retains_exact_one_second_b_area_and_all_members():
         assert second["exact"]["delta"] == second["exact"]["bid"]
 
     # There is one axis slot per verified second, not one per chart bar.
-    assert [
-        item["dataset_index"] for item in payload["seconds"]
-    ] == list(range(1, 12))
+    assert [item["dataset_index"] for item in payload["seconds"]] == list(range(1, 12))
 
 
 def test_plot_window_preserves_invalid_l2_as_null_in_every_channel():
@@ -327,11 +325,7 @@ def test_plot_window_preserves_invalid_l2_as_null_in_every_channel():
     )
 
     scan_range = max(_TOTALS) - min(_TOTALS)
-    review = _review(
-        (
-            _hypothesis(2, 5, 10, scale="major", scan_range=scan_range),
-        )
-    )
+    review = _review((_hypothesis(2, 5, 10, scale="major", scan_range=scan_range),))
 
     # The reviewed A-B-C interval remains valid; only extra plot padding
     # becomes invalid. Construct the same dataset type with its existing
@@ -385,11 +379,7 @@ def test_plot_window_fails_instead_of_silently_downsampling_b():
     )
 
     scan_range = max(_TOTALS) - min(_TOTALS)
-    review = _review(
-        (
-            _hypothesis(2, 5, 10, scale="major", scan_range=scan_range),
-        )
-    )
+    review = _review((_hypothesis(2, 5, 10, scale="major", scan_range=scan_range),))
 
     with pytest.raises(ShockWindowError, match="exceeds maximum_seconds"):
         build_shock_area_window(
@@ -444,11 +434,7 @@ def test_shock_inspection_selection_has_controller_temporal_metadata():
     from l2shock.ui.shock_inspection import ShockInspectionModel
 
     scan_range = max(_TOTALS) - min(_TOTALS)
-    review = _review(
-        (
-            _hypothesis(2, 5, 10, scale="major", scan_range=scan_range),
-        )
-    )
+    review = _review((_hypothesis(2, 5, 10, scale="major", scan_range=scan_range),))
 
     selection = ShockInspectionModel(review).select(
         1,
@@ -471,9 +457,7 @@ def test_shock_inspection_selection_has_controller_temporal_metadata():
     )
     assert metadata["shock_review_id"] == review.review_id
     assert metadata["shock_inspection_position"] == 1
-    assert selection.option["series"][0]["data"] == [
-        None
-    ] * len(axis)
+    assert selection.option["series"][0]["data"] == [None] * len(axis)
 
     # The existing publisher requires strictly JSON-serializable options.
     json.dumps(selection.option, allow_nan=False)
@@ -483,11 +467,7 @@ def test_total_b_and_c_have_distinct_marker_styles():
     from l2shock.ui.shock_inspection import ShockInspectionModel
 
     scan_range = max(_TOTALS) - min(_TOTALS)
-    review = _review(
-        (
-            _hypothesis(2, 5, 10, scale="major", scan_range=scan_range),
-        )
-    )
+    review = _review((_hypothesis(2, 5, 10, scale="major", scan_range=scan_range),))
 
     selection = ShockInspectionModel(review).select(
         1,
@@ -498,6 +478,4 @@ def test_total_b_and_c_have_distinct_marker_styles():
 
     assert b_marker["name"] == "Representative B"
     assert c_marker["name"] == "Representative C"
-    assert b_marker["lineStyle"]["color"] != (
-        c_marker["lineStyle"]["color"]
-    )
+    assert b_marker["lineStyle"]["color"] != (c_marker["lineStyle"]["color"])

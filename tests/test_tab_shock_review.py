@@ -18,16 +18,16 @@ def test_shock_ui_request_is_l2_only_and_exposes_three_scale_knobs():
     )
 
     assert request.base == "BTC"
-    assert request.requested_start_utc == datetime(
-        2026, 9, 24, tzinfo=timezone.utc
-    )
+    assert request.requested_start_utc == datetime(2026, 9, 24, tzinfo=timezone.utc)
     assert [str(scale.minimum_leg_fraction) for scale in config.scales] == [
         "0.20",
         "0.10",
         "0.05",
     ]
     assert [scale.pivot_radius_seconds for scale in config.scales] == [
-        60, 30, 10,
+        60,
+        30,
+        10,
     ]
     assert not hasattr(request, "minimum_price")
     assert not hasattr(request, "price_coverage")

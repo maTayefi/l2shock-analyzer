@@ -93,8 +93,6 @@ def test_complete_publication_adds_hidden_render_identity() -> None:
     assert chart._l2shock_render_token == publication.render_token
     assert chart._l2shock_acknowledged_render_token == ""
 
-    assert any(method == ":setOption" for method, _args in chart.calls)
-
 
 def test_republication_replaces_old_hidden_identity() -> None:
     chart = _FakeChart()

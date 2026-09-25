@@ -390,10 +390,7 @@ BYBIT_SEQUENCE_CONTRACT: Final[OrderBookSequenceContract] = OrderBookSequenceCon
     update_requires_last_update_id=True,
     update_predecessor_field="final_update_id",
     update_resulting_frontier_field="final_update_id",
-    absent_update_fields=(
-        "first_update_id",
-        "prev_final_update_id",
-    ),
+    absent_update_fields=(),
     update_predecessor_adjustment=-1,
     snapshot_allows_null_transaction_time=True,
     snapshot_allows_missing_frontier_when_carried=True,
@@ -412,10 +409,7 @@ OKX_FUTURES_SEQUENCE_CONTRACT: Final[OrderBookSequenceContract] = (
         update_requires_last_update_id=True,
         update_predecessor_field="last_update_id",
         update_resulting_frontier_field="final_update_id",
-        absent_update_fields=(
-            "first_update_id",
-            "prev_final_update_id",
-        ),
+        absent_update_fields=(),
     )
 )
 

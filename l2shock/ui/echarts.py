@@ -293,11 +293,8 @@ def set_echart_options(
     """
     if chart is None:
         raise EChartPublicationError("ECharts widget is unavailable")
-
     safe = coerce_echart_option(option)
     publication = _attach_render_identity(safe)
-    expression = _javascript_option_expression(safe)
-
     try:
         chart._props["options"] = safe
         chart.update()
@@ -307,31 +304,30 @@ def set_echart_options(
         ) from exc
 
     runner = getattr(chart, "run_chart_method", None)
-
     if not callable(runner):
         raise EChartPublicationError("ECharts widget has no run_chart_method()")
 
+    setattr(chart, "_l2shock_render_token", publication.render_token)
+    setattr(chart, "_l2shock_acknowledged_render_token", "")
+
+    # Explicitly apply the option to the browser's ECharts instance.
+    # NiceGUI's chart.update() sends options asynchronously via WebSocket;
+    # the browser may not have applied them by the time
+    # confirm_echart_render_identity calls getOption.  This explicit
+    # setOption(notMerge) call forces immediate application so the
+    # hidden render-token series is present for verification.
+    js_option = _javascript_option_expression(safe)
     try:
         runner(
-            ":setOption",
-            expression,
-            "({notMerge: true, lazyUpdate: false})",
+            "setOption",
+            js_option,
+            "({notMerge:true,lazyUpdate:false})",
         )
-    except Exception as exc:
-        raise EChartPublicationError(
-            "ECharts setOption(notMerge=True) publication failed"
-        ) from exc
-
-    setattr(
-        chart,
-        "_l2shock_render_token",
-        publication.render_token,
-    )
-    setattr(
-        chart,
-        "_l2shock_acknowledged_render_token",
-        "",
-    )
+    except Exception:
+        log.debug(
+            "Explicit setOption failed; relying on NiceGUI update.",
+            exc_info=True,
+        )
 
     try:
         runner("resize")

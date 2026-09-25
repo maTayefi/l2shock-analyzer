@@ -109,32 +109,32 @@ class ShockInspectionModel:
             area = entry.area
             representative = area.representative
 
-            rows.append({
-                # Suitable for the existing QTable row_key="id".
-                "id": f"{self.review.review_id}:{position}",
-                "inspection_position": position,
-                "direction": area.direction,
-                "first_b_utc": min(
-                    member.b_utc for member in area.members
-                ).isoformat(),
-                "b_first_index": area.first_b_index,
-                "b_last_index": area.last_b_index,
-                "representative_kind": str(representative.kind),
-                "representative_a_utc": representative.a_utc.isoformat(),
-                "representative_b_utc": representative.b_utc.isoformat(),
-                "representative_c_utc": representative.c_utc.isoformat(),
-                "member_count": len(area.members),
-                "scale_names": ", ".join(area.scale_names),
-                "independent_channel_count": (
-                    area.independent_channel_count
-                ),
-                "highest_scale_fraction": _fraction_text(
-                    entry.highest_scale_fraction
-                ),
-                "total_bc_fraction_of_scan_range": _fraction_text(
-                    entry.total_bc_fraction_of_scan_range
-                ),
-            })
+            rows.append(
+                {
+                    # Suitable for the existing QTable row_key="id".
+                    "id": f"{self.review.review_id}:{position}",
+                    "inspection_position": position,
+                    "direction": area.direction,
+                    "first_b_utc": min(
+                        member.b_utc for member in area.members
+                    ).isoformat(),
+                    "b_first_index": area.first_b_index,
+                    "b_last_index": area.last_b_index,
+                    "representative_kind": str(representative.kind),
+                    "representative_a_utc": representative.a_utc.isoformat(),
+                    "representative_b_utc": representative.b_utc.isoformat(),
+                    "representative_c_utc": representative.c_utc.isoformat(),
+                    "member_count": len(area.members),
+                    "scale_names": ", ".join(area.scale_names),
+                    "independent_channel_count": (area.independent_channel_count),
+                    "highest_scale_fraction": _fraction_text(
+                        entry.highest_scale_fraction
+                    ),
+                    "total_bc_fraction_of_scan_range": _fraction_text(
+                        entry.total_bc_fraction_of_scan_range
+                    ),
+                }
+            )
 
         return ShockInspectionPage(
             review_id=self.review.review_id,
@@ -173,19 +173,14 @@ class ShockInspectionModel:
             price_by_second=price_by_second,
         )
 
-        timestamps = [
-            second.timestamp_utc.isoformat()
-            for second in window.seconds
-        ]
+        timestamps = [second.timestamp_utc.isoformat() for second in window.seconds]
         count = len(timestamps)
 
         # These are the existing chart-controller temporal/ownership fields.
         # Invalid L2 or missing price seconds still occupy their own slots.
         option["l2shockChartMetadata"] = {
             "analysis_id": self.review.review_id,
-            "dataset_analysis_id": (
-                self.review.evidence_result.candidate_scan.scan_id
-            ),
+            "dataset_analysis_id": (self.review.evidence_result.candidate_scan.scan_id),
             "chart_timeframe": "1s",
             "activity_timeframe": "1s",
             "visible_bar_count": count,

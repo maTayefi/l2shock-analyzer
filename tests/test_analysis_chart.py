@@ -615,7 +615,6 @@ def test_l2_tooltip_escapes_exact_decimal_text_without_number_conversion() -> No
             }
         ]
     )
-
     assert '"100.0000000000000000004"' in formatter
     assert "' H ' + escapeHtml(candle.high)" in formatter
     assert "' C ' + escapeHtml(candle.close)" in formatter

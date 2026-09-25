@@ -221,10 +221,7 @@ async def shutdown_runtime(
 
         shock_runtime = peek_manual_shock_runtime()
 
-        if (
-            shock_runtime is not None
-            and shock_runtime.snapshot().is_running
-        ):
+        if shock_runtime is not None and shock_runtime.snapshot().is_running:
             log.info("Requesting cooperative Shock-Start review stop.")
 
             shock_stopped = await shock_runtime.stop_and_wait(

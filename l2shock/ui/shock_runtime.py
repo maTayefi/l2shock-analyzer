@@ -138,8 +138,7 @@ class ManualShockRuntime:
             completion_sequence=self._completion_sequence,
             is_running=task is not None and not task.done(),
             stop_requested=(
-                self._stop_event.is_set()
-                if self._stop_event is not None else False
+                self._stop_event.is_set() if self._stop_event is not None else False
             ),
             last_review=self._last_review,
             last_error=self._last_error,
@@ -164,19 +163,14 @@ class ManualShockRuntime:
         state = get_state()
 
         if state.shutdown_started:
-            raise ShockRuntimeBusyError(
-                "Application shutdown has started"
-            )
+            raise ShockRuntimeBusyError("Application shutdown has started")
 
         if self._task is not None and not self._task.done():
-            raise ShockRuntimeBusyError(
-                "A Shock-Start review is already active"
-            )
+            raise ShockRuntimeBusyError("A Shock-Start review is already active")
 
         if state.active_operation_name:
             raise ShockRuntimeBusyError(
-                f"Another operation is active: "
-                f"{state.active_operation_name}"
+                f"Another operation is active: " f"{state.active_operation_name}"
             )
 
         # Admission and task creation occur on the NiceGUI event loop,
@@ -276,9 +270,7 @@ class ManualShockRuntime:
 
         try:
             if operation_lock.locked():
-                raise ShockRuntimeBusyError(
-                    "Another operation owns the process lock"
-                )
+                raise ShockRuntimeBusyError("Another operation owns the process lock")
 
             await operation_lock.acquire()
             acquired = True
@@ -326,9 +318,7 @@ class ManualShockRuntime:
                 try:
                     await asyncio.shield(worker)
                 except Exception:
-                    log.exception(
-                        "Shock worker failed during task cancellation."
-                    )
+                    log.exception("Shock worker failed during task cancellation.")
 
             self._last_review = None
             self._phase = ShockRuntimePhase.STOPPED
@@ -345,9 +335,7 @@ class ManualShockRuntime:
                 self._last_error = str(exc)
             else:
                 # Do not disclose SQL connection details in UI polling.
-                self._last_error = (
-                    f"Unexpected {type(exc).__name__}"
-                )
+                self._last_error = f"Unexpected {type(exc).__name__}"
 
             log.exception("Shock-Start review failed.")
             raise
@@ -385,9 +373,7 @@ def get_manual_shock_runtime() -> ManualShockRuntime:
         _manual_shock_runtime = ManualShockRuntime()
         _manual_shock_loop = loop
     elif _manual_shock_loop is not loop:
-        raise RuntimeError(
-            "Manual Shock-Start runtime belongs to another event loop"
-        )
+        raise RuntimeError("Manual Shock-Start runtime belongs to another event loop")
 
     return _manual_shock_runtime
 
@@ -395,6 +381,7 @@ def get_manual_shock_runtime() -> ManualShockRuntime:
 def peek_manual_shock_runtime() -> ManualShockRuntime | None:
     """Return the existing runtime without constructing one at shutdown."""
     return _manual_shock_runtime
+
 
 __all__ = [
     "ManualShockRuntime",

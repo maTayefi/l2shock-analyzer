@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timezone
-from typing import Mapping, TypeAlias
+from typing import TypeAlias
+from collections.abc import Mapping
 
 from l2shock.analysis.shock_window import ShockAreaWindow
 
@@ -56,9 +57,7 @@ def _finite_number(value: object, description: str) -> float:
         ) from exc
 
     if not math.isfinite(number):
-        raise ShockChartOptionsError(
-            f"{description} must be finite numeric data"
-        )
+        raise ShockChartOptionsError(f"{description} must be finite numeric data")
 
     return number
 
@@ -110,9 +109,7 @@ def _validate_window(window: ShockAreaWindow) -> None:
             )
 
         if second.timestamp_utc.tzinfo is None:
-            raise ShockChartOptionsError(
-                "Shock window contains a naive UTC timestamp"
-            )
+            raise ShockChartOptionsError("Shock window contains a naive UTC timestamp")
 
         values = (second.bid, second.ask, second.total, second.delta)
 
@@ -155,14 +152,11 @@ def _price_data(
             )
 
         opening, high, low, close = (
-            _finite_number(value, "Price candle value")
-            for value in candle
+            _finite_number(value, "Price candle value") for value in candle
         )
 
         if low > min(opening, close) or high < max(opening, close):
-            raise ShockChartOptionsError(
-                "Price candle OHLC bounds are inconsistent"
-            )
+            raise ShockChartOptionsError("Price candle OHLC bounds are inconsistent")
 
         result.append([opening, close, low, high])
 
@@ -187,10 +181,12 @@ def _b_band(
         "animation": False,
         "label": {"show": False},
         "itemStyle": {"color": _COLORS["b_area"]},
-        "data": [[
-            {"name": "B start area", "xAxis": axis[window.b_first_position]},
-            {"xAxis": axis[end_exclusive]},
-        ]],
+        "data": [
+            [
+                {"name": "B start area", "xAxis": axis[window.b_first_position]},
+                {"xAxis": axis[end_exclusive]},
+            ]
+        ],
     }
 
 
@@ -205,10 +201,12 @@ def _b_line(axis: list[str], position: int) -> dict[str, object]:
             "type": "dashed",
             "width": 2,
         },
-        "data": [{
-            "name": "Representative B",
-            "xAxis": axis[position],
-        }],
+        "data": [
+            {
+                "name": "Representative B",
+                "xAxis": axis[position],
+            }
+        ],
     }
 
 
@@ -223,10 +221,12 @@ def _c_line(axis: list[str], position: int) -> dict[str, object]:
             "type": "solid",
             "width": 2,
         },
-        "data": [{
-            "name": "Representative C",
-            "xAxis": axis[position],
-        }],
+        "data": [
+            {
+                "name": "Representative C",
+                "xAxis": axis[position],
+            }
+        ],
     }
 
 
@@ -256,78 +256,93 @@ def build_shock_chart_options(
     grids: list[dict[str, object]] = []
 
     for panel_index, panel_name in enumerate(_PANEL_NAMES):
-        grids.append({
-            "top": f"{5 + panel_index * 18}%",
-            "height": "14%",
-            "left": 92,
-            "right": 24,
-            "containLabel": False,
-        })
-        x_axes.append({
-            "type": "category",
-            "gridIndex": panel_index,
-            "data": axis,
-            "boundaryGap": True,
-            "axisLabel": {"show": panel_index == 4},
-            "axisTick": {"show": panel_index == 4},
-        })
-        y_axes.append({
-            "type": "value",
-            "gridIndex": panel_index,
-            "scale": True,
-            "name": panel_name,
-            "nameLocation": "middle",
-            "nameGap": 65,
-        })
+        grids.append(
+            {
+                "top": f"{5 + panel_index * 18}%",
+                "height": "14%",
+                "left": 92,
+                "right": 24,
+                "containLabel": False,
+            }
+        )
+        x_axes.append(
+            {
+                "type": "category",
+                "gridIndex": panel_index,
+                "data": axis,
+                "boundaryGap": True,
+                "axisLabel": {"show": panel_index == 4},
+                "axisTick": {"show": panel_index == 4},
+            }
+        )
+        y_axes.append(
+            {
+                "type": "value",
+                "gridIndex": panel_index,
+                "scale": True,
+                "name": panel_name,
+                "nameLocation": "middle",
+                "nameGap": 65,
+                "splitLine": {"show": False},
+            }
+        )
 
-    series: list[dict[str, object]] = [{
-        "id": "shock-price-context",
-        "name": "Price (optional context)",
-        "type": "candlestick",
-        "xAxisIndex": 0,
-        "yAxisIndex": 0,
-        "data": price,
-        "itemStyle": {
-            "color": _COLORS["price_up"],
-            "color0": _COLORS["price_down"],
-            "borderColor": _COLORS["price_up"],
-            "borderColor0": _COLORS["price_down"],
-        },
-    }]
+    series: list[dict[str, object]] = [
+        {
+            "id": "shock-price-context",
+            "name": "Price (optional context)",
+            "type": "candlestick",
+            "xAxisIndex": 0,
+            "yAxisIndex": 0,
+            "data": price,
+            "itemStyle": {
+                "color": _COLORS["price_up"],
+                "color0": _COLORS["price_down"],
+                "borderColor": _COLORS["price_up"],
+                "borderColor0": _COLORS["price_down"],
+            },
+            # These coordinates come from the selected L2 B area, not from
+            # price candles. Missing price never moves or removes the interval.
+            "markArea": _b_band(axis, window),
+            "markLine": _b_line(axis, window.representative_b_position),
+        }
+    ]
 
     for panel_index, name in enumerate(_L2_NAMES, start=1):
-        values = [
-            getattr(second, name.lower())
-            for second in window.seconds
-        ]
+        values = [getattr(second, name.lower()) for second in window.seconds]
 
-        series.append({
-            "id": f"shock-{name.lower()}",
-            "name": name,
-            "type": "line",
-            "xAxisIndex": panel_index,
-            "yAxisIndex": panel_index,
-            # ECharts interprets null as a gap, not as zero liquidity.
-            "data": [
-                _finite_number(value, f"{name} L2 value")
-                if value is not None else None
-                for value in values
-            ],
-            "showSymbol": False,
-            "connectNulls": False,
-            "animation": False,
-            "lineStyle": {
-                "color": _COLORS[name.lower()],
-                "width": 1.5,
-            },
-            "itemStyle": {"color": _COLORS[name.lower()]},
-            "markArea": _b_band(axis, window),
-            "markLine": (
-                _c_line(axis, window.representative_c_position)
-                if name == "Total"
-                else _b_line(axis, window.representative_b_position)
-            ),
-        })
+        series.append(
+            {
+                "id": f"shock-{name.lower()}",
+                "name": name,
+                "type": "line",
+                "xAxisIndex": panel_index,
+                "yAxisIndex": panel_index,
+                # ECharts interprets null as a gap, not as zero liquidity.
+                "data": [
+                    (
+                        _finite_number(value, f"{name} L2 value")
+                        if value is not None
+                        else None
+                    )
+                    for value in values
+                ],
+                "showSymbol": False,
+                "connectNulls": False,
+                "animation": False,
+                "lineStyle": {
+                    "color": _COLORS[name.lower()],
+                    "width": 1.5,
+                },
+                "itemStyle": {"color": _COLORS[name.lower()]},
+                "markArea": _b_band(axis, window),
+                "markLine": (
+                    _c_line(axis, window.representative_c_position)
+                    if name == "Total"
+                    else _b_line(axis, window.representative_b_position)
+                ),
+            }
+        )
 
     # Total needs both B and C. ECharts takes one markLine definition per
     # series, so extend its data rather than replacing the C marker.
@@ -336,7 +351,9 @@ def build_shock_chart_options(
     b_marker = _b_line(
         axis,
         window.representative_b_position,
-    )["data"][0]
+    )[
+        "data"
+    ][0]
     b_marker["lineStyle"] = {
         "color": _COLORS["b"],
         "type": "dashed",
@@ -355,19 +372,6 @@ def build_shock_chart_options(
     return {
         "animation": False,
         "backgroundColor": "#ffffff",
-        "title": {
-            "text": (
-                f"Shock-Start B area #{window.inspection_position} "
-                f"({window.direction})"
-            ),
-            "subtext": (
-                "One-second verified L2; Price is optional context; "
-                "B band = candidate start area; C = representative Total extreme"
-            ),
-            "left": 92,
-            "textStyle": {"fontSize": 15},
-            "subtextStyle": {"fontSize": 11},
-        },
         "legend": {
             "top": 43,
             "data": [
