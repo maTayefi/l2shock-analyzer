@@ -310,19 +310,39 @@ def set_echart_options(
     setattr(chart, "_l2shock_render_token", publication.render_token)
     setattr(chart, "_l2shock_acknowledged_render_token", "")
 
-    # Explicitly apply the option to the browser's ECharts instance.
-    # NiceGUI's chart.update() sends options asynchronously via WebSocket;
-    # the browser may not have applied them by the time
-    # confirm_echart_render_identity calls getOption.  This explicit
-    # setOption(notMerge) call forces immediate application so the
-    # hidden render-token series is present for verification.
+    # Apply the complete generation to the live ECharts instance with
+    # notMerge=true. NiceGUI's own update_chart() merges whenever the series
+    # count is unchanged, which can retain stale series state.
+    #
+    # The ":" prefix is mandatory: only then does NiceGUI evaluate each
+    # argument as a JavaScript expression. Without it, ECharts receives the
+    # option *text* as a string and its instance is corrupted, after which
+    # every getOption() throws in the browser and Python only sees timeouts.
     js_option = _javascript_option_expression(safe)
+    # Real widgets: a browser script applies the option inside try/catch,
+    # retries once after instance.clear(), and records its outcome so the
+    # live-state probe can report the exact ECharts error.
+    # Test doubles without id/client keep the ":setOption" chart-method path.
+    apply_target = _live_state_javascript_runner(chart)
+    if apply_target is not None:
+        _disable_nicegui_merge_update(chart)
     try:
-        runner(
-            "setOption",
-            js_option,
-            "({notMerge:true,lazyUpdate:false})",
-        )
+        if apply_target is not None:
+            js_runner, element_id = apply_target
+            js_runner(
+                _apply_option_code(
+                    element_id,
+                    render_token=str(safe["l2shockPublication"]["render_token"]),
+                    option_expression=js_option,
+                ),
+                timeout=5.0,
+            )
+        else:
+            runner(
+                ":setOption",
+                js_option,
+                "({notMerge:true,lazyUpdate:false})",
+            )
     except Exception:
         log.debug(
             "Explicit setOption failed; relying on NiceGUI update.",
@@ -350,7 +370,7 @@ def _decoded_method_result(value: object) -> object:
         return value
 
 
-async def confirm_echart_render_identity(
+async def _confirm_via_get_option(
     chart: Any,
     publication: EChartPublication,
     *,
@@ -358,7 +378,13 @@ async def confirm_echart_render_identity(
     attempts: int = 16,
     retry_delay_seconds: float = 0.125,
 ) -> tuple[bool, str]:
-    """Confirm browser ownership of one exact publication generation."""
+    """Legacy confirmation through a full getOption() round trip.
+
+    Used only for widgets that cannot run the compact browser probe, such as
+    unit-test doubles without ``id``/``client``. Real NiceGUI charts use
+    ``confirm_echart_render_identity``'s small probe, because a full
+    getOption() reply can exceed NiceGUI's ~1 MB browser-to-server limit.
+    """
     if chart is None:
         return False, "ECharts widget is unavailable."
 
@@ -512,6 +538,739 @@ async def confirm_echart_render_identity(
     return False, last_reason
 
 
+# Instance tag only. Batch 28 wrapped instance.setOption here; that forced a
+# full reset on every NiceGUI re-apply and broke dataZoom. NiceGUI's
+# re-apply is now disabled at the source (see _disable_nicegui_merge_update),
+# so this only labels the live instance so diagnostics can detect when the
+# ECharts instance is re-created.
+_MERGE_GUARD_JS: Final[str] = r"""
+    function l2shockGuardInstance(instance, guardChartId) {
+        if (!instance || instance.__l2shockInstanceUid) {
+            return;
+        }
+        var counter = (
+            window.__l2shockInstanceCounter
+            = (window.__l2shockInstanceCounter || 0) + 1
+        );
+        instance.__l2shockInstanceUid = String(guardChartId) + "#" + String(counter);
+    }
+"""
+
+_MERGE_GUARD_MARKER: Final[str] = "/*__L2SHOCK_MERGE_GUARD__*/"
+
+
+# Browser-side probe. It returns only small scalar facts, never the complete
+# option: a full getOption() reply for a bounded viewport can exceed
+# NiceGUI's ~1 MB browser-to-server message limit and is then dropped.
+# Placeholders are replaced explicitly; no f-string touches the JavaScript.
+_LIVE_STATE_PROBE_JS: Final[str] = r"""
+(function () {
+    "use strict";
+    var chartId = __L2SHOCK_CHART_ID__;
+    var tokenPrefix = __L2SHOCK_TOKEN_PREFIX__;
+    var axisIndex = __L2SHOCK_X_AXIS_INDEX__;
+    /*__L2SHOCK_MERGE_GUARD__*/
+
+    function asList(value) {
+        if (Array.isArray(value)) {
+            return value;
+        }
+        return value === null || value === undefined ? [] : [value];
+    }
+
+    function liveInstance() {
+        try {
+            if (typeof getElement === "function") {
+                var component = getElement(chartId);
+                if (component && component.chart) {
+                    return component.chart;
+                }
+            }
+        } catch (error) {}
+
+        try {
+            if (typeof echarts !== "undefined") {
+                var node = document.getElementById("c" + String(chartId));
+                if (node) {
+                    return echarts.getInstanceByDom(node) || null;
+                }
+            }
+        } catch (error) {}
+
+        return null;
+    }
+
+    try {
+        var instance = liveInstance();
+
+        if (!instance) {
+            return {ok: false, reason: "no live ECharts instance"};
+        }
+
+        if (typeof instance.isDisposed === "function" && instance.isDisposed()) {
+            return {ok: false, reason: "ECharts instance is disposed"};
+        }
+
+        l2shockGuardInstance(instance, chartId);
+
+        var option = instance.getOption() || {};
+        var tokens = [];
+
+        asList(option.series).forEach(function (item) {
+            var name = (
+                item && item.name !== null && item.name !== undefined
+                    ? String(item.name)
+                    : ""
+            );
+            if (name.indexOf(tokenPrefix) === 0) {
+                tokens.push(name.slice(tokenPrefix.length));
+            }
+        });
+
+        var axes = asList(option.xAxis);
+        var axisPresent = axisIndex < axes.length;
+        var categoryCount = null;
+
+        if (
+            axisPresent
+            && axes[axisIndex]
+            && Array.isArray(axes[axisIndex].data)
+        ) {
+            categoryCount = axes[axisIndex].data.length;
+        }
+
+        var dataZoom = null;
+
+        asList(option.dataZoom).some(function (item) {
+            if (
+                item
+                && typeof item.start === "number"
+                && typeof item.end === "number"
+            ) {
+                dataZoom = {start: item.start, end: item.end};
+                return true;
+            }
+            return false;
+        });
+
+        var applyRecord = null;
+
+        try {
+            var registry = window.__l2shockEchartApply;
+            var entry = registry ? registry[String(chartId)] : null;
+            if (entry) {
+                applyRecord = {
+                    token: String(entry.token || ""),
+                    state: String(entry.state || ""),
+                    error: entry.error ? String(entry.error) : null,
+                    token_after: (
+                        typeof entry.token_after === "boolean"
+                            ? entry.token_after
+                            : null
+                    ),
+                    series_after: (
+                        typeof entry.series_after === "number"
+                            ? entry.series_after
+                            : null
+                    ),
+                    instance_uid: String(entry.instance_uid || ""),
+                    after_error: entry.after_error ? String(entry.after_error) : null,
+                    unwedged: (
+                        Array.isArray(entry.unwedged) ? entry.unwedged.map(String) : []
+                    ),
+                    last_window_error: (
+                        entry.last_window_error ? String(entry.last_window_error) : null
+                    )
+                };
+            }
+
+        var seriesList = asList(option.series);
+        var seriesNames = seriesList.slice(0, 8).map(function (item) {
+            return item && item.name !== null && item.name !== undefined
+                ? String(item.name).slice(0, 48)
+                : "";
+        });
+        } catch (error) {}
+
+        return {
+            ok: true,
+            apply: applyRecord,
+            series_count: seriesList.length,
+            series_names: seriesNames,
+            instance_uid: String(instance.__l2shockInstanceUid || ""),
+            wedged_flags: (function () {
+                var flags = [];
+                for (var flagKey in instance) {
+                    if (flagKey.indexOf("__flagIn") === 0 && instance[flagKey] === true) {
+                        flags.push(flagKey);
+                    }
+                }
+                return flags;
+            })(),
+            last_window_error: (
+                window.__l2shockLastError ? String(window.__l2shockLastError) : null
+            ),
+            tokens: tokens,
+            axis_present: axisPresent,
+            category_count: categoryCount,
+            width: instance.getWidth(),
+            height: instance.getHeight(),
+            data_zoom: dataZoom
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            reason: "probe failed: " + String(
+                error && error.message ? error.message : error
+            )
+        };
+    }
+})()
+"""
+
+
+def _live_state_javascript_runner(
+    chart: Any,
+) -> tuple[Any, int] | None:
+    """Return (client.run_javascript, element id), or None if unsupported."""
+    element_id = getattr(chart, "id", None)
+
+    if (
+        isinstance(element_id, bool)
+        or not isinstance(element_id, int)
+        or element_id < 0
+    ):
+        return None
+
+    try:
+        # A deleted NiceGUI element raises instead of returning None.
+        client = getattr(chart, "client", None)
+    except Exception:
+        return None
+
+    runner = getattr(client, "run_javascript", None)
+
+    if not callable(runner):
+        return None
+
+    return runner, element_id
+
+
+def _live_state_probe_code(
+    element_id: int,
+    *,
+    x_axis_index: int,
+) -> str:
+    return (
+        _LIVE_STATE_PROBE_JS.replace(
+            _MERGE_GUARD_MARKER,
+            _MERGE_GUARD_JS,
+        )
+        .replace(
+            "__L2SHOCK_CHART_ID__",
+            json.dumps(element_id),
+        )
+        .replace(
+            "__L2SHOCK_TOKEN_PREFIX__",
+            json.dumps(ECHART_RENDER_TOKEN_SERIES_PREFIX),
+        )
+        .replace(
+            "__L2SHOCK_X_AXIS_INDEX__",
+            json.dumps(x_axis_index),
+        )
+    )
+
+
+# Browser-side option application. The first-line marker identifies it.
+# The option placeholder is replaced LAST, so option text is never scanned.
+#
+# run_javascript executes from a NiceGUI message handler, never inside an
+# ECharts update cycle. An in-cycle flag that is already true here is stale:
+# an earlier render threw, ECharts never reset it, and it now silently
+# ignores every setOption and dispatchAction (including zoom). Such flags
+# are reset before applying, and the result is verified, not assumed.
+_APPLY_OPTION_JS: Final[str] = r"""/* l2shock:apply */
+(function () {
+    "use strict";
+    var chartId = __L2SHOCK_CHART_ID__;
+    var tokenSeriesName = __L2SHOCK_TOKEN_PREFIX__ + __L2SHOCK_RENDER_TOKEN__;
+    /*__L2SHOCK_MERGE_GUARD__*/
+    var registry = (
+        window.__l2shockEchartApply
+        || (window.__l2shockEchartApply = {})
+    );
+    var record = {
+        token: __L2SHOCK_RENDER_TOKEN__,
+        state: "pending",
+        error: null,
+        attempts: 0,
+        unwedged: []
+    };
+    registry[String(chartId)] = record;
+
+    function message(error) {
+        return String(error && error.message ? error.message : error);
+    }
+
+    function installErrorCapture() {
+        if (window.__l2shockErrorCapture === true) {
+            return;
+        }
+        window.__l2shockErrorCapture = true;
+        window.addEventListener("error", function (event) {
+            try {
+                window.__l2shockLastError = String(
+                    event && event.message ? event.message : event
+                ).slice(0, 300);
+            } catch (error) {}
+        });
+        window.addEventListener("unhandledrejection", function (event) {
+            try {
+                window.__l2shockLastError = (
+                    "unhandled rejection: " + message(event ? event.reason : null)
+                ).slice(0, 300);
+            } catch (error) {}
+        });
+    }
+
+    function liveInstance() {
+        try {
+            if (typeof getElement === "function") {
+                var component = getElement(chartId);
+                if (component && component.chart) {
+                    return component.chart;
+                }
+            }
+        } catch (error) {}
+
+        try {
+            if (typeof echarts !== "undefined") {
+                var node = document.getElementById("c" + String(chartId));
+                if (node) {
+                    return echarts.getInstanceByDom(node) || null;
+                }
+            }
+        } catch (error) {}
+
+        return null;
+    }
+
+    function unwedge(instance) {
+        var cleared = [];
+        for (var key in instance) {
+            if (key.indexOf("__flagIn") === 0 && instance[key] === true) {
+                instance[key] = false;
+                cleared.push(key);
+            }
+        }
+        if (cleared.length && instance.__pendingUpdate) {
+            instance.__pendingUpdate = null;
+            cleared.push("__pendingUpdate");
+        }
+        return cleared;
+    }
+
+    function ownsToken(instance) {
+        var after = instance.getOption() || {};
+        var names = (Array.isArray(after.series) ? after.series : []).map(
+            function (item) {
+                return item && item.name !== null && item.name !== undefined
+                    ? String(item.name)
+                    : "";
+            }
+        );
+        record.series_after = names.length;
+        record.token_after = names.indexOf(tokenSeriesName) >= 0;
+        return record.token_after;
+    }
+
+    function buildOption() {
+        return (__L2SHOCK_OPTION__);
+    }
+
+    installErrorCapture();
+
+    var instance = liveInstance();
+
+    if (
+        !instance
+        || (typeof instance.isDisposed === "function" && instance.isDisposed())
+    ) {
+        record.state = "no-instance";
+        return record.state;
+    }
+
+    l2shockGuardInstance(instance, chartId);
+    record.instance_uid = String(instance.__l2shockInstanceUid || "");
+    record.unwedged = unwedge(instance);
+
+    var errors = [];
+
+    for (var attempt = 0; attempt < 2; attempt++) {
+        record.attempts = attempt + 1;
+
+        try {
+            if (attempt > 0) {
+                record.unwedged = record.unwedged.concat(unwedge(instance));
+                instance.clear();
+            }
+            instance.setOption(buildOption(), {notMerge: true, lazyUpdate: false});
+        } catch (error) {
+            errors.push(message(error));
+            continue;
+        }
+
+        try {
+            if (ownsToken(instance)) {
+                record.state = "applied";
+                record.error = errors.length ? errors.join("; ") : null;
+                return record.state;
+            }
+            errors.push("setOption returned but the token series is absent");
+        } catch (error) {
+            record.after_error = message(error);
+            record.state = "applied";
+            return record.state;
+        }
+    }
+
+    record.state = "failed";
+    record.error = errors.join("; ") || "unknown ECharts failure";
+    record.last_window_error = window.__l2shockLastError || null;
+    try {
+        console.error("l2shock: ECharts did not apply the option:", record.error);
+    } catch (error) {}
+    return record.state;
+})()
+"""
+
+
+def _apply_option_code(
+    element_id: int,
+    *,
+    render_token: str,
+    option_expression: str,
+) -> str:
+    return (
+        _APPLY_OPTION_JS.replace(
+            _MERGE_GUARD_MARKER,
+            _MERGE_GUARD_JS,
+        )
+        .replace(
+            "__L2SHOCK_CHART_ID__",
+            json.dumps(element_id),
+        )
+        .replace(
+            "__L2SHOCK_RENDER_TOKEN__",
+            json.dumps(render_token),
+        )
+        .replace(
+            "__L2SHOCK_TOKEN_PREFIX__",
+            json.dumps(ECHART_RENDER_TOKEN_SERIES_PREFIX),
+        )
+        .replace(
+            "__L2SHOCK_OPTION__",
+            option_expression,
+        )
+    )
+
+
+def _disable_nicegui_merge_update(chart: Any) -> None:
+    """Make the apply script the only live ECharts writer for this widget.
+
+    NiceGUI calls its update_chart() after every chart.update(), and that
+    uses setOption(..., {notMerge: <series count changed>}). Its later write
+    replaced our acknowledged generation. The stored options property is
+    kept, so a re-mounted component still draws the current generation.
+    """
+    try:
+        if getattr(chart, "_update_method", None) is not None:
+            chart._update_method = None
+    except Exception:
+        log.debug("Could not disable NiceGUI update_chart.", exc_info=True)
+
+
+def _probe_diagnostics(state: dict[str, Any]) -> str:
+    """Summarise compact probe facts for an unacknowledged publication."""
+    parts: list[str] = []
+
+    count = state.get("series_count")
+    if isinstance(count, int) and not isinstance(count, bool):
+        parts.append(f"live series={count}")
+
+    names = state.get("series_names")
+    if isinstance(names, list) and names:
+        parts.append("names=" + ",".join(str(name)[:32] for name in names[:6]))
+
+    if state.get("instance_uid"):
+        parts.append(f"instance={state['instance_uid']}")
+
+    record = state.get("apply")
+    if isinstance(record, dict):
+        if record.get("token_after") is not None:
+            parts.append(f"token right after apply={record['token_after']}")
+        if record.get("series_after") is not None:
+            parts.append(f"series after apply={record['series_after']}")
+        if record.get("instance_uid"):
+            parts.append(f"apply instance={record['instance_uid']}")
+        if record.get("after_error"):
+            parts.append(f"after-apply read error={record['after_error']}")
+        unwedged = record.get("unwedged")
+        if isinstance(unwedged, list) and unwedged:
+            parts.append("reset stale ECharts flags=" + ",".join(map(str, unwedged)))
+
+    wedged = state.get("wedged_flags")
+    if isinstance(wedged, list) and wedged:
+        parts.append("stuck ECharts flags=" + ",".join(map(str, wedged)))
+
+    last_error = state.get("last_window_error")
+    if not last_error and isinstance(record, dict):
+        last_error = record.get("last_window_error")
+    if last_error:
+        parts.append(f"last browser error={str(last_error)[:200]}")
+
+    return "; ".join(parts)
+
+
+def _apply_outcome(
+    state: dict[str, Any],
+    token: str,
+) -> tuple[str, str]:
+    """Return (state, error) of the browser apply script for this token."""
+    record = state.get("apply")
+
+    if not isinstance(record, dict) or record.get("token") != token:
+        return "not-run", ""
+
+    return (
+        str(record.get("state") or "unknown"),
+        str(record.get("error") or ""),
+    )
+
+
+async def read_echart_live_state(
+    chart: Any,
+    *,
+    x_axis_index: int = 0,
+    timeout: float = 1.5,
+) -> dict[str, Any] | None:
+    """Read compact live browser chart facts.
+
+    Returns ``None`` only when the widget cannot run the probe at all, so
+    callers may fall back to legacy paths. Every browser or transport
+    failure returns ``{"ok": False, "reason": ...}``.
+    """
+    target = _live_state_javascript_runner(chart)
+
+    if target is None:
+        return None
+
+    if (
+        isinstance(x_axis_index, bool)
+        or not isinstance(x_axis_index, int)
+        or x_axis_index < 0
+    ):
+        raise ValueError("x_axis_index must be a non-negative integer")
+
+    runner, element_id = target
+    code = _live_state_probe_code(
+        element_id,
+        x_axis_index=x_axis_index,
+    )
+
+    try:
+        raw = await runner(
+            code,
+            timeout=max(0.1, float(timeout)),
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": ("live-state probe did not answer: " f"{type(exc).__name__}"),
+        }
+
+    state = _decoded_method_result(raw)
+
+    if not isinstance(state, dict):
+        return {
+            "ok": False,
+            "reason": "live-state probe returned no state",
+        }
+
+    return state
+
+
+def _current_render_token(chart: Any) -> str:
+    return str(getattr(chart, "_l2shock_render_token", "") or "")
+
+
+def _live_state_mismatch(
+    state: dict[str, Any],
+    publication: EChartPublication,
+) -> str | None:
+    """Return why a token-owning live state is not yet usable, or None."""
+    expected_count = publication.expected_category_count
+
+    if expected_count is not None:
+        if state.get("axis_present") is not True:
+            return "Browser chart lacks the expected x-axis."
+
+        observed = state.get("category_count")
+
+        if isinstance(observed, bool) or not isinstance(observed, int):
+            observed = 0
+
+        if observed != expected_count:
+            return (
+                "Browser category count differs from the published option: "
+                f"expected={expected_count}, observed={observed}."
+            )
+
+    try:
+        width = float(state.get("width"))
+        height = float(state.get("height"))
+    except TypeError, ValueError:
+        return "Browser owns the option, but chart layout could not be verified."
+
+    if not (
+        math.isfinite(width)
+        and math.isfinite(height)
+        and width > 20.0
+        and height > 20.0
+    ):
+        return (
+            "Browser chart has no usable rendered layout: "
+            f"width={width!r}, height={height!r}."
+        )
+
+    return None
+
+
+async def confirm_echart_render_identity(
+    chart: Any,
+    publication: EChartPublication,
+    *,
+    x_axis_index: int = 0,
+    attempts: int = 16,
+    retry_delay_seconds: float = 0.125,
+) -> tuple[bool, str]:
+    """Confirm browser ownership of one exact publication generation.
+
+    Real NiceGUI widgets are verified with a compact browser probe that
+    returns token names, category count, and layout size only.
+    """
+    if chart is None:
+        return False, "ECharts widget is unavailable."
+
+    if not isinstance(publication, EChartPublication):
+        raise TypeError("publication must be EChartPublication")
+
+    if (
+        isinstance(x_axis_index, bool)
+        or not isinstance(x_axis_index, int)
+        or x_axis_index < 0
+    ):
+        raise ValueError("x_axis_index must be a non-negative integer")
+
+    if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts <= 0:
+        raise ValueError("attempts must be a positive integer")
+
+    if _live_state_javascript_runner(chart) is None:
+        return await _confirm_via_get_option(
+            chart,
+            publication,
+            x_axis_index=x_axis_index,
+            attempts=attempts,
+            retry_delay_seconds=retry_delay_seconds,
+        )
+
+    resize = getattr(chart, "run_chart_method", None)
+    retry_delay = max(0.0, float(retry_delay_seconds))
+    token = publication.render_token
+    last_reason = "Browser did not acknowledge the ECharts generation."
+
+    for attempt in range(attempts):
+        if _current_render_token(chart) != token:
+            return (
+                False,
+                "The publication was superseded before browser acknowledgement.",
+            )
+
+        state = await read_echart_live_state(
+            chart,
+            x_axis_index=x_axis_index,
+            timeout=1.5,
+        )
+
+        if not isinstance(state, dict) or state.get("ok") is not True:
+            reason = state.get("reason") if isinstance(state, dict) else None
+            last_reason = "Could not read the live browser ECharts state: " + str(
+                reason or "unavailable"
+            )
+        else:
+            tokens = state.get("tokens")
+
+            if not isinstance(tokens, list) or token not in tokens:
+                apply_state, apply_error = _apply_outcome(state, token)
+
+                if apply_state == "failed":
+                    # The apply script already reset stale flags and retried
+                    # once after clear(); further polling cannot help.
+                    diagnostics = _probe_diagnostics(state)
+                    return (
+                        False,
+                        "Browser rejected the chart option: "
+                        + (apply_error or "unknown ECharts error")
+                        + (f" ({diagnostics})" if diagnostics else ""),
+                    )
+
+                diagnostics = _probe_diagnostics(state)
+                last_reason = (
+                    "Browser chart does not own the expected render token "
+                    f"(apply: {apply_state}"
+                    + (f"; {apply_error}" if apply_error else "")
+                    + (f"; {diagnostics}" if diagnostics else "")
+                    + ")."
+                )
+            else:
+                mismatch = _live_state_mismatch(state, publication)
+
+                if mismatch is not None:
+                    last_reason = mismatch
+                else:
+                    if _current_render_token(chart) != token:
+                        return (
+                            False,
+                            "The publication was superseded during "
+                            "browser acknowledgement.",
+                        )
+
+                    setattr(
+                        chart,
+                        "_l2shock_acknowledged_render_token",
+                        token,
+                    )
+                    return True, ""
+
+        if attempt + 1 < attempts:
+            if callable(resize):
+                try:
+                    await resize(
+                        "resize",
+                        timeout=1.0,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    pass
+
+            await asyncio.sleep(retry_delay)
+
+    return False, last_reason
+
+
 def acknowledged_render_token(
     chart: Any,
 ) -> str:
@@ -537,5 +1296,6 @@ __all__ = [
     "coerce_echart_option",
     "confirm_echart_render_identity",
     "empty_echart_option",
+    "read_echart_live_state",
     "set_echart_options",
 ]

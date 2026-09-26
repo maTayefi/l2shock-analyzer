@@ -40,6 +40,12 @@ _COLORS = {
     "b_area": "rgba(251, 192, 45, 0.18)",
 }
 
+from types import MappingProxyType as _MappingProxyType  # noqa: E402
+
+# Read-only public view: the Shock-Start legend derives its swatches from
+# exactly the colors the chart uses.
+SHOCK_CHART_COLORS = _MappingProxyType(_COLORS)
+
 
 class ShockChartOptionsError(ValueError):
     """The supplied window cannot be represented as a shock review chart."""

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -28,12 +29,19 @@ from l2shock.ui.analysis_controls import (
     load_enabled_analysis_presets,
     parse_local_analysis_datetime,
 )
+from l2shock.ui.availability_calendar import AnalysisRangeHandoff
 from l2shock.ui.shock_legend import open_shock_color_legend
 from l2shock.ui.chart_interactions import (
     AnalysisChartController,
+    AnalysisChartInteractionError,
     capture_shock_time_viewport,
 )
 from l2shock.ui.components import create_tracked_task
+from l2shock.ui.echarts import (
+    EChartPublicationError,
+    empty_echart_option,
+    set_echart_options,
+)
 from l2shock.ui.shock_inspection import (
     ShockInspectionModel,
     publish_shock_selection,
@@ -205,6 +213,35 @@ def build_shock_request(
     return request, config
 
 
+_MAX_SHOCK_SCAN_SECONDS = 86_400
+
+
+def _shock_handoff_range(
+    start_utc: datetime,
+    closed_end_utc: datetime,
+) -> tuple[datetime, datetime, bool]:
+    """Fit a calendar window into one Shock-Start scan.
+
+    The calendar hands over closed UTC endpoints. build_shock_request allows
+    at most 24 hours, so a longer window keeps its newest 24 hours, since the
+    calendar's purpose is the newest contiguous analyzable window. Returns
+    (start, closed_end, clipped).
+    """
+    if start_utc.tzinfo is None or closed_end_utc.tzinfo is None:
+        raise ValueError("Handoff endpoints must be timezone-aware UTC")
+
+    start = start_utc.astimezone(timezone.utc)
+    end = closed_end_utc.astimezone(timezone.utc)
+
+    if end < start:
+        raise ValueError("Handoff end precedes its start")
+
+    if (end - start).total_seconds() <= _MAX_SHOCK_SCAN_SECONDS:
+        return start, end, False
+
+    return end - timedelta(seconds=_MAX_SHOCK_SCAN_SECONDS - 1), end, True
+
+
 def _event_row(event: Any) -> dict[str, Any] | None:
     """Extract the clicked row from supported NiceGUI rowClick shapes.
 
@@ -297,8 +334,8 @@ def _columns(timezone_name: str = "UTC") -> list[dict[str, object]]:
     ]
 
 
-def build_shock_review_section() -> None:
-    """Build the Shock-Start section inside the existing Analysis tab."""
+def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]:
+    """Build the Shock-Start Analysis section and return its calendar handoff."""
     state = get_state()
     runtime = get_manual_shock_runtime()
     timezone_name = get_settings().app.timezone
@@ -678,17 +715,17 @@ def build_shock_review_section() -> None:
         table.selected.clear()
         table.rows = []
         table.update()
-        create_tracked_task(
-            controller.publish(
-                {
-                    "title": {"text": "Shock-Start review in progress"},
-                    "series": [],
-                },
-                owner_id="shock-cleared",
-                preserve_viewport=False,
-            ),
-            name="l2shock-shock-chart-clear",
-        )
+        # Clear through the token-owning publisher, but do not await a
+        # browser acknowledgement: nothing is exported or navigated from a
+        # cleared chart. The new token supersedes any in-flight publication,
+        # and controller.invalidate() above already dropped chart ownership.
+        try:
+            set_echart_options(
+                chart,
+                empty_echart_option("Shock-Start review in progress"),
+            )
+        except EChartPublicationError:
+            log.exception("Could not clear the Shock-Start chart.")
         count_label.text = "No completed review currently owns this chart."
 
     async def _run() -> None:
@@ -767,6 +804,36 @@ def build_shock_review_section() -> None:
         )
 
     async def _select_row(event: Any) -> None:
+        """Open the clicked B area through the bounded L2 viewport.
+
+        This is the single publication path for B areas. It carries the
+        B band and A/B/C anchors on every panel; choosing "1 second" in
+        L2 viewing bars gives true one-second inspection. Presentation
+        only: the review and its ordering are unchanged.
+        """
+        row = _event_row(event)
+        current_model = model
+
+        if row is None or current_model is None:
+            status.text = "No completed B-area row was selected."
+            return
+
+        try:
+            position = int(row["inspection_position"])
+        except KeyError, TypeError, ValueError:
+            status.text = "Selected row has no inspection position."
+            return
+
+        if row.get("id") != (f"{current_model.review.review_id}:{position}"):
+            status.text = "Selected row belongs to another review."
+            return
+
+        view_area_input.value = position
+        await _show_bounded_view()
+
+    async def _select_row_one_second_legacy(event: Any) -> None:
+        # Previous separate one-second chart path. No longer wired to the
+        # table; kept only until the LM/legacy cleanup batch deletes it.
         nonlocal selection_generation
         nonlocal selected_owner_id, selected_position, bounded_owner_id
 
@@ -860,10 +927,34 @@ def build_shock_review_section() -> None:
                 controller,
                 selection,
             )
-        except Exception:
+        except AnalysisChartInteractionError as exc:
+            # A known browser-acknowledgement failure: warn without a
+            # traceback, then show the same area through the bounded L2
+            # viewport. Presentation only; the review is unchanged.
+            log.warning(
+                "One-second chart for B area #%s was not acknowledged: %s",
+                position,
+                exc,
+            )
+
+            if my_generation != selection_generation or model is not current_model:
+                return
+
+            view_area_input.value = position
+            await _show_bounded_view()
+
+            if selected_position == position:
+                status.text = (
+                    f"B area #{position}: one-second inspection chart "
+                    f"unavailable ({str(exc)[:240]}); showing its bounded "
+                    "L2 viewport instead."
+                )
+            return
+        except Exception as exc:
             log.exception("Could not publish selected Shock-Start area.")
             status.text = (
-                f"Could not display B area #{position}. " "Check the application log."
+                f"Could not display B area #{position}: "
+                f"{str(exc)[:300]} (see the application log)."
             )
             return
 
@@ -1204,6 +1295,75 @@ def build_shock_review_section() -> None:
         callback=_reload_presets,
         once=True,
     )
+
+    async def _apply_analysis_handoff(handoff: AnalysisRangeHandoff) -> bool:
+        """Apply a verified contiguous calendar window to Shock-Start controls."""
+        if not isinstance(handoff, AnalysisRangeHandoff):
+            raise TypeError("handoff must be AnalysisRangeHandoff")
+
+        if runtime.snapshot().is_running:
+            ui.notify(
+                "Stop or finish the current Shock-Start review before "
+                "applying a calendar window.",
+                type="warning",
+                timeout=6000,
+            )
+            return False
+
+        try:
+            start, end, clipped = _shock_handoff_range(
+                handoff.start_utc,
+                handoff.closed_end_utc,
+            )
+        except ValueError as exc:
+            ui.notify(f"Calendar window not applied: {exc}", type="negative")
+            return False
+
+        # Changing the base schedules _reload_presets via on_value_change.
+        base_input.value = handoff.base
+        await asyncio.sleep(0.05)
+
+        while preset_loading:
+            await asyncio.sleep(0.05)
+
+        if handoff.preset_hash not in enabled_preset_hashes:
+            await _reload_presets()
+
+            while preset_loading:
+                await asyncio.sleep(0.05)
+
+        if handoff.preset_hash not in enabled_preset_hashes:
+            ui.notify(
+                f"The calendar preset {handoff.preset_hash} is no longer "
+                f"enabled for {handoff.base}. Refresh the calendar and try again.",
+                type="negative",
+                timeout=8000,
+            )
+            return False
+
+        preset_input.value = handoff.preset_hash
+
+        start_local = utc_to_local(start, timezone_name)
+        end_local = utc_to_local(end, timezone_name)
+        start_date_input.value = start_local.strftime("%Y-%m-%d")
+        start_time_input.value = start_local.strftime("%H:%M:%S")
+        end_date_input.value = end_local.strftime("%Y-%m-%d")
+        end_time_input.value = end_local.strftime("%H:%M:%S")
+
+        status.text = (
+            f"Calendar window applied: {handoff.base}, "
+            f"{handoff.hour_count} contiguous hour(s)"
+            + ("; kept the newest 24 hours (Shock-Start limit)" if clipped else "")
+            + ". Review the controls and press Run Shock-Start."
+        )
+        ui.notify(
+            "Calendar window applied to Shock-Start controls.",
+            type="positive",
+            timeout=5000,
+        )
+        return True
+
+    return _apply_analysis_handoff
 
 
 __all__ = [

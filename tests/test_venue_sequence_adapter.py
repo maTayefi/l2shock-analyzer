@@ -97,21 +97,18 @@ def test_okx_update_uses_last_as_predecessor_and_final_as_result() -> None:
     )
 
 
-def test_okx_update_rejects_unexpected_binance_fields() -> None:
+def test_okx_update_accepts_populated_first_update_id() -> None:
     contract = orderbook_sequence_contract("okx_futures")
-
-    with pytest.raises(
-        VenueSequenceContractError,
-        match="first_update_id=null",
-    ):
-        contract.validate_event(
-            event_type="update",
-            transaction_time_ms=None,
-            first_update_id=1,
-            final_update_id=3,
-            prev_final_update_id=None,
-            last_update_id=2,
-        )
+    # CryptoHFTData now populates first_update_id for OKX updates.
+    # This must be accepted; core sequence continuity remains enforced.
+    contract.validate_event(
+        event_type="update",
+        transaction_time_ms=None,
+        first_update_id=1,
+        final_update_id=3,
+        prev_final_update_id=None,
+        last_update_id=2,
+    )
 
 
 def test_okx_snapshot_requires_matching_frontiers() -> None:
@@ -208,21 +205,18 @@ def test_bybit_boundary_snapshot_may_omit_native_frontier() -> None:
     )
 
 
-def test_bybit_update_rejects_unexpected_binance_fields() -> None:
+def test_bybit_update_accepts_populated_first_update_id() -> None:
     contract = orderbook_sequence_contract("bybit")
-
-    with pytest.raises(
-        VenueSequenceContractError,
-        match="first_update_id=null",
-    ):
-        contract.validate_event(
-            event_type="update",
-            transaction_time_ms=1_000,
-            first_update_id=100,
-            final_update_id=101,
-            prev_final_update_id=None,
-            last_update_id=9_000,
-        )
+    # CryptoHFTData now populates first_update_id for Bybit updates.
+    # This must be accepted; core sequence continuity remains enforced.
+    contract.validate_event(
+        event_type="update",
+        transaction_time_ms=1_000,
+        first_update_id=100,
+        final_update_id=101,
+        prev_final_update_id=None,
+        last_update_id=9_000,
+    )
 
 
 def test_supported_sequence_venues_include_bybit() -> None:

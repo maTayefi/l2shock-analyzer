@@ -33,6 +33,7 @@ from l2shock.ui.echarts import (
     EChartPublication,
     acknowledged_render_token,
     confirm_echart_render_identity,
+    read_echart_live_state,
     set_echart_options,
 )
 
@@ -361,6 +362,32 @@ async def capture_analysis_chart_viewport(
 
     if not callable(runner):
         return None
+
+    # Real widgets: read only the zoom percentages. A full getOption() reply
+    # may exceed NiceGUI's browser-to-server message limit and be dropped.
+    live_state = await read_echart_live_state(
+        chart,
+        timeout=1.5,
+    )
+
+    if live_state is not None:
+        zoom = live_state.get("data_zoom") if live_state.get("ok") is True else None
+
+        if not isinstance(zoom, dict):
+            return None
+
+        try:
+            return AnalysisChartViewport(
+                start_percent=float(zoom["start"]),
+                end_percent=float(zoom["end"]),
+            )
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            AnalysisChartInteractionError,
+        ):
+            return None
 
     try:
         option = _decoded_json(
@@ -766,10 +793,12 @@ async def restore_shock_time_viewport(
     return acknowledged_render_token(chart) == token
 
 
-def _chart_metadata(option: dict[str, Any]) -> dict[str, object] | None:
+def _chart_metadata(option: dict[str, Any]) -> dict[str, object]:
     value = option.get("l2shockChartMetadata")
     if not isinstance(value, dict):
-        return None
+        raise AnalysisChartInteractionError(
+            "Analysis chart option lacks l2shockChartMetadata"
+        )
     return value
 
 
@@ -1937,19 +1966,6 @@ class AnalysisChartController:
                 "Browser did not acknowledge the chart publication: " + reason
             )
         metadata = _chart_metadata(option)
-        if metadata is None:
-            # Options built outside the Analysis tab (e.g. Shock Review)
-            # may omit l2shockChartMetadata.  Derive a minimal fallback
-            # from the x-axis data so the commit can still be created.
-            x_axes = option.get("xAxis", [])
-            if isinstance(x_axes, list) and x_axes and isinstance(x_axes[0], dict):
-                data = x_axes[0].get("data", [])
-                visible_count = len(data) if isinstance(data, list) else 0
-            else:
-                visible_count = 0
-            metadata = {
-                "visible_bar_count": visible_count,
-            }
         raw_count = metadata.get("visible_bar_count")
 
         if (

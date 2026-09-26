@@ -379,8 +379,9 @@ def index_page() -> None:
             # Fetch calendar is constructed. Visual tab order remains owned by
             # the ui.tabs declarations above.
             with ui.tab_panel(analysis_tab):
-                analysis_handoff = build_analysis_tab()
-                build_shock_review_section()
+                # Shock-Start is the sole Analysis workflow. The legacy LM tab
+                # is no longer built; its modules are deleted in the next batch.
+                analysis_handoff = build_shock_review_section()
 
             async def _apply_availability_handoff(
                 handoff,

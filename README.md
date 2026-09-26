@@ -4598,6 +4598,76 @@ Version 1 does not include:
 
 ---
 
+### Shock-Start review chart publication
+
+Shock-Start detection always uses verified one-second Total L2. The chart is
+presentation only. Row selection, bounded viewports, viewing bars, zoom, the
+color legend, and exports never change review identity, B-area ordering, scale
+thresholds, pivot radii, or stored data.
+
+Every complete chart publication carries one hidden render-token series and
+`l2shockPublication.render_token`. A publication is committed only after a
+compact browser probe confirms:
+
+```text
+the expected render-token series exists
+the expected category count exists
+the ECharts instance has a usable width and height
+no newer Python publication superseded it
+```
+
+The probe returns only small facts: token names, category count, layout size,
+the first dataZoom window, series count and names, and the apply record. It
+must never return the complete `getOption()` result. A full reply for a bounded
+viewport can exceed NiceGUI's approximately 1 MB browser-to-server message
+limit and is then dropped, which appears in Python only as a timeout.
+
+Browser application rules:
+
+```text
+run_chart_method arguments are JavaScript only when the method name starts
+with ":". Passing an option expression without ":" hands ECharts a string and
+corrupts the instance.
+
+The l2shock apply script is the only live ECharts writer for a publishing
+widget. NiceGUI's update_chart() merges whenever the series count is
+unchanged, so publishing widgets disable NiceGUI's update method. The stored
+options property is still kept so that a re-mounted component draws the
+current generation.
+
+Do not wrap or monkeypatch instance.setOption. Forcing a full replacement on
+every write resets dataZoom.
+```
+
+Every B-area row click opens that area through the bounded L2 viewport, the
+single publication path. It draws the B band and A/B/C anchors on every panel.
+Selecting "1 second" viewing bars gives true one-second inspection. Missing
+Binance price never blocks or moves a Shock-Start chart.
+
+If an exception is ever thrown inside an ECharts render cycle, its in-cycle
+flag stays set and ECharts then silently ignores every `setOption` and
+`dispatchAction`, including zoom. The apply script runs outside any ECharts
+cycle, so it:
+
+```text
+resets stale "__flagIn*" flags that are true
+applies the option with notMerge:true
+verifies that the token series is present
+resets, clears, and retries once when it is not
+reports failure immediately with the last uncaught browser error
+```
+
+The live-state probe only reads these flags and never modifies chart state.
+
+Shock-Start is the sole Analysis workflow. The availability calendar handoff
+fills the Shock-Start base, preset, and local start/end controls. A calendar
+window longer than the 24-hour Shock-Start limit keeps its newest 24 hours.
+The handoff never starts a review automatically.
+
+Shock-Start legend swatches are read from `SHOCK_CHART_COLORS`, the read-only
+view of the colors used by `build_shock_chart_options`. Colors must not be
+duplicated in UI text or legend code.
+
 ## Development workflow
 
 Implementation order:
