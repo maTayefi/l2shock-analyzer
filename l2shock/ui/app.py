@@ -30,6 +30,7 @@ from l2shock.ui.processing_runtime import peek_manual_processing_runtime
 from l2shock.ui.remote_import_runtime import peek_remote_import_runtime
 from l2shock.ui.shock_runtime import peek_manual_shock_runtime
 from l2shock.ui.shutdown import shutdown_runtime
+from l2shock.ui.shutdown_control import build_shutdown_header_button
 from l2shock.ui.state import get_state
 from l2shock.ui.tab_shock_review import build_shock_review_section
 from l2shock.ui.tab_fetch import build_fetch_tab
@@ -365,6 +366,8 @@ def index_page() -> None:
         ui.space()
         ui.label(f"TZ: {settings.app.timezone}").classes("text-sm opacity-80")
         ui.label(f"LOCAL RESEARCH v{__version__}").classes("l2shock-status-chip")
+        # Global and outside the tabs: shutdown from any tab.
+        build_shutdown_header_button()
 
     with ui.column().classes("l2shock-page"):
         with ui.tabs().classes("w-full") as tabs:

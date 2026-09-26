@@ -50,6 +50,9 @@ from l2shock.ui.shock_inspection import ShockInspectionModel
 from l2shock.ui.shock_view_selection import (
     build_shock_view_selection,
 )
+from l2shock.ui.shock_annotation_visibility import (
+    with_shock_annotation_visibility,
+)
 from l2shock.ui.shock_price_context import (
     load_shock_price_context,
 )
@@ -363,6 +366,10 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
     selected_owner_id: str | None = None
     selected_position: int | None = None
     bounded_owner_id: str | None = None
+    # Unmodified option of the committed bounded viewport, and the
+    # (lines_and_labels, b_bands) visibility it is currently shown with.
+    bounded_base_option: dict[str, Any] | None = None
+    bounded_annotations: tuple[bool, bool] | None = None
     preset_loading = False
     enabled_preset_hashes: set[str] = set()
 
@@ -524,6 +531,19 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
                 icon="palette",
                 on_click=open_shock_color_legend,
             ).props("outline")
+            # Display-only: applied instantly to the shown viewport without
+            # reloading L2/price data or rerunning the review.
+            annotation_lines_switch = ui.switch(
+                "Show B/C lines and rank labels",
+                value=True,
+            ).tooltip(
+                "Hide the vertical B/C lines and #N labels to read the Bid, "
+                "Ask, Total, and Delta candles beneath them."
+            )
+            annotation_bands_switch = ui.switch(
+                "Show B-area bands",
+                value=True,
+            ).tooltip("Hide the shaded B-area bands.")
 
         status = ui.label("No Shock-Start review run in this session.")
 
@@ -862,9 +882,71 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
         await _show_bounded_view()
 
 
+    def _annotation_visibility() -> tuple[bool, bool]:
+        return (
+            bool(annotation_lines_switch.value),
+            bool(annotation_bands_switch.value),
+        )
+
+    async def _apply_annotation_visibility() -> None:
+        """Re-publish the committed viewport with the requested annotations.
+
+        No data is reloaded and no review is rerun: the cached, unmodified
+        option is transformed and published with the current UTC zoom.
+        A viewport that is still being built reads the switches itself.
+        """
+        nonlocal bounded_annotations
+
+        requested = _annotation_visibility()
+        owner = bounded_owner_id
+        base_option = bounded_base_option
+        commit = controller.commit
+
+        if (
+            owner is None
+            or base_option is None
+            or commit is None
+            or commit.owner_id != owner
+            or requested == bounded_annotations
+        ):
+            return
+
+        old_time_viewport = await capture_shock_time_viewport(chart)
+
+        if bounded_owner_id != owner or bounded_base_option is not base_option:
+            return
+
+        try:
+            new_commit = await controller.publish(
+                with_shock_annotation_visibility(
+                    base_option,
+                    show_lines_and_labels=requested[0],
+                    show_b_bands=requested[1],
+                ),
+                owner_id=owner,
+                preserve_viewport=False,
+                shock_time_viewport=old_time_viewport,
+            )
+        except Exception as exc:
+            log.exception("Could not update Shock-Start chart annotations.")
+            status.text = f"Could not update chart annotations: {exc}"
+            return
+
+        if new_commit is None or new_commit.owner_id != owner:
+            # Superseded by a newer publication; that one owns the chart.
+            return
+
+        if bounded_owner_id == owner and bounded_base_option is base_option:
+            bounded_annotations = requested
+
+        if _annotation_visibility() != requested:
+            # The user flipped a switch again while this was publishing.
+            await _apply_annotation_visibility()
+
     async def _show_bounded_view() -> None:
         nonlocal selection_generation
         nonlocal selected_owner_id, selected_position, bounded_owner_id
+        nonlocal bounded_base_option, bounded_annotations
 
         current_model = model
 
@@ -980,8 +1062,13 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
                 "L2 viewing viewport"
             )
 
+            used_annotations = _annotation_visibility()
             commit = await controller.publish(
-                viewport.option,
+                with_shock_annotation_visibility(
+                    viewport.option,
+                    show_lines_and_labels=used_annotations[0],
+                    show_b_bands=used_annotations[1],
+                ),
                 owner_id=viewport.owner_id,
                 preserve_viewport=False,
                 shock_time_viewport=old_time_viewport,
@@ -1013,6 +1100,8 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
             return
 
         bounded_owner_id = viewport.owner_id
+        bounded_base_option = viewport.option
+        bounded_annotations = used_annotations
         selected_owner_id = viewport.owner_id
         selected_position = viewport.inspection_position
         view_area_input.value = viewport.inspection_position
@@ -1043,6 +1132,10 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
             "Previous bounded-view UTC zoom was requested when available; "
             "Price remains optional." + _top_n_status(viewport)
         )
+
+        # A switch flipped while this viewport was being built.
+        if _annotation_visibility() != used_annotations:
+            await _apply_annotation_visibility()
 
     def _poll() -> None:
         nonlocal observed_completion, model
@@ -1224,6 +1317,8 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
     export_svg_button.on_click(_export_svg)
     view_button.on_click(_show_bounded_view)
     table.on("rowClick", _select_row)
+    annotation_lines_switch.on_value_change(_apply_annotation_visibility)
+    annotation_bands_switch.on_value_change(_apply_annotation_visibility)
 
     ui.timer(
         interval=0.25,

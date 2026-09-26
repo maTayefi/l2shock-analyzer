@@ -1,5 +1,8 @@
 # l2shock/ui/tab_settings.py
-"""Settings, production diagnostics, and safe application shutdown."""
+"""Settings, data presets, production diagnostics, and maintenance.
+
+The shutdown control lives in the global header (ui/shutdown_control.py).
+"""
 
 from __future__ import annotations
 
@@ -34,11 +37,9 @@ from l2shock.presets import (
     set_managed_preset_enabled,
 )
 from l2shock.ui.components import (
-    create_tracked_task,
     persistent_notify,
     section_header,
 )
-from l2shock.ui.shutdown import shutdown_runtime
 from l2shock.ui.state import get_state
 
 log = logging.getLogger(__name__)
@@ -373,20 +374,7 @@ def build_settings_tab() -> None:
                 .disable()
             )
 
-        with ui.card().classes("w-full border border-red-800"):
-            ui.label("Application lifecycle").classes("font-semibold text-red-500")
-            ui.label(
-                "Application Shutdown blocks new operations, requests "
-                "cooperative Fetch, Processing, and Analysis cancellation, "
-                "waits for durable operation boundaries, cancels remaining "
-                "tracked tasks, disposes the database engine, and then stops "
-                "the local NiceGUI server."
-            ).classes("text-sm text-gray-600")
-
-            shutdown_button = ui.button(
-                "Application Shutdown",
-                icon="power_settings_new",
-            ).props("color=negative")
+        
 
     with ui.dialog() as preset_delete_dialog:
         with ui.card().classes("w-[34rem] max-w-full"):
@@ -442,27 +430,7 @@ def build_settings_tab() -> None:
                     icon="warning",
                 ).props("color=negative")
 
-    with ui.dialog() as shutdown_dialog:
-        with ui.card().classes("w-[34rem] max-w-full"):
-            ui.label("Confirm Application Shutdown").classes(
-                "text-lg font-bold text-red-500"
-            )
-            ui.label(
-                "The browser connection will close after active work is "
-                "stopped safely. You will need to run run_app.bat again to "
-                "restart the application."
-            ).classes("text-sm")
-
-            with ui.row().classes("w-full justify-end gap-2 mt-4"):
-                ui.button(
-                    "Cancel",
-                    on_click=shutdown_dialog.close,
-                ).props("flat")
-
-                confirm_button = ui.button(
-                    "Stop application safely",
-                    icon="power_settings_new",
-                ).props("color=negative")
+    
 
     def _selected_managed_preset() -> ManagedPreset | None:
         selected_hash = str(preset_select.value or "").strip()
@@ -1275,44 +1243,9 @@ def build_settings_tab() -> None:
             media_type="application/json",
         )
 
-    def _open_shutdown_dialog() -> None:
-        if state.shutdown_started:
-            ui.notify(
-                "Application shutdown is already in progress.",
-                type="warning",
-            )
-            return
+    
 
-        shutdown_dialog.open()
-
-    async def _confirmed_shutdown() -> None:
-        if state.shutdown_started:
-            return
-
-        shutdown_button.disable()
-        confirm_button.disable()
-        run_diagnostics_button.disable()
-        export_diagnostics_button.disable()
-        shutdown_dialog.close()
-
-        persistent_notify(
-            "Safe application shutdown has started. Active operations are "
-            "being stopped and finalized.",
-            title="Application Shutdown",
-            notification_type="warning",
-        )
-
-        task = create_tracked_task(
-            shutdown_runtime(request_server_stop=True),
-            name="l2shock-application-shutdown",
-        )
-
-        if task is None:
-            persistent_notify(
-                "Could not create the application shutdown task.",
-                title="Application Shutdown",
-                notification_type="negative",
-            )
+    
 
     add_preset_button.on_click(_add_preset)
     save_edited_preset_button.on_click(_save_edited_preset)
@@ -1336,8 +1269,6 @@ def build_settings_tab() -> None:
 
     run_diagnostics_button.on_click(_run_diagnostics)
     export_diagnostics_button.on_click(_export_diagnostics)
-    shutdown_button.on_click(_open_shutdown_dialog)
-    confirm_button.on_click(_confirmed_shutdown)
 
     ui.timer(
         interval=0.1,
