@@ -133,6 +133,11 @@ class ShockInspectionModel:
                     "total_bc_fraction_of_scan_range": _fraction_text(
                         entry.total_bc_fraction_of_scan_range
                     ),
+                    "total_bc_sharpness": f"{entry.total_bc_sharpness:.4g}",
+                    "total_bc_adverse_total_fraction": _fraction_text(
+                        entry.total_bc_adverse_total_fraction
+                    ),
+                    "total_c_extremeness": _fraction_text(entry.total_c_extremeness),
                 }
             )
 

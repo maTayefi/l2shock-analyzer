@@ -6,6 +6,11 @@ representative anchors are specified in absolute one-second dataset
 indices. Annotations use exact UTC source timestamps, never rounded
 viewing-bar boundaries.
 
+Optional Top-N ranked areas are presentation only. They never change the
+review, its inspection order, or detection coordinates. The selected area
+is always drawn first (yellow) so existing consumers of markArea.data[0]
+and markLine.data[0] keep their meaning.
+
 Price is optional visual context and is not loaded by this builder.
 """
 
@@ -17,6 +22,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from l2shock.ui.shock_chart_options import (
+    MAX_SHOCK_CHART_TOP_N,
+    SHOCK_CHART_COLORS,
+    SHOCK_RANK_COLOR_KEYS,
+)
 from l2shock.ui.shock_view_bars import (
     L2Ohlc,
     ShockViewProjection,
@@ -24,15 +34,10 @@ from l2shock.ui.shock_view_bars import (
 
 _ONE_SECOND = timedelta(seconds=1)
 
-_COLORS = {
-    "bid": "#42a5f5",
-    "ask": "#ffb74d",
-    "total": "#ab47bc",
-    "delta": "#66bb6a",
-    "b": "#fbc02d",
-    "c": "#ec407a",
-    "b_area": "rgba(251, 192, 45, 0.18)",
-}
+# Single color source shared with the Shock-Start legend.
+_COLORS = SHOCK_CHART_COLORS
+
+_RANK_BAND_ALPHA = 0.12
 
 
 class ShockViewChartError(ValueError):
@@ -47,6 +52,46 @@ class ShockViewAnchorTimes:
     b_end_utc_exclusive: datetime | None
     representative_b_utc: datetime | None
     representative_c_utc: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class ShockViewRankedArea:
+    """One non-selected Top-N B area, identified by inspection position."""
+
+    rank: int
+    b_first_dataset_index: int
+    b_last_dataset_index: int
+    representative_b_dataset_index: int
+    representative_c_dataset_index: int | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.rank, bool) or not isinstance(self.rank, int):
+            raise ShockViewChartError("rank must be a positive integer")
+
+        if self.rank < 1:
+            raise ShockViewChartError("rank must be a positive integer")
+
+
+def rank_color_key(rank: int) -> str:
+    """Return the SHOCK_CHART_COLORS key for one inspection rank."""
+    if isinstance(rank, bool) or not isinstance(rank, int) or rank < 1:
+        raise ShockViewChartError("rank must be a positive integer")
+
+    return SHOCK_RANK_COLOR_KEYS[(rank - 1) % len(SHOCK_RANK_COLOR_KEYS)]
+
+
+def _rank_band_color(hex_color: str) -> str:
+    text = str(hex_color).lstrip("#")
+
+    if len(text) != 6:
+        raise ShockViewChartError("Rank colors must be #rrggbb")
+
+    try:
+        red, green, blue = (int(text[i : i + 2], 16) for i in (0, 2, 4))
+    except ValueError as exc:
+        raise ShockViewChartError("Rank colors must be #rrggbb") from exc
+
+    return f"rgba({red}, {green}, {blue}, {_RANK_BAND_ALPHA})"
 
 
 def _dataset_index(value: object, name: str) -> int:
@@ -200,23 +245,50 @@ def _candlestick_value(
     return [opened, closed, low, high]
 
 
+# (rank, anchors, line color) for one visible non-selected Top-N area.
+_RankedAnchors = tuple[int, ShockViewAnchorTimes, str]
+
+
+def _band_item(
+    anchors: ShockViewAnchorTimes,
+    *,
+    name: str,
+    fill: str | None = None,
+) -> list[dict[str, Any]] | None:
+    if anchors.b_start_utc is None or anchors.b_end_utc_exclusive is None:
+        return None
+
+    first: dict[str, Any] = {
+        "name": name,
+        "xAxis": _iso(anchors.b_start_utc),
+    }
+
+    if fill is not None:
+        first["itemStyle"] = {"color": fill}
+
+    return [first, {"xAxis": _iso(anchors.b_end_utc_exclusive)}]
+
+
 def _b_band(
     anchors: ShockViewAnchorTimes,
+    ranked: Sequence[_RankedAnchors] = (),
 ) -> dict[str, Any]:
-    data: list[list[dict[str, str]]] = []
+    data: list[list[dict[str, Any]]] = []
 
-    if anchors.b_start_utc is not None and anchors.b_end_utc_exclusive is not None:
-        data.append(
-            [
-                {
-                    "name": "L2 B candidate interval",
-                    "xAxis": _iso(anchors.b_start_utc),
-                },
-                {
-                    "xAxis": _iso(anchors.b_end_utc_exclusive),
-                },
-            ]
+    selected = _band_item(anchors, name="L2 B candidate interval")
+
+    if selected is not None:
+        data.append(selected)
+
+    for rank, rank_anchors, color in ranked:
+        item = _band_item(
+            rank_anchors,
+            name=f"Rank #{rank} B area",
+            fill=_rank_band_color(color),
         )
+
+        if item is not None:
+            data.append(item)
 
     return {
         "silent": True,
@@ -227,38 +299,92 @@ def _b_band(
     }
 
 
+def _line_item(
+    at: datetime,
+    *,
+    name: str,
+    color: str,
+    line_type: str,
+    label: str | None,
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "name": name,
+        "xAxis": _iso(at),
+        "lineStyle": {
+            "color": color,
+            "type": line_type,
+            "width": 2,
+        },
+    }
+
+    if label:
+        # A plain string formatter; it contains no "{...}" template.
+        item["label"] = {
+            "show": True,
+            "formatter": label,
+            "position": "end",
+            "color": color,
+            "fontSize": 11,
+            "fontWeight": "bold",
+        }
+
+    return item
+
+
 def _anchor_lines(
     anchors: ShockViewAnchorTimes,
     *,
     include_c: bool,
+    selected_label: str | None = None,
+    ranked: Sequence[_RankedAnchors] = (),
 ) -> dict[str, Any]:
     data: list[dict[str, Any]] = []
 
+    # Selected area first: markLine.data[0] is its B, data[1] its C (Total).
     if anchors.representative_b_utc is not None:
         data.append(
-            {
-                "name": "Representative B",
-                "xAxis": _iso(anchors.representative_b_utc),
-                "lineStyle": {
-                    "color": _COLORS["b"],
-                    "type": "dashed",
-                    "width": 2,
-                },
-            }
+            _line_item(
+                anchors.representative_b_utc,
+                name="Representative B",
+                color=_COLORS["b"],
+                line_type="dashed",
+                label=selected_label,
+            )
         )
 
     if include_c and anchors.representative_c_utc is not None:
         data.append(
-            {
-                "name": "Representative C",
-                "xAxis": _iso(anchors.representative_c_utc),
-                "lineStyle": {
-                    "color": _COLORS["c"],
-                    "type": "solid",
-                    "width": 2,
-                },
-            }
+            _line_item(
+                anchors.representative_c_utc,
+                name="Representative C",
+                color=_COLORS["c"],
+                line_type="solid",
+                label=(f"{selected_label} C" if selected_label else None),
+            )
         )
+
+    for rank, rank_anchors, color in ranked:
+        if rank_anchors.representative_b_utc is not None:
+            data.append(
+                _line_item(
+                    rank_anchors.representative_b_utc,
+                    name=f"Rank #{rank} B",
+                    color=color,
+                    line_type="dashed",
+                    label=f"#{rank}",
+                )
+            )
+
+        if include_c and rank_anchors.representative_c_utc is not None:
+            data.append(
+                _line_item(
+                    rank_anchors.representative_c_utc,
+                    name=f"Rank #{rank} C",
+                    color=color,
+                    line_type="solid",
+                    label=f"#{rank} C",
+                )
+            )
 
     return {
         "silent": True,
@@ -269,6 +395,51 @@ def _anchor_lines(
     }
 
 
+def _visible_ranked_anchors(
+    projection: ShockViewProjection,
+    ranked_areas: Sequence[ShockViewRankedArea],
+    *,
+    selected_rank: int | None,
+) -> list[_RankedAnchors]:
+    areas = tuple(ranked_areas)
+
+    if len(areas) > MAX_SHOCK_CHART_TOP_N:
+        raise ShockViewChartError(
+            f"At most {MAX_SHOCK_CHART_TOP_N} ranked areas can be drawn"
+        )
+
+    seen: set[int] = set()
+    result: list[_RankedAnchors] = []
+
+    for area in areas:
+        if not isinstance(area, ShockViewRankedArea):
+            raise ShockViewChartError(
+                "ranked_areas must contain ShockViewRankedArea objects"
+            )
+
+        if area.rank in seen or area.rank == selected_rank:
+            raise ShockViewChartError(
+                "Ranked areas must have unique ranks distinct from the " "selected area"
+            )
+
+        seen.add(area.rank)
+
+        anchors = project_shock_view_anchor_times(
+            projection,
+            b_first_dataset_index=area.b_first_dataset_index,
+            b_last_dataset_index=area.b_last_dataset_index,
+            representative_b_dataset_index=area.representative_b_dataset_index,
+            representative_c_dataset_index=area.representative_c_dataset_index,
+        )
+
+        if anchors.b_start_utc is None:
+            continue  # Wholly outside this viewport.
+
+        result.append((area.rank, anchors, _COLORS[rank_color_key(area.rank)]))
+
+    return result
+
+
 def build_shock_view_chart_options(
     projection: ShockViewProjection,
     *,
@@ -277,12 +448,21 @@ def build_shock_view_chart_options(
     representative_b_dataset_index: int,
     representative_c_dataset_index: int | None = None,
     price_candles: Sequence[Sequence[float] | None] | None = None,
+    ranked_areas: Sequence[ShockViewRankedArea] = (),
+    selected_rank: int | None = None,
 ) -> dict[str, Any]:
     """Render bounded viewing candles with exact one-second anchors.
 
     This is an option builder, not a data loader. It neither fetches
     price nor changes the one-second detector's B coordinates.
     """
+    if selected_rank is not None and (
+        isinstance(selected_rank, bool)
+        or not isinstance(selected_rank, int)
+        or selected_rank < 1
+    ):
+        raise ShockViewChartError("selected_rank must be a positive integer or None")
+
     anchors = project_shock_view_anchor_times(
         projection,
         b_first_dataset_index=b_first_dataset_index,
@@ -290,6 +470,12 @@ def build_shock_view_chart_options(
         representative_b_dataset_index=(representative_b_dataset_index),
         representative_c_dataset_index=(representative_c_dataset_index),
     )
+    ranked = _visible_ranked_anchors(
+        projection,
+        ranked_areas,
+        selected_rank=selected_rank,
+    )
+    selected_label = f"#{selected_rank}" if selected_rank is not None else None
 
     source_start = _iso(projection.source_start_utc)
     source_end = _iso(projection.source_end_utc_exclusive)
@@ -392,15 +578,17 @@ def build_shock_view_chart_options(
             "yAxisIndex": 0,
             "data": price_data,
             "itemStyle": {
-                "color": "#26a69a",
-                "color0": "#ef5350",
-                "borderColor": "#26a69a",
-                "borderColor0": "#ef5350",
+                "color": _COLORS["price_up"],
+                "color0": _COLORS["price_down"],
+                "borderColor": _COLORS["price_up"],
+                "borderColor0": _COLORS["price_down"],
             },
-            "markArea": _b_band(anchors),
+            "markArea": _b_band(anchors, ranked),
             "markLine": _anchor_lines(
                 anchors,
                 include_c=False,
+                selected_label=selected_label,
+                ranked=ranked,
             ),
         }
     ]
@@ -434,10 +622,12 @@ def build_shock_view_chart_options(
                     "borderColor": _COLORS[channel],
                     "borderColor0": _COLORS[channel],
                 },
-                "markArea": _b_band(anchors),
+                "markArea": _b_band(anchors, ranked),
                 "markLine": _anchor_lines(
                     anchors,
                     include_c=(channel == "total"),
+                    selected_label=selected_label,
+                    ranked=ranked,
                 ),
             }
         )
@@ -463,3 +653,14 @@ def build_shock_view_chart_options(
         ],
         "series": series,
     }
+
+
+__all__ = [
+    "MAX_SHOCK_CHART_TOP_N",
+    "ShockViewAnchorTimes",
+    "ShockViewChartError",
+    "ShockViewRankedArea",
+    "build_shock_view_chart_options",
+    "project_shock_view_anchor_times",
+    "rank_color_key",
+]

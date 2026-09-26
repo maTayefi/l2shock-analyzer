@@ -3,13 +3,26 @@
 
 Inspection order is not a probability, calibrated confidence, or claim that
 the representative B is the visually best second in its area.
+
+Order version 2 adds exact Total B->C path diagnostics adapted from the
+retired LM detector:
+
+- square-root-normalised sharpness: (B->C height / scan range) / sqrt(s),
+  kept as an exact squared rational so ordering never depends on floats;
+- adverse moves inside B->C (count, total / height, max retracement);
+- B and C endpoint extremeness inside the whole-scan Total range.
+
+These are diagnostics. Only sharpness and adverse-total fraction join the
+lexicographic order, after structural tier and B->C height fraction.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+import math
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from statistics import median
 
@@ -21,8 +34,8 @@ from l2shock.analysis.shock_evidence import (
 from l2shock.ingest.sampling import BookSampleQuality
 
 SHOCK_REVIEW_SCHEMA = "l2shock.shock_b_area_review"
-SHOCK_REVIEW_SCHEMA_VERSION = 1
-SHOCK_REVIEW_ORDER_VERSION = "total_structure_first_v1"
+SHOCK_REVIEW_SCHEMA_VERSION = 2
+SHOCK_REVIEW_ORDER_VERSION = "total_structure_first_v2"
 
 
 class ShockReviewError(ValueError):
@@ -46,6 +59,20 @@ class ReviewedShockArea:
     independent_channel_count: int
     maximum_channel_timing_offset_seconds: int | None
 
+    # Order-version-2 B->C path and endpoint diagnostics.
+    total_bc_seconds: int = 0
+    total_bc_sharpness_squared: Fraction = Fraction(0)
+    total_bc_adverse_move_count: int = 0
+    total_bc_adverse_total_fraction: Fraction = Fraction(0)
+    total_bc_max_retracement_fraction: Fraction = Fraction(0)
+    total_b_extremeness: Fraction = Fraction(0)
+    total_c_extremeness: Fraction = Fraction(0)
+
+    @property
+    def total_bc_sharpness(self) -> float:
+        """Display value of (B->C height / scan range) / sqrt(seconds)."""
+        return math.sqrt(self.total_bc_sharpness_squared)
+
 
 @dataclass(frozen=True, slots=True)
 class ShockReview:
@@ -59,6 +86,8 @@ class ShockReview:
         Exact rational measurements are emitted as numerator/denominator
         strings. This avoids changing threshold comparisons through float
         conversion. The rows are suitable for collecting labeled examples.
+        ``total_bc_sharpness`` is a display float; its exact ordering value
+        is ``total_bc_sharpness_squared``.
         """
         rows = []
 
@@ -95,6 +124,20 @@ class ShockReview:
                     "total_bc_change_per_second": _rational(
                         entry.total_bc_change_per_second
                     ),
+                    "total_bc_seconds": entry.total_bc_seconds,
+                    "total_bc_sharpness_squared": _rational(
+                        entry.total_bc_sharpness_squared
+                    ),
+                    "total_bc_sharpness": entry.total_bc_sharpness,
+                    "total_bc_adverse_move_count": (entry.total_bc_adverse_move_count),
+                    "total_bc_adverse_total_fraction": _rational(
+                        entry.total_bc_adverse_total_fraction
+                    ),
+                    "total_bc_max_retracement_fraction": _rational(
+                        entry.total_bc_max_retracement_fraction
+                    ),
+                    "total_b_extremeness": _rational(entry.total_b_extremeness),
+                    "total_c_extremeness": _rational(entry.total_c_extremeness),
                     "total_ab_signed_change": _rational(entry.total_ab_signed_change),
                     "total_ab_signed_change_per_second": _rational(
                         entry.total_ab_signed_change_per_second
@@ -153,10 +196,117 @@ def _total_at(seconds, index: int) -> Fraction:
     return Fraction(second.bid_liquidity) + Fraction(second.ask_liquidity)
 
 
+def _valid_total_bounds(seconds) -> tuple[Fraction, Fraction] | None:
+    """Exact min/max Total over every VALID second of the scan."""
+    low: Fraction | None = None
+    high: Fraction | None = None
+
+    for second in seconds:
+        if second.quality is not BookSampleQuality.VALID:
+            continue
+
+        total = Fraction(second.bid_liquidity) + Fraction(second.ask_liquidity)
+
+        if low is None or total < low:
+            low = total
+        if high is None or total > high:
+            high = total
+
+    if low is None or high is None:
+        return None
+
+    return low, high
+
+
+def _bc_sharpness_squared(height_fraction: Fraction, seconds: int) -> Fraction:
+    """Exact square of (height / scan range) / sqrt(seconds)."""
+    if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds <= 0:
+        raise ShockReviewError("B->C duration must be a positive number of seconds")
+
+    if height_fraction < 0:
+        raise ShockReviewError("B->C height fraction cannot be negative")
+
+    return height_fraction * height_fraction / seconds
+
+
+def _bc_path_metrics(
+    leg: Sequence[Fraction],
+) -> tuple[int, Fraction, Fraction]:
+    """Adverse-step count, adverse total / height, max retracement / height.
+
+    ``leg`` is the exact Total path from B through C inclusive. An adverse
+    step moves against the B->C direction. The maximum retracement is the
+    largest pullback from the running B->C extreme.
+    """
+    values = tuple(leg)
+
+    if len(values) < 2:
+        raise ShockReviewError("A B->C leg needs at least two seconds")
+
+    height = abs(values[-1] - values[0])
+
+    if height == 0:
+        raise ShockReviewError("A B->C leg must have positive height")
+
+    sign = 1 if values[-1] > values[0] else -1
+    count = 0
+    adverse_total = Fraction(0)
+    extreme = values[0]
+    maximum_retracement = Fraction(0)
+
+    for previous, current in zip(values, values[1:]):
+        step = (current - previous) * sign
+
+        if step < 0:
+            count += 1
+            adverse_total -= step
+
+        if (current - extreme) * sign > 0:
+            extreme = current
+
+        retracement = (extreme - current) * sign
+
+        if retracement > maximum_retracement:
+            maximum_retracement = retracement
+
+    return count, adverse_total / height, maximum_retracement / height
+
+
+def _endpoint_extremeness(
+    *,
+    b_total: Fraction,
+    c_total: Fraction,
+    scan_min: Fraction,
+    scan_max: Fraction,
+) -> tuple[Fraction, Fraction]:
+    """Direction-oriented B and C position inside the scan Total range.
+
+    Upward leg: B=1 at the scan's lowest Total, C=1 at its highest.
+    Downward leg: B=1 at the scan's highest Total, C=1 at its lowest.
+    """
+    span = scan_max - scan_min
+
+    if span <= 0:
+        raise ShockReviewError("Scan Total range must be positive")
+
+    if c_total > b_total:
+        b_value = (scan_max - b_total) / span
+        c_value = (c_total - scan_min) / span
+    else:
+        b_value = (b_total - scan_min) / span
+        c_value = (scan_max - c_total) / span
+
+    def clamp(value: Fraction) -> Fraction:
+        return min(Fraction(1), max(Fraction(0), value))
+
+    return clamp(b_value), clamp(c_value)
+
+
 def _diagnostics(
     area: ShockBArea,
     evidence_result: ShockEvidenceResult,
     scale_fractions: dict[str, Fraction],
+    scan_bounds: tuple[Fraction, Fraction],
 ) -> ReviewedShockArea:
     scan = evidence_result.candidate_scan
     seconds = scan.dataset.seconds
@@ -200,7 +350,19 @@ def _diagnostics(
     # Retain the direction of A->B; an upward Total turn normally has
     # negative AB movement. BC is the absolute leg rate.
     ab_signed = b_total - a_total
-    bc_speed = abs(c_total - b_total) / (c - b)
+    bc_seconds = c - b
+    bc_speed = abs(c_total - b_total) / bc_seconds
+    bc_fraction = abs(c_total - b_total) / scan_range
+
+    adverse_count, adverse_fraction, retracement_fraction = _bc_path_metrics(
+        owned[b - a :]
+    )
+    b_extremeness, c_extremeness = _endpoint_extremeness(
+        b_total=b_total,
+        c_total=c_total,
+        scan_min=scan_bounds[0],
+        scan_max=scan_bounds[1],
+    )
 
     independent = tuple(
         item
@@ -221,7 +383,7 @@ def _diagnostics(
         highest_scale_fraction=max(
             scale_fractions[member.scale_name] for member in area.members
         ),
-        total_bc_fraction_of_scan_range=(abs(c_total - b_total) / scan_range),
+        total_bc_fraction_of_scan_range=bc_fraction,
         total_bc_change_per_second=bc_speed,
         total_ab_signed_change=ab_signed,
         total_ab_signed_change_per_second=ab_signed / (b - a),
@@ -230,6 +392,13 @@ def _diagnostics(
         total_pre_b_deviation_fraction_of_scan_range=(pre_mad / scan_range),
         independent_channel_count=len(independent),
         maximum_channel_timing_offset_seconds=(max(offsets) if offsets else None),
+        total_bc_seconds=bc_seconds,
+        total_bc_sharpness_squared=_bc_sharpness_squared(bc_fraction, bc_seconds),
+        total_bc_adverse_move_count=adverse_count,
+        total_bc_adverse_total_fraction=adverse_fraction,
+        total_bc_max_retracement_fraction=retracement_fraction,
+        total_b_extremeness=b_extremeness,
+        total_c_extremeness=c_extremeness,
     )
 
 
@@ -264,26 +433,38 @@ def review_shock_areas(result: ShockEvidenceResult) -> ShockReview:
         item.name: Fraction(item.minimum_leg_fraction)
         for item in result.candidate_scan.config.scales
     }
+
+    if result.areas:
+        bounds = _valid_total_bounds(result.candidate_scan.dataset.seconds)
+
+        if bounds is None:
+            raise ShockReviewError("B areas exist but the scan has no valid Total")
+    else:
+        bounds = (Fraction(0), Fraction(1))  # Unused: nothing to measure.
+
     measured = tuple(
-        _diagnostics(area, result, scale_fractions) for area in result.areas
+        _diagnostics(area, result, scale_fractions, bounds) for area in result.areas
     )
 
-    # Lexicographic INSPECTION order, not a weighted confidence score:
+    # Lexicographic INSPECTION order (version 2), not a weighted score:
     #
     # 1. Largest qualifying structural tier present in the area.
     # 2. Representative Total B-C height / whole-scan Total range.
-    # 3. Representative Total B-C height per second.
-    # 4. Bid/Ask support count (Delta is NOT an independent vote).
-    # 5. Less pre-B Total variability, then stable time ordering.
+    # 3. sqrt-normalised B-C sharpness (exact squared rational).
+    # 4. Lower B-C adverse-move total / height (cleaner leg first).
+    # 5. Bid/Ask support count (Delta is NOT an independent vote).
+    # 6. Less pre-B Total variability, then stable time ordering.
     #
-    # All areas survive. A later labeled-example pass may change this order.
+    # Key 2 is a continuous exact fraction, so keys 3-6 act only on exact
+    # ties. A future weighted/percentile score must be a new order version.
     measured = tuple(
         sorted(
             measured,
             key=lambda item: (
                 -item.highest_scale_fraction,
                 -item.total_bc_fraction_of_scan_range,
-                -item.total_bc_change_per_second,
+                -item.total_bc_sharpness_squared,
+                item.total_bc_adverse_total_fraction,
                 -item.independent_channel_count,
                 item.total_pre_b_deviation_fraction_of_scan_range,
                 item.area.first_b_index,
@@ -293,26 +474,7 @@ def review_shock_areas(result: ShockEvidenceResult) -> ShockReview:
     )
 
     ordered = tuple(
-        ReviewedShockArea(
-            inspection_position=position,
-            area=item.area,
-            highest_scale_fraction=item.highest_scale_fraction,
-            total_bc_fraction_of_scan_range=(item.total_bc_fraction_of_scan_range),
-            total_bc_change_per_second=(item.total_bc_change_per_second),
-            total_ab_signed_change=item.total_ab_signed_change,
-            total_ab_signed_change_per_second=(item.total_ab_signed_change_per_second),
-            total_pre_b_median=item.total_pre_b_median,
-            total_pre_b_median_absolute_deviation=(
-                item.total_pre_b_median_absolute_deviation
-            ),
-            total_pre_b_deviation_fraction_of_scan_range=(
-                item.total_pre_b_deviation_fraction_of_scan_range
-            ),
-            independent_channel_count=item.independent_channel_count,
-            maximum_channel_timing_offset_seconds=(
-                item.maximum_channel_timing_offset_seconds
-            ),
-        )
+        replace(item, inspection_position=position)
         for position, item in enumerate(measured, start=1)
     )
 

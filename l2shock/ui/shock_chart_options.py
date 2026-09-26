@@ -40,6 +40,30 @@ _COLORS = {
     "b_area": "rgba(251, 192, 45, 0.18)",
 }
 
+# Top-N rank hues for non-selected B areas on the bounded viewport. The
+# selected area always keeps "b" / "b_area" (yellow). Bands use the same
+# hue at low opacity; the legend reads these exact values.
+_RANK_LINE_COLORS: tuple[str, ...] = (
+    "#ff5252",
+    "#18ffff",
+    "#b2ff59",
+    "#ff80ab",
+    "#ffd180",
+    "#8c9eff",
+    "#a7ffeb",
+    "#f4ff81",
+)
+
+for _rank, _rank_color in enumerate(_RANK_LINE_COLORS, start=1):
+    _COLORS[f"rank_{_rank}"] = _rank_color
+
+del _rank, _rank_color
+
+SHOCK_RANK_COLOR_KEYS: tuple[str, ...] = tuple(
+    f"rank_{rank}" for rank in range(1, len(_RANK_LINE_COLORS) + 1)
+)
+MAX_SHOCK_CHART_TOP_N: int = len(_RANK_LINE_COLORS)
+
 from types import MappingProxyType as _MappingProxyType  # noqa: E402
 
 # Read-only public view: the Shock-Start legend derives its swatches from

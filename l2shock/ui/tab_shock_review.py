@@ -31,6 +31,7 @@ from l2shock.ui.analysis_controls import (
 )
 from l2shock.ui.availability_calendar import AnalysisRangeHandoff
 from l2shock.ui.shock_legend import open_shock_color_legend
+from l2shock.ui.shock_chart_options import MAX_SHOCK_CHART_TOP_N
 from l2shock.ui.chart_interactions import (
     AnalysisChartController,
     AnalysisChartInteractionError,
@@ -242,6 +243,18 @@ def _shock_handoff_range(
     return end - timedelta(seconds=_MAX_SHOCK_SCAN_SECONDS - 1), end, True
 
 
+def _top_n_status(viewport: Any) -> str:
+    """Describe which Top-N inspection positions this viewport shows."""
+    requested = getattr(viewport, "top_n", 0)
+
+    if not requested:
+        return ""
+
+    visible = getattr(viewport, "visible_ranked_positions", ())
+    shown = ", ".join(f"#{position}" for position in visible) or "none"
+    return f" Top {requested} visible here: {shown}."
+
+
 def _event_row(event: Any) -> dict[str, Any] | None:
     """Extract the clicked row from supported NiceGUI rowClick shapes.
 
@@ -320,6 +333,9 @@ def _columns(timezone_name: str = "UTC") -> list[dict[str, object]]:
         ("scale_names", "Scales"),
         ("member_count", "Members"),
         ("independent_channel_count", "Bid/Ask support"),
+        ("total_bc_sharpness", "B->C sharpness (range/sqrt s)"),
+        ("total_bc_adverse_total_fraction", "B->C adverse / height"),
+        ("total_c_extremeness", "C extremeness"),
         ("total_bc_fraction_of_scan_range", "B→C / Total range"),
     )
 
@@ -594,6 +610,13 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
                 value=1200,
                 min=1,
                 max=5000,
+                step=1,
+            )
+            top_n_input = ui.number(
+                "Top N B areas on chart",
+                value=min(5, MAX_SHOCK_CHART_TOP_N),
+                min=0,
+                max=MAX_SHOCK_CHART_TOP_N,
                 step=1,
             )
             view_timeframe_input = ui.select(
@@ -1038,6 +1061,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
             requested_source_seconds = view_source_seconds_input.value
             requested_before_b = view_before_b_input.value
             requested_max_bars = view_max_bars_input.value
+            requested_top_n = top_n_input.value
 
             viewport = build_shock_view_selection(
                 current_model.review,
@@ -1046,6 +1070,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
                 seconds_before_b=requested_before_b,
                 timeframe_seconds=selected_timeframe,
                 max_bars=requested_max_bars,
+                top_n=requested_top_n,
             )
 
             try:
@@ -1076,6 +1101,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
                         timeframe_seconds=selected_timeframe,
                         max_bars=requested_max_bars,
                         price_candles=price_candles,
+                        top_n=requested_top_n,
                     )
                 except Exception:
                     log.exception(
@@ -1159,7 +1185,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
             f"{viewport.timeframe_seconds}s viewing bars "
             f"(maximum {requested_max_bars}). "
             "Previous bounded-view UTC zoom was requested when available; "
-            "Price remains optional."
+            "Price remains optional." + _top_n_status(viewport)
         )
 
     def _poll() -> None:

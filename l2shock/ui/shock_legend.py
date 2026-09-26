@@ -13,7 +13,10 @@ from typing import Literal
 
 from nicegui import ui
 
-from l2shock.ui.shock_chart_options import SHOCK_CHART_COLORS
+from l2shock.ui.shock_chart_options import (
+    SHOCK_CHART_COLORS,
+    SHOCK_RANK_COLOR_KEYS,
+)
 
 SwatchKind = Literal["fill", "line", "dashed"]
 
@@ -67,11 +70,25 @@ SHOCK_LEGEND_ENTRIES: tuple[ShockLegendEntry, ...] = (
         "line",
         "Representative C second, on the Total panel.",
     ),
+    *(
+        ShockLegendEntry(
+            f"Top-N rank #{rank}",
+            key,
+            "dashed",
+            f"Inspection position #{rank} when it is not the selected area: "
+            f"dashed B line labelled #{rank} on every panel, solid C line "
+            f"labelled '#{rank} C' on Total, and a band of the same hue at "
+            "12% opacity.",
+        )
+        for rank, key in enumerate(SHOCK_RANK_COLOR_KEYS, start=1)
+    ),
 )
 
 _NOTES: tuple[str, ...] = (
     "A break in an L2 line is a missing second, never zero liquidity.",
     "Highlights are presentation only; they never rerun or change the review.",
+    "The selected area is always yellow and labelled with its own rank. "
+    "Top-N ranks are the review's inspection order, not probabilities.",
 )
 
 

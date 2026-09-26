@@ -4598,6 +4598,126 @@ Version 1 does not include:
 
 ---
 
+### Shock-Start semantic contract (humans and AI models)
+
+> Contract, not tutorial. A future maintainer or AI model must not change
+> any rule below silently. Every change to this section is `SEMANTIC` and
+> requires a new algorithm, schema, or order version.
+
+Purpose: retrospectively (offline, post-scan) locate the start area B of an
+L2 shock: the one or few seconds after which order-book behaviour changed
+and led to an important Total-L2 extreme C. Results are hypotheses for
+visual review. They are not predictions, probabilities, or proof that a
+market order caused the change.
+
+Data and clock:
+
+```text
+source of truth:   verified one-second L2 states from PostgreSQL
+Total(t)           = Bid(t) + Ask(t)      same second, never mixed seconds
+Delta(t)           = Bid(t) - Ask(t)      same second
+highs / lows       = taken from those one-second states; never add a Bid
+                     high and an Ask high that occurred at different seconds
+chart timeframe    = viewing only; changing it never changes A, B, C
+price              = optional passive context; never a detection condition;
+                     missing Binance trades never block or move a B area
+invalid / missing  = hard break; no hypothesis crosses one; never zero-filled
+aggregate presets  = every expected market must contribute for every second
+```
+
+A, B, C on the master Total series:
+
+```text
+A  preceding context ending at B (opposing pivot, flat base, or slow trend)
+B  proposed start / change-of-behaviour second
+C  strongest Total extreme inside B's bounded forward horizon;
+   may be local or scan-global (permissive, not strict)
+
+turning start:       B is a local Total low leading up, or high leading down
+acceleration start:  Total need not turn; the B->C rate must be at least
+                     acceleration_ratio (default 2) x the A->B rate in the
+                     same direction
+directions:          both upward and downward legs are detected
+```
+
+Structural scales (pivot structure, never chart timeframes):
+
+```text
+scale    minimum |C - B| / whole-scan Total range    default pivot radius
+major    0.20                                        60 s
+medium   0.10                                        30 s
+minor    0.05                                        10 s
+```
+
+```text
+forward horizon     = pivot radius x forward_radius_multiplier (default 4)
+thresholds          = ordered strictly high -> low; never re-sorted silently
+scale count         = 2 (major + medium) or 3; a tier appears only if it
+                      actually produced qualifying hypotheses
+range denominator   = Total max - min over every VALID second of the scan
+```
+
+B areas and channel evidence:
+
+```text
+B area         nearby scale hypotheses merged; width bounded by the smallest
+               member pivot radius measured from the first B; all member
+               hypotheses are retained
+representative one hypothesis per area; others stay available for review
+Bid, Ask       independent evidence; may move with or opposite to Total;
+               their B/C may be earlier or later within a bounded offset
+Delta          derived from Bid and Ask; reported, never an independent vote
+master clock   Total; B is never moved to the earliest confirming channel
+```
+
+Inspection order (`SHOCK_REVIEW_ORDER_VERSION = total_structure_first_v2`),
+lexicographic, every area survives:
+
+```text
+1. highest structural tier in the area
+2. Total B->C height / scan Total range            (larger first)
+3. B->C sharpness = (height / range) / sqrt(s)      (larger first; exact
+   squared rational)
+4. B->C adverse-move total / height                 (cleaner first)
+5. Bid/Ask support count                            (Delta excluded)
+6. lower pre-B Total MAD / range, then time order
+```
+
+Keys 3-6 act only on exact ties of key 2. Also reported, not ordered:
+adverse-move count, maximum B->C retracement / height, and B and C
+extremeness (direction-oriented position in the scan Total range; 1 means
+B at the scan's opposite extreme and C at the scan's leg-direction
+extreme). A weighted or percentile score is a future order version and must
+be justified with labelled examples.
+
+Presentation (non-semantic):
+
+```text
+Top N          first N inspection positions overlaid on the bounded viewport
+               (default 5, maximum = number of rank colours); outside-viewport
+               areas are skipped
+selected area  yellow band and dashed B on every panel, pink C on Total,
+               labelled with its rank
+other ranks    rank colour: dashed B labelled "#k", solid C labelled "#k C"
+               on Total, band at 12% opacity
+colours        only from SHOCK_CHART_COLORS; the legend reads the same mapping
+```
+
+Not part of Shock-Start (do not reintroduce silently): LM retracement
+confirmation, context bars, terminal_offline, Top-N height/sharpness union,
+price-filter eligibility, Bollinger/CWT/EMD/EVT/ML detectors.
+
+AI review rules:
+
+```text
+- Never make price, trade counts, or chart bars a detection input.
+- Never change the one-second clock, the Total master, or gap semantics.
+- Never convert exact Fraction/Decimal ordering values to float for sorting.
+- Treat any change to scales, radii, horizon, acceleration ratio, merge
+  width, evidence offsets, or the order keys as SEMANTIC with a version bump.
+- Performance work must reproduce identical hypotheses on the same input.
+```
+
 ### Shock-Start review chart publication
 
 Shock-Start detection always uses verified one-second Total L2. The chart is
