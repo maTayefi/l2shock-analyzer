@@ -530,9 +530,6 @@ class RemoteConfig(StrictConfigModel):
         return bool(self.hf_repo_id and self.hf_token.get_secret_value().strip())
 
 
-
-
-
 class AnalysisConfig(StrictConfigModel):
     supported_bases: list[str] = Field(default_factory=lambda: ["BTC", "ETH"])
     base_sampling_interval_ms: int = 1000

@@ -374,8 +374,6 @@ def build_settings_tab() -> None:
                 .disable()
             )
 
-        
-
     with ui.dialog() as preset_delete_dialog:
         with ui.card().classes("w-[34rem] max-w-full"):
             ui.label("Confirm preset deletion").classes(
@@ -429,8 +427,6 @@ def build_settings_tab() -> None:
                     "Execute confirmed action",
                     icon="warning",
                 ).props("color=negative")
-
-    
 
     def _selected_managed_preset() -> ManagedPreset | None:
         selected_hash = str(preset_select.value or "").strip()
@@ -1242,10 +1238,6 @@ def build_settings_tab() -> None:
             filename=_diagnostics_export_filename(report),
             media_type="application/json",
         )
-
-    
-
-    
 
     add_preset_button.on_click(_add_preset)
     save_edited_preset_button.on_click(_save_edited_preset)

@@ -66,9 +66,12 @@ def _strip(option, *, lines: bool, bands: bool):
 
 def test_all_visible_returns_the_same_object() -> None:
     option = _options()
-    assert with_shock_annotation_visibility(
-        option, show_lines_and_labels=True, show_b_bands=True
-    ) is option
+    assert (
+        with_shock_annotation_visibility(
+            option, show_lines_and_labels=True, show_b_bands=True
+        )
+        is option
+    )
 
 
 def test_hiding_lines_removes_lines_and_labels_only() -> None:
@@ -109,7 +112,9 @@ def test_hiding_both_keeps_every_data_series_and_axis() -> None:
     assert _strip(hidden, lines=True, bands=True) == _strip(
         option, lines=True, bands=True
     )
-    assert [s["data"] for s in hidden["series"]] == [s["data"] for s in option["series"]]
+    assert [s["data"] for s in hidden["series"]] == [
+        s["data"] for s in option["series"]
+    ]
 
 
 def test_non_dict_option_is_rejected() -> None:
@@ -123,8 +128,14 @@ def test_tab_wires_switches_without_rerun() -> None:
     source = (ROOT / "l2shock/ui/tab_shock_review.py").read_text(encoding="utf-8")
 
     assert source.count("with_shock_annotation_visibility(") == 2
-    assert "annotation_lines_switch.on_value_change(_apply_annotation_visibility)" in source
-    assert "annotation_bands_switch.on_value_change(_apply_annotation_visibility)" in source
+    assert (
+        "annotation_lines_switch.on_value_change(_apply_annotation_visibility)"
+        in source
+    )
+    assert (
+        "annotation_bands_switch.on_value_change(_apply_annotation_visibility)"
+        in source
+    )
     assert "bounded_base_option = viewport.option" in source
 
     tree = ast.parse(source)

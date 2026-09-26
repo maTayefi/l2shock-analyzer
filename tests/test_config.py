@@ -366,6 +366,3 @@ def test_remote_hf_default_workflow_is_strict() -> None:
         match="default_workflow",
     ):
         Settings(**raw)
-
-
-

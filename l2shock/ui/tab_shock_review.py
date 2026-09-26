@@ -881,7 +881,6 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
         view_area_input.value = position
         await _show_bounded_view()
 
-
     def _annotation_visibility() -> tuple[bool, bool]:
         return (
             bool(annotation_lines_switch.value),
@@ -1205,8 +1204,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
 
         if snapshot.is_running:
             status.text = (
-                "The inspection order will apply when the running review "
-                "completes."
+                "The inspection order will apply when the running review " "completes."
             )
             return
 

@@ -212,9 +212,6 @@ class ShockInspectionModel:
         )
 
 
-
-
-
 __all__ = [
     "ShockInspectionError",
     "ShockInspectionModel",

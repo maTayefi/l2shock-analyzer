@@ -402,9 +402,7 @@ def _bc_path_metrics(
     denominator = math.lcm(*(value.denominator for value in values))
 
     return _bc_path_metrics_scaled(
-        tuple(
-            value.numerator * (denominator // value.denominator) for value in values
-        )
+        tuple(value.numerator * (denominator // value.denominator) for value in values)
     )
 
 

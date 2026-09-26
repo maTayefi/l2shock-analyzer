@@ -43,11 +43,35 @@ class _Item:
 
 
 # Higher tier, weak everywhere: must stay first under v2 and v3.
-_C = _Item(_Area(300), Fraction(1, 5), Fraction(1, 5), Fraction(1, 100), Fraction(1), 0, Fraction(0))
+_C = _Item(
+    _Area(300),
+    Fraction(1, 5),
+    Fraction(1, 5),
+    Fraction(1, 100),
+    Fraction(1),
+    0,
+    Fraction(0),
+)
 # Same lower tier: A is tallest but slow/dirty; B is slightly shorter but
 # sharp, clean, extreme, and Bid/Ask supported.
-_A = _Item(_Area(100), Fraction(1, 10), Fraction(9, 10), Fraction(1, 100), Fraction(1), 0, Fraction(1, 10))
-_B = _Item(_Area(200), Fraction(1, 10), Fraction(8, 10), Fraction(1), Fraction(0), 2, Fraction(1))
+_A = _Item(
+    _Area(100),
+    Fraction(1, 10),
+    Fraction(9, 10),
+    Fraction(1, 100),
+    Fraction(1),
+    0,
+    Fraction(1, 10),
+)
+_B = _Item(
+    _Area(200),
+    Fraction(1, 10),
+    Fraction(8, 10),
+    Fraction(1),
+    Fraction(0),
+    2,
+    Fraction(1),
+)
 
 
 def _positions(items) -> list[int]:
@@ -66,7 +90,9 @@ def test_v3_keeps_tier_first_and_rewards_confluence() -> None:
     ordered = _order_measured((_A, _B, _C), SHOCK_REVIEW_ORDER_VERSION_V3)
 
     assert _positions(ordered) == [300, 200, 100]
-    scores = {item.area.first_b_index: item.within_tier_percentile_score for item in ordered}
+    scores = {
+        item.area.first_b_index: item.within_tier_percentile_score for item in ordered
+    }
     assert scores[300] == Fraction(1)  # singleton tier
     assert scores[200] == Fraction(4, 5)
     assert scores[100] == Fraction(1, 5)
@@ -86,7 +112,9 @@ def _fake_review() -> ShockReview:
         candidate_scan=SimpleNamespace(scan_id="s" * 64),
     )
     ordered = _order_measured((_A, _B, _C), SHOCK_REVIEW_ORDER_VERSION)
-    return ShockReview(evidence_result=result, ordered_areas=ordered, review_id="legacy")
+    return ShockReview(
+        evidence_result=result, ordered_areas=ordered, review_id="legacy"
+    )
 
 
 def _legacy_v2_review_id(result) -> str:

@@ -66,7 +66,9 @@ def test_local_input_converts_tehran_to_utc() -> None:
 
 def test_local_input_errors_are_value_errors() -> None:
     with pytest.raises(AnalysisInputError):
-        parse_local_analysis_datetime("", "", timezone_name="Asia/Tehran", field_name="Start")
+        parse_local_analysis_datetime(
+            "", "", timezone_name="Asia/Tehran", field_name="Start"
+        )
 
     assert issubclass(AnalysisInputError, ValueError)
 
@@ -81,6 +83,9 @@ def test_preset_option_label() -> None:
     )
     assert option.label == "BTC | depth 0..0.01 | v1 | aaaaaaaaaaaa"
 
+
 def test_navigation_window_validation_and_reexport() -> None:
     with pytest.raises(ChartNavigationError):
-        ChartNavigationWindow(start_index=5, end_index=20, candidate_start_index=2, candidate_end_index=15)
+        ChartNavigationWindow(
+            start_index=5, end_index=20, candidate_start_index=2, candidate_end_index=15
+        )

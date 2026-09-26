@@ -2,8 +2,9 @@
 
 Local historical order-book research application for reconstructing
 CryptoHFTData L2 feeds, deriving compact liquidity observations, detecting
-multi-scale Liquidity Movements, and displaying synchronized Binance perpetual
-price and liquidity charts.
+retrospectively locating Shock-Start B areas in verified one-second Total L2,
+and displaying bounded Bid / Ask / Total / Delta viewports with optional
+Binance perpetual price context.
 
 ## Project identity
 
@@ -3219,70 +3220,6 @@ Only the current target trade source is changed to `processed`. Adjacent source
 archives used for routing retain their existing operational state.
 
 
-### Price-filter semantics
-
-The scan range and price filter are separate concepts.
-
-The scan range defines the requested time window.
-
-A price bar is price-filter eligible when its true OHLC interval intersects the
-active price bounds:
-
-```text
-bar.high >= min_price
-and
-bar.low <= max_price
-```
-
-Close-only eligibility is prohibited.
-
-An eligible candle remains visible, but its display-only OHLC may be clipped to
-the selected price bounds. Raw Binance OHLC must remain unchanged for
-provenance, export, diagnostics, and any calculation requiring real values.
-
-A candle whose complete OHLC range lies outside the active bounds is excluded
-from the filtered analysis core.
-
-The user price filter never removes order-book levels and never changes the
-depth-band liquidity calculation.
-
-### Segmented filtered timeline
-
-Excluded price periods are explicit time discontinuities.
-
-Retained bars must not be concatenated around an excluded interval. Timeframe
-aggregation and LM detection must not bridge:
-
-- excluded price-filter runs;
-- invalid L2 runs;
-- invalid price runs;
-- non-contiguous timestamp gaps.
-
-Charts must mark skipped periods with a visible discontinuity indicator and
-report the skipped elapsed duration.
-
-### Price-filter context
-
-A configurable number of valid observations immediately before and after a
-price-filter-eligible segment may be retained as detection context.
-
-Default:
-
-```text
-context bars before = 3
-context bars after  = 3
-```
-
-Context may extend the edge of one eligible segment. It must never merge two
-eligible segments separated by excluded or invalid observations.
-
-Where useful, an LM result may record both:
-
-```text
-full_start / full_end
-in_range_start / in_range_end
-```
-
 ### Data-quality states
 
 Derived observations use:
@@ -3321,333 +3258,6 @@ A persistent red warning region is required when:
 real Binance traded price is invalid or unavailable for more than
 3 consecutive minutes.
 ```
-
-### Liquidity Movement definition
-
-UI term:
-
-```text
-Liquidity Movement (LM)
-```
-
-An LM is a directional movement in one liquidity metric from a starting pivot
-to a terminal extremum.
-
-It becomes confirmed when a subsequent opposite movement retraces at least the
-configured fraction of the current movement height.
-
-Default confirmation retracement:
-
-```text
-20%
-```
-
-The LM endpoint is the extremum bar, not the later confirmation bar.
-
-Because analysis is post-scan, an unresolved right-edge extremum may be retained
-with:
-
-```text
-terminal_offline = true
-```
-
-It must remain visibly identified as an offline terminal endpoint.
-
-
-### Segment-scoped LM candidate detection
-
-Liquidity Movement detection operates independently inside every verified
-analysis segment.
-
-The detector may use the segment's explicitly owned context bars to determine a
-movement's full extent, but a retained candidate must overlap the segment's
-core eligible range.
-
-A candidate must never cross:
-
-```text
-price-filter discontinuity
-invalid price
-invalid L2
-missing price or L2 coverage
-non-contiguous timestamp boundary
-unavailable selected metric
-```
-
-For an upward movement, the current endpoint is the highest observed metric
-value after its starting pivot. For a downward movement, the current endpoint
-is the lowest observed metric value after its starting pivot.
-
-An opposite movement confirms the current candidate when:
-
-```text
-opposite_retracement / current_absolute_height
->=
-confirmation_retracement_fraction
-```
-
-The default confirmation fraction is:
-
-```text
-0.20
-```
-
-The candidate endpoint remains the extremum bar. The later bar satisfying the
-confirmation threshold is recorded separately as the confirmation bar.
-
-Equal extremum values use the earliest extremum bar. This deterministic rule
-prevents repeated equal values from shifting a candidate endpoint forward
-without changing its mathematical height.
-
-An unresolved movement reaching the right edge of its owned analysis segment
-may be retained with:
-
-```text
-terminal_offline = true
-```
-
-An unresolved movement interrupted by invalid or unavailable metric data is not
-reclassified as an offline terminal candidate.
-
-Each candidate records:
-
-```text
-metric
-timeframe
-direction
-segment identity
-full start and end
-in-range start and end
-confirmation bar, when present
-absolute height
-relative height
-inclusive bar count
-sharpness
-adverse-move count
-adverse-move total and maximum
-adverse-move fractions
-degraded-bar count
-offline-terminal state
-```
-
-Candidate detection does not calculate population percentiles, modified
-Z-scores, Top-N selection, final priority ordering, or visualization alpha.
-Those belong to the later ranking batch.
-
-
-### Fundamental LM measurements
-
-For one candidate:
-
-```text
-absolute_height = abs(end_value - start_value)
-
-relative_height =
-    absolute_height / (scan_max - scan_min)
-
-bars =
-    end_bar - start_bar + 1
-
-sharpness =
-    relative_height / sqrt(bars)
-```
-
-Internally use the term `height`. Do not interpret “longness” as duration.
-
-### Ranking populations
-
-Every ranking population is isolated by:
-
-```text
-liquidity metric
-x analytical timeframe
-x direction
-```
-
-For example, Ask/1s/Up candidates do not compete with Bid/1s/Up,
-Ask/chart-timeframe/Up, or Ask/1s/Down candidates.
-
-### Primary LM evidence
-
-Primary ranking evidence is:
-
-1. relative-height percentile;
-2. relative-height positive-tail modified-Z;
-3. sharpness percentile;
-4. sharpness positive-tail modified-Z.
-
-Percentiles use midpoint tie ownership. For a non-singleton population:
-
-```text
-percentile =
-    (
-        number of population values below the candidate
-        +
-        (number equal to the candidate - 1) / 2
-    )
-    /
-    (population size - 1)
-```
-
-A singleton population receives percentile `1`.
-
-Positive-tail modified-Z evidence is:
-
-```text
-median = population median
-
-MAD =
-    median(abs(value - median))
-
-modified_z =
-    0.6744897501960817
-    * (value - median)
-    / MAD
-
-positive_tail_modified_z =
-    max(0, modified_z)
-
-normalized_positive_tail_modified_z =
-    positive_tail_modified_z
-    /
-    (1 + positive_tail_modified_z)
-```
-
-If `MAD = 0`, values at or below the median receive zero positive-tail
-evidence. A value above the median receives normalized positive-tail evidence
-`1`. Its raw modified-Z diagnostic remains zero because no finite modified-Z
-exists in that case.
-
-Height and sharpness statistical evidence are each:
-
-```text
-evidence =
-    (
-        percentile
-        +
-        normalized_positive_tail_modified_z
-    )
-    / 2
-```
-
-The primary candidate pool is the union of:
-
-```text
-Top N by height evidence
-Top N by sharpness evidence
-```
-
-Exactly Top N candidates are selected from each ordering before union.
-Statistical ties use deterministic candidate identity ordering rather than
-expanding the requested Top-N count.
-
-This recall guard prevents a very large sufficiently sharp movement or a very
-sharp sufficiently large movement from being lost merely because one combined
-score ranked it lower.
-
-### Secondary LM evidence
-
-Secondary ordering evidence is:
-
-1. equal-weight LM boundary extremeness;
-2. retracement magnitude quality;
-3. retracement count quality.
-
-LM boundary extremeness gives the starting pivot and terminal extremum
-identical importance. It is the arithmetic mean of directional start
-extremeness and directional end extremeness.
-
-LM boundary extremeness uses the complete scan-level range of the selected
-metric and timeframe.
-
-For an upward LM:
-
-start_extremeness =
-    (scan_max - start_value) / (scan_max - scan_min)
-
-end_extremeness =
-    (end_value - scan_min) / (scan_max - scan_min)
-
-For a downward LM:
-
-start_extremeness =
-    (start_value - scan_min) / (scan_max - scan_min)
-
-end_extremeness =
-    (scan_max - end_value) / (scan_max - scan_min)
-
-For both directions:
-
-boundary_extremeness =
-    (start_extremeness + end_extremeness) / 2
-
-Start and end therefore receive exactly equal importance. The existing
-extremeness priority is allocated to this equal-weight mean; it is not applied
-in full twice.
-
-Adverse movement between the candidate start and extremum represents internal
-retracement/noise.
-
-Retracement magnitude quality is:
-
-```text
-1
-/
-(1 + adverse_move_total_fraction)
-```
-
-Retracement count quality is:
-
-```text
-1
--
-(
-    adverse_move_count
-    /
-    (candidate_bars - 1)
-)
-```
-
-Both quality values lie inside `[0, 1]`, where a larger value means a cleaner
-directional movement.
-
-The approved default priority values are:
-
-```text
-height priority                 = 0.35
-sharpness priority              = 0.30
-boundary extremeness priority   = 0.20
-retracement magnitude priority  = 0.10
-retracement count priority      = 0.05
-```
-Within the boundary-extremeness allocation:
-
-start boundary share = 0.10
-end boundary share   = 0.10
-
-```text
-The configuration key remains `priority_endpoint_extremeness` for the current
-configuration schema. In ranking algorithm V2 it controls the combined
-equal-weight boundary-extremeness factor. It no longer scores only the terminal
-endpoint.
-```
-
-Primary evidence is normalized using only the height and sharpness priorities.
-Secondary evidence is normalized using only the three secondary priorities.
-
-Final ranking is priority-aware and lexicographic:
-
-```text
-primary evidence
-then secondary evidence
-then component evidence
-then deterministic candidate identity
-```
-
-A flat weighted evidence value may be retained as a diagnostic, but it does not
-own final ranking. Secondary evidence therefore cannot bury a candidate with
-stronger primary evidence.
-
 
 ### LM analysis execution and deterministic result identity
 
@@ -3728,7 +3338,7 @@ does not alter detection or ranking truth.
 ### Application-owned analysis runtime
 
 Verified dataset loading, compact-channel decoding, timeframe aggregation,
-Liquidity Movement detection, and population ranking are synchronous analytical
+Shock-Start detection, channel evidence, and B-area review are synchronous analytical
 operations.
 
 The application executes them in a worker thread so the NiceGUI event loop
@@ -3766,13 +3376,16 @@ Native cancellation of the owning asyncio task also sets the cooperative event
 and waits for the worker boundary. Cancelling an asyncio wrapper is never
 treated as if it forcibly terminated the Python worker thread.
 
-Application shutdown follows:
+Application shutdown starts from the global header Shutdown button (top right,
+outside the tabs, visible on every tab) after confirmation. The full sequence,
+which also stops automatic fetch and remote import, is authoritative in
+`l2shock/ui/shutdown.py`. In outline:
 
 ```text
 raise admission barrier
 -> stop Manual Fetch
 -> stop Manual Processing
--> stop Manual Analysis
+-> stop Shock-Start review (cooperative, bounded wait; no forced step)
 -> cancel unrelated tracked tasks
 -> dispose SQLAlchemy engine
 -> stop NiceGUI
@@ -4670,8 +4283,18 @@ Delta          derived from Bid and Ask; reported, never an independent vote
 master clock   Total; B is never moved to the earliest confirming channel
 ```
 
-Inspection order (`SHOCK_REVIEW_ORDER_VERSION = total_structure_first_v2`),
-lexicographic, every area survives:
+Inspection order. Two versions exist. Both keep every area, both are exact
+(no float sorting), and `review_id` includes the order version.
+
+```text
+UI default        within_tier_percentile_mean_v3   (SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION)
+backend default   total_structure_first_v2         (review_shock_areas, diagnostic CLI)
+re-ordering       reorder_shock_review and the UI "Inspection order" selector
+                  reuse every stored measurement; they never reload L2 and
+                  never rerun detection or evidence
+```
+
+`total_structure_first_v2` (`SHOCK_REVIEW_ORDER_VERSION`), lexicographic:
 
 ```text
 1. highest structural tier in the area
@@ -4687,8 +4310,22 @@ Keys 3-6 act only on exact ties of key 2. Also reported, not ordered:
 adverse-move count, maximum B->C retracement / height, and B and C
 extremeness (direction-oriented position in the scan Total range; 1 means
 B at the scan's opposite extreme and C at the scan's leg-direction
-extreme). A weighted or percentile score is a future order version and must
-be justified with labelled examples.
+extreme).
+
+`within_tier_percentile_mean_v3` (`SHOCK_REVIEW_ORDER_VERSION_V3`):
+
+```text
+1. highest structural tier in the area
+2. exact mean of five midpoint percentiles computed inside that tier
+   (higher first): B->C height fraction, B->C sharpness, cleanliness
+   (negated adverse-move total / height), C extremeness, Bid/Ask support
+3. the complete v2 key (keys 2-6, then time order) as tie-break
+```
+
+The v3 score orders areas for display. It is not a probability or a
+confidence. v3 excludes A->B sharpness, price, and Delta as an independent
+vote. Any other weighted score must be a new order version and must be
+justified with labelled examples.
 
 Presentation (non-semantic):
 
@@ -4701,6 +4338,12 @@ selected area  yellow band and dashed B on every panel, pink C on Total,
 other ranks    rank colour: dashed B labelled "#k", solid C labelled "#k C"
                on Total, band at 12% opacity
 colours        only from SHOCK_CHART_COLORS; the legend reads the same mapping
+annotations    "Show B/C lines and rank labels" and "Show B-area bands" (both
+               on by default) remove markLine / markArea data from the shown
+               viewport only; it is re-published with the current zoom, with
+               no reload and no review rerun; the next viewport follows them
+order control  the UI "Inspection order" selector opens on v3 and re-sorts
+               the completed review in place
 ```
 
 Not part of Shock-Start (do not reintroduce silently): LM retracement

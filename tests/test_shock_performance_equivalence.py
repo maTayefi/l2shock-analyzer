@@ -71,7 +71,9 @@ def _reference_run_hypotheses(values, *, offset, times, scan_range, config):
                 continue
             future = values[b + 1 : c_limit]
             for direction in ShockStartDirection:
-                c_value = max(future) if direction is ShockStartDirection.UP else min(future)
+                c_value = (
+                    max(future) if direction is ShockStartDirection.UP else min(future)
+                )
                 c = b + 1 + future.index(c_value)
                 if direction is ShockStartDirection.UP:
                     height = c_value - values[b]
@@ -85,7 +87,9 @@ def _reference_run_hypotheses(values, *, offset, times, scan_range, config):
                     continue
                 turning = _is_turn(values, index=b, radius=radius, direction=direction)
                 accelerating = (
-                    before >= 0 and after > 0 and after >= config.acceleration_ratio * before
+                    before >= 0
+                    and after > 0
+                    and after >= config.acceleration_ratio * before
                 )
                 if turning:
                     kind = ShockStartKind.TURNING
@@ -145,7 +149,9 @@ def _reference_channel_evidence(values, candidate, config, channel):
                 ChannelEvidence(
                     channel=channel,
                     derived_from_bid_ask=channel is EvidenceChannel.DELTA,
-                    orientation=EvidenceOrientation.UP if bc > 0 else EvidenceOrientation.DOWN,
+                    orientation=(
+                        EvidenceOrientation.UP if bc > 0 else EvidenceOrientation.DOWN
+                    ),
                     a_index=a,
                     b_index=b,
                     c_index=c,
@@ -184,7 +190,9 @@ def _hypotheses(seed: int, offset: int = 0):
     times = tuple(_T0 + timedelta(seconds=i) for i in range(len(values) + offset))
     scan_range = max(values) - min(values)
     kwargs = dict(offset=offset, times=times, scan_range=scan_range, config=_CONFIG)
-    return _reference_run_hypotheses(values, **kwargs), _run_hypotheses(values, **kwargs)
+    return _reference_run_hypotheses(values, **kwargs), _run_hypotheses(
+        values, **kwargs
+    )
 
 
 def test_integer_detector_matches_fraction_reference_exactly() -> None:
@@ -221,7 +229,9 @@ def test_series_evidence_matches_reference_exactly() -> None:
             step = max(1, len(hypotheses) // 60)
 
             for candidate in hypotheses[::step]:
-                expected = _reference_channel_evidence(values, candidate, config, channel)
+                expected = _reference_channel_evidence(
+                    values, candidate, config, channel
+                )
                 assert _series_evidence(series, candidate, config, channel) == expected
                 compared += 1
                 matched += expected is not None
@@ -245,9 +255,12 @@ def test_flat_or_sparse_channel_has_no_evidence() -> None:
         tuple(Fraction(5) for _ in range(length)),
         tuple(None for _ in range(length)),
     ):
-        assert _series_evidence(
-            _channel_series(values), candidate, config, EvidenceChannel.BID
-        ) is None
+        assert (
+            _series_evidence(
+                _channel_series(values), candidate, config, EvidenceChannel.BID
+            )
+            is None
+        )
 
 
 # ---- Batch 37: integer evidence/review paths ---------------------------------
@@ -324,7 +337,11 @@ def test_integer_median_and_mad_match_statistics_reference() -> None:
 
 def test_scaled_totals_match_exact_bid_plus_ask() -> None:
     from l2shock.analysis.aggregation import L2Second
-    from l2shock.analysis.shock_review import _scaled_totals, _valid_total_bounds, _scaled_total_bounds
+    from l2shock.analysis.shock_review import (
+        _scaled_totals,
+        _valid_total_bounds,
+        _scaled_total_bounds,
+    )
     from l2shock.ingest.sampling import BookSampleInvalidReason, BookSampleQuality
 
     rng = random.Random(99)
@@ -349,8 +366,10 @@ def test_scaled_totals_match_exact_bid_plus_ask() -> None:
                 timestamp_utc=timestamp,
                 quality=BookSampleQuality.VALID,
                 invalid_reason=None,
-                bid_liquidity=Decimal(rng.randint(0, 10**9)) / Decimal(10 ** rng.randint(0, 6)),
-                ask_liquidity=Decimal(rng.randint(0, 10**9)) / Decimal(10 ** rng.randint(0, 6)),
+                bid_liquidity=Decimal(rng.randint(0, 10**9))
+                / Decimal(10 ** rng.randint(0, 6)),
+                ask_liquidity=Decimal(rng.randint(0, 10**9))
+                / Decimal(10 ** rng.randint(0, 6)),
                 source_count=1,
             )
         )
@@ -390,8 +409,14 @@ def test_channel_series_scaling_is_exact_and_cache_is_neutral() -> None:
         else:
             assert Fraction(series.scaled[index], series.denominator) == value
 
-    first = [_series_evidence(series, h, config, EvidenceChannel.ASK) for h in hypotheses[:80]]
-    second = [_series_evidence(series, h, config, EvidenceChannel.ASK) for h in hypotheses[:80]]
+    first = [
+        _series_evidence(series, h, config, EvidenceChannel.ASK)
+        for h in hypotheses[:80]
+    ]
+    second = [
+        _series_evidence(series, h, config, EvidenceChannel.ASK)
+        for h in hypotheses[:80]
+    ]
     fresh = [
         _series_evidence(_channel_series(values), h, config, EvidenceChannel.ASK)
         for h in hypotheses[:80]

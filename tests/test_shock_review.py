@@ -503,4 +503,6 @@ def test_ui_default_order_is_v3_while_backend_default_stays_v2():
     source = Path(tab_module.__file__).read_text(encoding="utf-8")
     assert "value=SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION" in source
     assert "SHOCK_REVIEW_ORDER_VERSION)" not in source
-    assert source.count("order_select.value or SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION") == 2
+    assert (
+        source.count("order_select.value or SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION") == 2
+    )

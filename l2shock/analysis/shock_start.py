@@ -230,9 +230,7 @@ def _run_hypotheses(
         return results
 
     common = math.lcm(*{value.denominator for value in values})
-    scaled = tuple(
-        value.numerator * (common // value.denominator) for value in values
-    )
+    scaled = tuple(value.numerator * (common // value.denominator) for value in values)
 
     for scale in config.scales:
         radius = scale.pivot_radius_seconds
