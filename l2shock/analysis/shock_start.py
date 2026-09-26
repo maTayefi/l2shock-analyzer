@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
+import math
 from fractions import Fraction
 from typing import Final
 from collections.abc import Iterable
@@ -213,47 +214,71 @@ def _run_hypotheses(
     scan_range: Fraction,
     config: ShockStartConfig,
 ) -> list[ShockStartHypothesis]:
+    """Propose hypotheses inside one uninterrupted VALID run.
+
+    Every comparison runs on an exact integer image of the run:
+    ``scaled[i] == values[i] * common``, where ``common`` is the LCM of all
+    denominators. Multiplying by a positive constant is strictly
+    order-preserving and injective, so min/max, equality, first-index
+    plateau ownership, and every threshold test answer exactly as Fraction
+    comparisons would. Emitted fields remain the original exact Fractions.
+    """
     results: list[ShockStartHypothesis] = []
+    count = len(values)
+
+    if count == 0:
+        return results
+
+    common = math.lcm(*{value.denominator for value in values})
+    scaled = tuple(
+        value.numerator * (common // value.denominator) for value in values
+    )
 
     for scale in config.scales:
         radius = scale.pivot_radius_seconds
         horizon = radius * scale.forward_radius_multiplier
         threshold = Fraction(scale.minimum_leg_fraction) * scan_range
 
-        if len(values) < 2 * radius + 2:
+        # For an integer h:  h < T  <=>  h < ceil(T).  Exact and integer-only.
+        scaled_threshold = threshold * common
+        minimum_height = -(
+            (-scaled_threshold.numerator) // scaled_threshold.denominator
+        )
+
+        if count < 2 * radius + 2:
             continue
 
-        for b in range(radius, len(values) - 1):
+        for b in range(radius, count - 1):
             a = b - radius
-            c_limit = min(len(values), b + horizon + 1)
+            c_limit = min(count, b + horizon + 1)
 
             if c_limit <= b + 1:
                 continue
 
-            future = values[b + 1 : c_limit]
+            future = scaled[b + 1 : c_limit]
+            a_scaled = scaled[a]
+            b_scaled = scaled[b]
+            after_scaled = scaled[min(b + radius, count - 1)]
 
             for direction in ShockStartDirection:
                 if direction is ShockStartDirection.UP:
-                    c_value = max(future)
+                    c_scaled = max(future)
+                    height_scaled = c_scaled - b_scaled
+                    before = b_scaled - a_scaled
+                    after = after_scaled - b_scaled
                 else:
-                    c_value = min(future)
+                    c_scaled = min(future)
+                    height_scaled = b_scaled - c_scaled
+                    before = a_scaled - b_scaled
+                    after = b_scaled - after_scaled
 
-                c = b + 1 + future.index(c_value)
-
-                if direction is ShockStartDirection.UP:
-                    height = c_value - values[b]
-                    before = values[b] - values[a]
-                    after = values[min(b + radius, len(values) - 1)] - values[b]
-                else:
-                    height = values[b] - c_value
-                    before = values[a] - values[b]
-                    after = values[b] - values[min(b + radius, len(values) - 1)]
-
-                if height < threshold:
+                if height_scaled < minimum_height:
                     continue
 
+                # _is_turn is type-generic: integers order exactly like
+                # the Fractions they scale.
                 turning = _is_turn(
-                    values,
+                    scaled,
                     index=b,
                     radius=radius,
                     direction=direction,
@@ -274,6 +299,10 @@ def _run_hypotheses(
                 else:
                     continue
 
+                # First occurrence of the extreme, as before.
+                c = b + 1 + future.index(c_scaled)
+                height = Fraction(height_scaled, common)
+
                 absolute_a = offset + a
                 absolute_b = offset + b
                 absolute_c = offset + c
@@ -291,7 +320,7 @@ def _run_hypotheses(
                         c_utc=times[absolute_c],
                         a_total=values[a],
                         b_total=values[b],
-                        c_total=c_value,
+                        c_total=values[c],
                         scan_range=scan_range,
                         bc_height=height,
                         bc_fraction_of_scan_range=height / scan_range,

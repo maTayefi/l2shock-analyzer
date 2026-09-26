@@ -111,35 +111,22 @@ def test_integer_configuration_strings_remain_supported() -> None:
     assert settings.analysis.price_context_bars_after == 3
 
 
-def test_default_locked_lm_priorities_sum_to_one() -> None:
+def test_lm_configuration_section_is_retired() -> None:
     settings = Settings(**_minimal_config())
-    lm = settings.analysis.lm
 
-    total = (
-        lm.priority_height
-        + lm.priority_sharpness
-        + lm.priority_endpoint_extremeness
-        + lm.priority_retracement_magnitude
-        + lm.priority_retracement_count
-    )
-
-    assert total == pytest.approx(1.0)
-    assert lm.priority_retracement_count == pytest.approx(0.05)
+    assert not hasattr(settings.analysis, "lm")
+    assert "lm" not in type(settings.analysis).model_fields
 
 
-def test_invalid_lm_priority_total_is_rejected() -> None:
+def test_leftover_lm_block_has_actionable_error() -> None:
     raw = _minimal_config()
     raw["analysis"] = {
         "lm": {
-            "priority_height": 0.35,
-            "priority_sharpness": 0.30,
-            "priority_endpoint_extremeness": 0.20,
-            "priority_retracement_magnitude": 0.10,
-            "priority_retracement_count": 0.50,
+            "top_n_height": 10,
         }
     }
 
-    with pytest.raises(ValidationError, match=r"must sum exactly to 1\.0"):
+    with pytest.raises(ValidationError, match="analysis.lm was removed"):
         Settings(**raw)
 
 
@@ -232,25 +219,6 @@ def test_positive_integer_configuration_rejects_precoercion_values(
     raw[section][field] = value
 
     with pytest.raises(ValidationError, match=field):
-        Settings(**raw)
-
-
-def test_lm_priority_tolerance_cannot_cross_exact_decimal_boundary() -> None:
-    raw = _minimal_config()
-    raw["analysis"] = {
-        "lm": {
-            "priority_height": 0.35,
-            "priority_sharpness": 0.30,
-            "priority_endpoint_extremeness": 0.20,
-            "priority_retracement_magnitude": 0.10,
-            "priority_retracement_count": 0.0500000005,
-        }
-    }
-
-    with pytest.raises(
-        ValidationError,
-        match="sum exactly to 1.0",
-    ):
         Settings(**raw)
 
 
@@ -400,43 +368,4 @@ def test_remote_hf_default_workflow_is_strict() -> None:
         Settings(**raw)
 
 
-@pytest.mark.parametrize(
-    "value",
-    (
-        True,
-        False,
-        0,
-        15,
-        1001,
-        16.5,
-        "16.5",
-    ),
-)
-def test_lm_decimal_precision_is_strictly_bounded(
-    value: object,
-) -> None:
-    raw = _minimal_config()
-    raw["analysis"] = {
-        "lm": {
-            "decimal_precision": value,
-        }
-    }
 
-    with pytest.raises(
-        ValidationError,
-        match="decimal_precision",
-    ):
-        Settings(**raw)
-
-
-def test_lm_decimal_precision_accepts_integer_text() -> None:
-    raw = _minimal_config()
-    raw["analysis"] = {
-        "lm": {
-            "decimal_precision": "50",
-        }
-    }
-
-    settings = Settings(**raw)
-
-    assert settings.analysis.lm.decimal_precision == 50

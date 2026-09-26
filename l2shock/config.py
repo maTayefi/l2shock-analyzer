@@ -16,7 +16,6 @@ from __future__ import annotations
 import ipaddress
 import math
 import os
-from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -531,123 +530,7 @@ class RemoteConfig(StrictConfigModel):
         return bool(self.hf_repo_id and self.hf_token.get_secret_value().strip())
 
 
-class LMConfig(StrictConfigModel):
-    confirmation_retracement_fraction: float = 0.20
-    decimal_precision: int = 34
-    top_n_height: int = 10
-    top_n_sharpness: int = 10
 
-    priority_height: float = 0.35
-    priority_sharpness: float = 0.30
-    priority_endpoint_extremeness: float = 0.20
-    priority_retracement_magnitude: float = 0.10
-    priority_retracement_count: float = 0.05
-
-    highlight_min_alpha: float = 0.05
-    highlight_max_alpha: float = 0.18
-    highlight_accumulated_alpha_cap: float = 0.40
-
-    @field_validator(
-        "top_n_height",
-        "top_n_sharpness",
-        mode="before",
-    )
-    @classmethod
-    def _top_n(cls, value: Any, info) -> int:
-        result = _strict_positive_int(
-            value,
-            field_name=f"analysis.lm.{info.field_name}",
-        )
-        if result > 1000:
-            raise ValueError(f"analysis.lm.{info.field_name} must be <= 1000")
-        return result
-
-    @field_validator(
-        "decimal_precision",
-        mode="before",
-    )
-    @classmethod
-    def _decimal_precision(cls, value: Any) -> int:
-        result = _strict_positive_int(
-            value,
-            field_name="analysis.lm.decimal_precision",
-        )
-
-        if result < 16:
-            raise ValueError("analysis.lm.decimal_precision must be at least 16")
-
-        if result > 1000:
-            raise ValueError("analysis.lm.decimal_precision must be <= 1000")
-
-        return result
-
-    @model_validator(mode="after")
-    def _validate_lm_semantics(self) -> LMConfig:
-        fraction = _finite_float(
-            self.confirmation_retracement_fraction,
-            field_name="analysis.lm.confirmation_retracement_fraction",
-        )
-        if not 0.0 < fraction < 1.0:
-            raise ValueError(
-                "analysis.lm.confirmation_retracement_fraction " "must be inside (0, 1)"
-            )
-
-        priority_fields = (
-            "priority_height",
-            "priority_sharpness",
-            "priority_endpoint_extremeness",
-            "priority_retracement_magnitude",
-            "priority_retracement_count",
-        )
-        priorities: list[float] = []
-
-        for field_name in priority_fields:
-            value = _finite_float(
-                getattr(self, field_name),
-                field_name=f"analysis.lm.{field_name}",
-            )
-            if value < 0.0:
-                raise ValueError(f"analysis.lm.{field_name} must be >= 0")
-            setattr(self, field_name, value)
-            priorities.append(value)
-
-        exact_priority_total = sum(
-            (Decimal(str(value)) for value in priorities),
-            Decimal(0),
-        )
-
-        if exact_priority_total != Decimal(1):
-            raise ValueError(
-                "LM priority values must sum exactly to 1.0; "
-                f"observed {exact_priority_total}"
-            )
-
-        alpha_fields = (
-            "highlight_min_alpha",
-            "highlight_max_alpha",
-            "highlight_accumulated_alpha_cap",
-        )
-        for field_name in alpha_fields:
-            value = _finite_float(
-                getattr(self, field_name),
-                field_name=f"analysis.lm.{field_name}",
-            )
-            if not 0.0 <= value <= 1.0:
-                raise ValueError(f"analysis.lm.{field_name} must be in [0, 1]")
-            setattr(self, field_name, value)
-
-        if self.highlight_max_alpha < self.highlight_min_alpha:
-            raise ValueError(
-                "analysis.lm.highlight_max_alpha must be >= " "highlight_min_alpha"
-            )
-
-        if self.highlight_accumulated_alpha_cap < self.highlight_max_alpha:
-            raise ValueError(
-                "analysis.lm.highlight_accumulated_alpha_cap must be >= "
-                "highlight_max_alpha"
-            )
-
-        return self
 
 
 class AnalysisConfig(StrictConfigModel):
@@ -662,7 +545,19 @@ class AnalysisConfig(StrictConfigModel):
     price_context_bars_after: int = 3
     l2_long_invalid_warning_seconds: int = 60
     price_long_invalid_warning_minutes: int = 3
-    lm: LMConfig = Field(default_factory=LMConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_retired_lm_section(cls, data: Any) -> Any:
+        # The LM detector was deleted. A leftover analysis.lm block is not a
+        # typo, so give an actionable message instead of a generic
+        # "Extra inputs are not permitted".
+        if isinstance(data, dict) and "lm" in data:
+            raise ValueError(
+                "analysis.lm was removed together with the Liquidity Movement "
+                "detector; delete the analysis.lm block from config.yaml"
+            )
+        return data
 
     @field_validator("supported_bases")
     @classmethod
@@ -831,7 +726,6 @@ __all__ = [
     "DatabaseConfig",
     "DEFAULT_CONFIG_PATH",
     "DEFAULT_DOTENV_PATH",
-    "LMConfig",
     "PROJECT_ROOT",
     "ProcessingConfig",
     "RemoteConfig",

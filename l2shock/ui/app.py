@@ -21,7 +21,6 @@ from l2shock.config import get_settings
 from l2shock.db.engine import get_engine
 from l2shock.db.schema import expected_alembic_head, verify_schema
 from l2shock.timeutils import now_utc
-from l2shock.ui.analysis_runtime import peek_manual_analysis_runtime
 from l2shock.ui.fetch_runtime import peek_manual_fetch_runtime
 from l2shock.ui.automatic_fetch_runtime import (
     get_automatic_fetch_runtime,
@@ -29,9 +28,9 @@ from l2shock.ui.automatic_fetch_runtime import (
 )
 from l2shock.ui.processing_runtime import peek_manual_processing_runtime
 from l2shock.ui.remote_import_runtime import peek_remote_import_runtime
+from l2shock.ui.shock_runtime import peek_manual_shock_runtime
 from l2shock.ui.shutdown import shutdown_runtime
 from l2shock.ui.state import get_state
-from l2shock.ui.tab_analysis import build_analysis_tab
 from l2shock.ui.tab_shock_review import build_shock_review_section
 from l2shock.ui.tab_fetch import build_fetch_tab
 from l2shock.ui.tab_settings import build_settings_tab
@@ -145,7 +144,10 @@ def build_health_snapshot() -> dict[str, Any]:
         remote_import_runtime.snapshot() if remote_import_runtime is not None else None
     )
 
-    analysis_runtime = peek_manual_analysis_runtime()
+    # The Analysis tab is Shock-Start. Its snapshot exposes the same
+    # operation_id / is_running / stop_requested fields, so the published
+    # manual_analysis_* health keys keep their meaning for consumers.
+    analysis_runtime = peek_manual_shock_runtime()
     analysis_snapshot = (
         analysis_runtime.snapshot() if analysis_runtime is not None else None
     )
@@ -253,7 +255,6 @@ def build_health_snapshot() -> dict[str, Any]:
             "configuration": True,
             "timezone": True,
             "database_foundation": True,
-            "price_filter_policy": True,
             "downloader": True,
             "fetch_orchestration": True,
             "manual_fetch_ui": True,
@@ -286,11 +287,11 @@ def build_health_snapshot() -> dict[str, Any]:
             "remote_hf_artifact_importer": True,
             "remote_hf_range_import_runtime": True,
             "timeframe_aggregation": True,
-            "verified_analysis_loading": True,
-            "segmented_price_filtering": True,
-            "liquidity_movement_analysis": True,
-            "analysis_execution_orchestration": True,
-            "analysis_result_cache": True,
+            "verified_l2_only_loading": True,
+            "shock_start_detection": True,
+            "shock_channel_evidence": True,
+            "shock_b_area_review": True,
+            "shock_top_n_overlay": True,
             "analysis_runtime": True,
             "analysis_ui": True,
             "analysis_chart_workspace": True,
@@ -298,9 +299,6 @@ def build_health_snapshot() -> dict[str, Any]:
             "chart_viewport_preservation": True,
             "custom_gapped_crosshair": True,
             "table_to_chart_navigation": True,
-            "selected_lm_emphasis": True,
-            "chart_timeframe_switching": True,
-            "analysis_json_export": True,
             "chart_export": True,
             "production_diagnostics": True,
             "preset_crud_ui": True,
@@ -379,8 +377,8 @@ def index_page() -> None:
             # Fetch calendar is constructed. Visual tab order remains owned by
             # the ui.tabs declarations above.
             with ui.tab_panel(analysis_tab):
-                # Shock-Start is the sole Analysis workflow. The legacy LM tab
-                # is no longer built; its modules are deleted in the next batch.
+                # Shock-Start is the sole Analysis workflow. The legacy LM
+                # detector, ranking, runtime, chart, and tab were deleted.
                 analysis_handoff = build_shock_review_section()
 
             async def _apply_availability_handoff(

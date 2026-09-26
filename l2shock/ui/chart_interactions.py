@@ -25,7 +25,7 @@ from typing import Any, Final
 
 from nicegui import ui
 
-from l2shock.ui.analysis_chart import (
+from l2shock.ui.chart_navigation import (
     ANALYSIS_SELECTED_FOCUS_SERIES_PREFIX,
     ChartNavigationWindow,
 )

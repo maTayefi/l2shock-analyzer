@@ -14,6 +14,11 @@ retired LM detector:
 
 These are diagnostics. Only sharpness and adverse-total fraction join the
 lexicographic order, after structural tier and B->C height fraction.
+
+Performance (Batch 37, behaviour-neutral): the Total series is scaled ONCE
+per review to exact integers over one common denominator. Path metrics,
+pre-B median/MAD, and ownership checks run on integers; exact Fractions
+are rebuilt only for stored measurements.
 """
 
 from __future__ import annotations
@@ -25,7 +30,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from statistics import median
+from types import MappingProxyType
 
+from l2shock.analysis.robust_stats import midpoint_percentile_ranks
 from l2shock.analysis.shock_evidence import (
     EvidenceChannel,
     ShockBArea,
@@ -35,7 +42,29 @@ from l2shock.ingest.sampling import BookSampleQuality
 
 SHOCK_REVIEW_SCHEMA = "l2shock.shock_b_area_review"
 SHOCK_REVIEW_SCHEMA_VERSION = 2
+
+# Backend default of review_shock_areas(). It stays v2 so existing review
+# identities, the diagnostic CLI, and recorded baselines remain stable.
 SHOCK_REVIEW_ORDER_VERSION = "total_structure_first_v2"
+
+SHOCK_REVIEW_ORDER_VERSION_V3 = "within_tier_percentile_mean_v3"
+
+SHOCK_REVIEW_ORDER_VERSIONS = (
+    SHOCK_REVIEW_ORDER_VERSION,
+    SHOCK_REVIEW_ORDER_VERSION_V3,
+)
+
+# Default selection of the Shock-Start UI "Inspection order" control. The
+# runtime computes v2 and the UI re-sorts the completed review; re-sorting
+# reuses every measurement and never reruns loading or detection.
+SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION = SHOCK_REVIEW_ORDER_VERSION_V3
+
+SHOCK_REVIEW_ORDER_LABELS = MappingProxyType(
+    {
+        SHOCK_REVIEW_ORDER_VERSION: "Structure first (v2)",
+        SHOCK_REVIEW_ORDER_VERSION_V3: ("Within-tier percentile mean (v3, default)"),
+    }
+)
 
 
 class ShockReviewError(ValueError):
@@ -68,6 +97,10 @@ class ReviewedShockArea:
     total_b_extremeness: Fraction = Fraction(0)
     total_c_extremeness: Fraction = Fraction(0)
 
+    # v3 only: exact mean of five within-tier midpoint percentiles. None
+    # under v2. A presentation of the ordering, never a probability.
+    within_tier_percentile_score: Fraction | None = None
+
     @property
     def total_bc_sharpness(self) -> float:
         """Display value of (B->C height / scan range) / sqrt(seconds)."""
@@ -79,6 +112,7 @@ class ShockReview:
     evidence_result: ShockEvidenceResult
     ordered_areas: tuple[ReviewedShockArea, ...]
     review_id: str
+    order_version: str = SHOCK_REVIEW_ORDER_VERSION
 
     def review_rows(self) -> tuple[dict, ...]:
         """JSON-serializable rows; no hypothesis is discarded.
@@ -138,6 +172,12 @@ class ShockReview:
                     ),
                     "total_b_extremeness": _rational(entry.total_b_extremeness),
                     "total_c_extremeness": _rational(entry.total_c_extremeness),
+                    "order_version": self.order_version,
+                    "within_tier_percentile_score": (
+                        None
+                        if entry.within_tier_percentile_score is None
+                        else _rational(entry.within_tier_percentile_score)
+                    ),
                     "total_ab_signed_change": _rational(entry.total_ab_signed_change),
                     "total_ab_signed_change_per_second": _rational(
                         entry.total_ab_signed_change_per_second
@@ -185,7 +225,77 @@ def _rational(value: Fraction) -> str:
     return f"{value.numerator}/{value.denominator}"
 
 
+@dataclass(frozen=True, slots=True)
+class _ScaledTotals:
+    """Exact integer Total series for one scan.
+
+    ``values[i] == (Bid[i] + Ask[i]) * denominator`` exactly, or None for an
+    invalid second. ``invalid_prefix[i]`` counts invalid seconds in
+    ``values[:i]``.
+    """
+
+    values: tuple[int | None, ...]
+    denominator: int
+    invalid_prefix: tuple[int, ...]
+
+
+def _scaled_totals(seconds) -> _ScaledTotals:
+    ratios: list[tuple[int, int, int, int] | None] = []
+    denominators: set[int] = set()
+
+    for second in seconds:
+        if second.quality is not BookSampleQuality.VALID:
+            ratios.append(None)
+            continue
+
+        # Decimal.as_integer_ratio() is the exact ratio Fraction(Decimal)
+        # uses, already in lowest terms.
+        bid_numerator, bid_denominator = second.bid_liquidity.as_integer_ratio()
+        ask_numerator, ask_denominator = second.ask_liquidity.as_integer_ratio()
+        denominators.add(bid_denominator)
+        denominators.add(ask_denominator)
+        ratios.append((bid_numerator, bid_denominator, ask_numerator, ask_denominator))
+
+    denominator = math.lcm(*denominators) if denominators else 1
+    values: list[int | None] = []
+    prefix = [0]
+
+    for ratio in ratios:
+        if ratio is None:
+            values.append(None)
+            prefix.append(prefix[-1] + 1)
+            continue
+
+        bid_numerator, bid_denominator, ask_numerator, ask_denominator = ratio
+        values.append(
+            bid_numerator * (denominator // bid_denominator)
+            + ask_numerator * (denominator // ask_denominator)
+        )
+        prefix.append(prefix[-1])
+
+    return _ScaledTotals(
+        values=tuple(values),
+        denominator=denominator,
+        invalid_prefix=tuple(prefix),
+    )
+
+
+def _scaled_total_bounds(
+    scaled: _ScaledTotals,
+) -> tuple[Fraction, Fraction] | None:
+    available = [value for value in scaled.values if value is not None]
+
+    if not available:
+        return None
+
+    return (
+        Fraction(min(available), scaled.denominator),
+        Fraction(max(available), scaled.denominator),
+    )
+
+
 def _total_at(seconds, index: int) -> Fraction:
+    """Legacy per-second accessor; the review path uses _ScaledTotals."""
     if not 0 <= index < len(seconds):
         raise ShockReviewError("B-area index lies outside its dataset")
 
@@ -197,7 +307,7 @@ def _total_at(seconds, index: int) -> Fraction:
 
 
 def _valid_total_bounds(seconds) -> tuple[Fraction, Fraction] | None:
-    """Exact min/max Total over every VALID second of the scan."""
+    """Legacy exact min/max Total over every VALID second of the scan."""
     low: Fraction | None = None
     high: Fraction | None = None
 
@@ -229,32 +339,29 @@ def _bc_sharpness_squared(height_fraction: Fraction, seconds: int) -> Fraction:
     return height_fraction * height_fraction / seconds
 
 
-def _bc_path_metrics(
-    leg: Sequence[Fraction],
+def _bc_path_metrics_scaled(
+    values: Sequence[int],
 ) -> tuple[int, Fraction, Fraction]:
-    """Adverse-step count, adverse total / height, max retracement / height.
-
-    ``leg`` is the exact Total path from B through C inclusive. An adverse
-    step moves against the B->C direction. The maximum retracement is the
-    largest pullback from the running B->C extreme.
-    """
-    values = tuple(leg)
-
+    """Integer implementation of _bc_path_metrics (common scale cancels)."""
     if len(values) < 2:
         raise ShockReviewError("A B->C leg needs at least two seconds")
 
-    height = abs(values[-1] - values[0])
+    first = values[0]
+    last = values[-1]
+    height = last - first if last >= first else first - last
 
     if height == 0:
         raise ShockReviewError("A B->C leg must have positive height")
 
-    sign = 1 if values[-1] > values[0] else -1
+    sign = 1 if last > first else -1
     count = 0
-    adverse_total = Fraction(0)
-    extreme = values[0]
-    maximum_retracement = Fraction(0)
+    adverse_total = 0
+    extreme = first
+    maximum_retracement = 0
+    previous = first
 
-    for previous, current in zip(values, values[1:]):
+    for index in range(1, len(values)):
+        current = values[index]
         step = (current - previous) * sign
 
         if step < 0:
@@ -269,7 +376,71 @@ def _bc_path_metrics(
         if retracement > maximum_retracement:
             maximum_retracement = retracement
 
-    return count, adverse_total / height, maximum_retracement / height
+        previous = current
+
+    return (
+        count,
+        Fraction(adverse_total, height),
+        Fraction(maximum_retracement, height),
+    )
+
+
+def _bc_path_metrics(
+    leg: Sequence[Fraction],
+) -> tuple[int, Fraction, Fraction]:
+    """Adverse-step count, adverse total / height, max retracement / height.
+
+    ``leg`` is the exact Total path from B through C inclusive. An adverse
+    step moves against the B->C direction. The maximum retracement is the
+    largest pullback from the running B->C extreme.
+    """
+    values = tuple(Fraction(value) for value in leg)
+
+    if len(values) < 2:
+        raise ShockReviewError("A B->C leg needs at least two seconds")
+
+    denominator = math.lcm(*(value.denominator for value in values))
+
+    return _bc_path_metrics_scaled(
+        tuple(
+            value.numerator * (denominator // value.denominator) for value in values
+        )
+    )
+
+
+def _median_and_mad_scaled(
+    values: Sequence[int],
+    denominator: int,
+) -> tuple[Fraction, Fraction]:
+    """Exact (median, median absolute deviation) of scaled integers.
+
+    Identical to Fraction(median(v)) and Fraction(median(|v - median|)) on
+    the unscaled exact values. Doubling keeps an even-count median integral.
+    """
+    ordered = sorted(values)
+    count = len(ordered)
+
+    if count == 0:
+        raise ShockReviewError("A pre-B baseline requires at least one second")
+
+    middle = count // 2
+
+    if count % 2:
+        doubled_median = 2 * ordered[middle]
+    else:
+        doubled_median = ordered[middle - 1] + ordered[middle]
+
+    deviations = sorted(abs(2 * value - doubled_median) for value in ordered)
+
+    if count % 2:
+        doubled_mad = Fraction(deviations[middle])
+    else:
+        doubled_mad = Fraction(deviations[middle - 1] + deviations[middle], 2)
+
+    return (
+        Fraction(doubled_median, 2 * denominator),
+        doubled_mad / (2 * denominator),
+    )
 
 
 def _endpoint_extremeness(
@@ -307,6 +478,7 @@ def _diagnostics(
     evidence_result: ShockEvidenceResult,
     scale_fractions: dict[str, Fraction],
     scan_bounds: tuple[Fraction, Fraction],
+    scaled: _ScaledTotals | None = None,
 ) -> ReviewedShockArea:
     scan = evidence_result.candidate_scan
     seconds = scan.dataset.seconds
@@ -323,10 +495,23 @@ def _diagnostics(
     if not 0 <= a < b < c < len(seconds):
         raise ShockReviewError("Representative A-B-C indices are invalid")
 
-    owned = tuple(_total_at(seconds, index) for index in range(a, c + 1))
-    a_total = owned[0]
-    b_total = owned[b - a]
-    c_total = owned[-1]
+    totals = scaled if scaled is not None else _scaled_totals(seconds)
+
+    if len(totals.values) != len(seconds):
+        raise ShockReviewError("Scaled Total series does not match its dataset")
+
+    if totals.invalid_prefix[c + 1] != totals.invalid_prefix[a]:
+        raise ShockReviewError("B-area Total diagnostic touches invalid L2 coverage")
+
+    denominator = totals.denominator
+    owned: tuple[int, ...] = totals.values[a : c + 1]  # type: ignore[assignment]
+    a_scaled = owned[0]
+    b_scaled = owned[b - a]
+    c_scaled = owned[-1]
+
+    a_total = Fraction(a_scaled, denominator)
+    b_total = Fraction(b_scaled, denominator)
+    c_total = Fraction(c_scaled, denominator)
 
     if (
         seconds[a].timestamp_utc != candidate.a_utc
@@ -343,18 +528,17 @@ def _diagnostics(
     if scan_range <= 0:
         raise ShockReviewError("Representative has no positive scan range")
 
-    before_b = owned[: b - a]
-    pre_median = Fraction(median(before_b))
-    pre_mad = Fraction(median(tuple(abs(value - pre_median) for value in before_b)))
+    pre_median, pre_mad = _median_and_mad_scaled(owned[: b - a], denominator)
 
     # Retain the direction of A->B; an upward Total turn normally has
     # negative AB movement. BC is the absolute leg rate.
     ab_signed = b_total - a_total
     bc_seconds = c - b
-    bc_speed = abs(c_total - b_total) / bc_seconds
-    bc_fraction = abs(c_total - b_total) / scan_range
+    bc_abs_scaled = abs(c_scaled - b_scaled)
+    bc_speed = Fraction(bc_abs_scaled, denominator * bc_seconds)
+    bc_fraction = Fraction(bc_abs_scaled, denominator) / scan_range
 
-    adverse_count, adverse_fraction, retracement_fraction = _bc_path_metrics(
+    adverse_count, adverse_fraction, retracement_fraction = _bc_path_metrics_scaled(
         owned[b - a :]
     )
     b_extremeness, c_extremeness = _endpoint_extremeness(
@@ -402,12 +586,16 @@ def _diagnostics(
     )
 
 
-def _review_id(result: ShockEvidenceResult) -> str:
+def _review_id(
+    result: ShockEvidenceResult,
+    *,
+    order_version: str = SHOCK_REVIEW_ORDER_VERSION,
+) -> str:
     config = result.config
     identity = {
         "schema": SHOCK_REVIEW_SCHEMA,
         "schema_version": SHOCK_REVIEW_SCHEMA_VERSION,
-        "order_version": SHOCK_REVIEW_ORDER_VERSION,
+        "order_version": order_version,
         "candidate_scan_id": result.candidate_scan.scan_id,
         "evidence": {
             "maximum_offset_seconds": config.maximum_offset_seconds,
@@ -425,17 +613,151 @@ def _review_id(result: ShockEvidenceResult) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
-def review_shock_areas(result: ShockEvidenceResult) -> ShockReview:
+def _validated_order_version(value: object) -> str:
+    text = str(value or "").strip()
+
+    if text not in SHOCK_REVIEW_ORDER_VERSIONS:
+        raise ShockReviewError(
+            f"Unsupported Shock-Start inspection order {text!r}; "
+            f"expected one of {list(SHOCK_REVIEW_ORDER_VERSIONS)}"
+        )
+
+    return text
+
+
+def _v2_sort_key(item: ReviewedShockArea) -> tuple:
+    """Order-version-2 lexicographic key. Do not change without a version bump.
+
+    1. Largest qualifying structural tier present in the area.
+    2. Representative Total B-C height / whole-scan Total range.
+    3. sqrt-normalised B-C sharpness (exact squared rational).
+    4. Lower B-C adverse-move total / height (cleaner leg first).
+    5. Bid/Ask support count (Delta is NOT an independent vote).
+    6. Less pre-B Total variability, then stable time ordering.
+    """
+    return (
+        -item.highest_scale_fraction,
+        -item.total_bc_fraction_of_scan_range,
+        -item.total_bc_sharpness_squared,
+        item.total_bc_adverse_total_fraction,
+        -item.independent_channel_count,
+        item.total_pre_b_deviation_fraction_of_scan_range,
+        item.area.first_b_index,
+        item.area.direction,
+    )
+
+
+def _within_tier_percentile_scores(
+    items: Sequence[ReviewedShockArea],
+) -> tuple[Fraction, ...]:
+    """Exact v3 score: mean of five midpoint percentiles *inside one tier*.
+
+    Features (higher is better): B-C height, sharpness (the squared value has
+    the same percentile as sqrt), cleanliness (negated adverse fraction),
+    C extremeness, Bid/Ask support count. Deliberately excluded: A-B
+    sharpness (rejected O2), price, Delta as an independent vote.
+    """
+    scores = [Fraction(0)] * len(items)
+    tiers: dict[Fraction, list[int]] = {}
+
+    for index, item in enumerate(items):
+        tiers.setdefault(item.highest_scale_fraction, []).append(index)
+
+    for indices in tiers.values():
+        members = [items[index] for index in indices]
+        columns = (
+            [member.total_bc_fraction_of_scan_range for member in members],
+            [member.total_bc_sharpness_squared for member in members],
+            [-member.total_bc_adverse_total_fraction for member in members],
+            [member.total_c_extremeness for member in members],
+            [Fraction(member.independent_channel_count) for member in members],
+        )
+        ranked = [midpoint_percentile_ranks(column) for column in columns]
+
+        for position, index in enumerate(indices):
+            scores[index] = sum(
+                (column[position] for column in ranked),
+                Fraction(0),
+            ) / len(ranked)
+
+    return tuple(scores)
+
+
+def _order_measured(
+    measured: Sequence[ReviewedShockArea],
+    order_version: str,
+) -> tuple[ReviewedShockArea, ...]:
+    """Assign inspection positions. Pure re-sorting of stored measurements."""
+    version = _validated_order_version(order_version)
+    items = tuple(measured)
+
+    if version == SHOCK_REVIEW_ORDER_VERSION:
+        ranked = [(item, None) for item in sorted(items, key=_v2_sort_key)]
+    else:
+        scores = _within_tier_percentile_scores(items)
+        ranked = sorted(
+            zip(items, scores),
+            key=lambda pair: (
+                -pair[0].highest_scale_fraction,
+                -pair[1],
+                *_v2_sort_key(pair[0])[1:],
+            ),
+        )
+
+    return tuple(
+        replace(
+            item,
+            inspection_position=position,
+            within_tier_percentile_score=score,
+        )
+        for position, (item, score) in enumerate(ranked, start=1)
+    )
+
+
+def reorder_shock_review(
+    review: ShockReview,
+    *,
+    order_version: str,
+) -> ShockReview:
+    """Re-order a completed review without reloading or re-detecting.
+
+    Every measurement is reused unchanged. Only inspection positions, the
+    optional v3 score, the order version, and the review identity change.
+    """
+    if not isinstance(review, ShockReview):
+        raise TypeError("review must be ShockReview")
+
+    version = _validated_order_version(order_version)
+
+    return ShockReview(
+        evidence_result=review.evidence_result,
+        ordered_areas=_order_measured(review.ordered_areas, version),
+        review_id=_review_id(review.evidence_result, order_version=version),
+        order_version=version,
+    )
+
+
+def review_shock_areas(
+    result: ShockEvidenceResult,
+    *,
+    order_version: str = SHOCK_REVIEW_ORDER_VERSION,
+) -> ShockReview:
     if not isinstance(result, ShockEvidenceResult):
         raise TypeError("result must be ShockEvidenceResult")
+
+    version = _validated_order_version(order_version)
 
     scale_fractions = {
         item.name: Fraction(item.minimum_leg_fraction)
         for item in result.candidate_scan.config.scales
     }
 
+    scaled: _ScaledTotals | None = None
+
     if result.areas:
-        bounds = _valid_total_bounds(result.candidate_scan.dataset.seconds)
+        # Scan constants: computed ONCE, never once per B area.
+        scaled = _scaled_totals(result.candidate_scan.dataset.seconds)
+        bounds = _scaled_total_bounds(scaled)
 
         if bounds is None:
             raise ShockReviewError("B areas exist but the scan has no valid Total")
@@ -443,54 +765,39 @@ def review_shock_areas(result: ShockEvidenceResult) -> ShockReview:
         bounds = (Fraction(0), Fraction(1))  # Unused: nothing to measure.
 
     measured = tuple(
-        _diagnostics(area, result, scale_fractions, bounds) for area in result.areas
+        _diagnostics(area, result, scale_fractions, bounds, scaled)
+        for area in result.areas
     )
 
-    # Lexicographic INSPECTION order (version 2), not a weighted score:
-    #
-    # 1. Largest qualifying structural tier present in the area.
-    # 2. Representative Total B-C height / whole-scan Total range.
-    # 3. sqrt-normalised B-C sharpness (exact squared rational).
-    # 4. Lower B-C adverse-move total / height (cleaner leg first).
-    # 5. Bid/Ask support count (Delta is NOT an independent vote).
-    # 6. Less pre-B Total variability, then stable time ordering.
-    #
+    # v2 (default): lexicographic, not a weighted score; see _v2_sort_key.
     # Key 2 is a continuous exact fraction, so keys 3-6 act only on exact
-    # ties. A future weighted/percentile score must be a new order version.
-    measured = tuple(
-        sorted(
-            measured,
-            key=lambda item: (
-                -item.highest_scale_fraction,
-                -item.total_bc_fraction_of_scan_range,
-                -item.total_bc_sharpness_squared,
-                item.total_bc_adverse_total_fraction,
-                -item.independent_channel_count,
-                item.total_pre_b_deviation_fraction_of_scan_range,
-                item.area.first_b_index,
-                item.area.direction,
-            ),
-        )
-    )
-
-    ordered = tuple(
-        replace(item, inspection_position=position)
-        for position, item in enumerate(measured, start=1)
-    )
+    # ties. v3 (opt-in): tier first, then an exact within-tier
+    # percentile mean, then the full v2 key as tie-break.
+    ordered = _order_measured(measured, version)
 
     return ShockReview(
         evidence_result=result,
         ordered_areas=ordered,
-        review_id=_review_id(result),
+        review_id=_review_id(result, order_version=version),
+        order_version=version,
     )
 
 
+# Retained for callers that still compute a Python-level median directly.
+_statistics_median = median
+
+
 __all__ = [
+    "SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION",
+    "SHOCK_REVIEW_ORDER_LABELS",
     "SHOCK_REVIEW_ORDER_VERSION",
+    "SHOCK_REVIEW_ORDER_VERSIONS",
+    "SHOCK_REVIEW_ORDER_VERSION_V3",
     "SHOCK_REVIEW_SCHEMA",
     "SHOCK_REVIEW_SCHEMA_VERSION",
     "ReviewedShockArea",
     "ShockReview",
     "ShockReviewError",
+    "reorder_shock_review",
     "review_shock_areas",
 ]

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from l2shock.ui.analysis_controls import parse_local_analysis_datetime
+from l2shock.ui.analysis_inputs import parse_local_analysis_datetime
 from l2shock.ui.shock_chart_options import _COLORS
 from l2shock.ui.shock_legend import shock_legend_rows
 from l2shock.ui.tab_shock_review import (

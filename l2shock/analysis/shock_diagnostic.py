@@ -90,6 +90,7 @@ def build_shock_diagnostic_payload(review: ShockReview) -> dict:
         "l2_input_id": dataset.input_id,
         "candidate_scan_id": scan.scan_id,
         "review_id": review.review_id,
+        "order_version": review.order_version,
         "request": {
             "base": request.base,
             "preset_hash": request.preset_hash,

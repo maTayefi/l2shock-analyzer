@@ -6,7 +6,7 @@ from l2shock.ui.chart_interactions import (
     capture_shock_time_viewport,
     restore_shock_time_viewport,
 )
-from l2shock.ui.analysis_chart import ChartNavigationWindow
+from l2shock.ui.chart_navigation import ChartNavigationWindow
 from l2shock.ui.chart_interactions import (
     AnalysisChartCommit,
     AnalysisChartInteractionError,

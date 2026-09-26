@@ -17,7 +17,7 @@ from typing import Protocol
 from sqlalchemy.orm import Session
 
 from l2shock.analysis.aggregation import L2Second
-from l2shock.analysis.dataset import decode_l2_hour_to_seconds
+from l2shock.analysis.l2_seconds import decode_l2_hour_to_seconds
 from l2shock.analysis.multi_market import (
     AGGREGATE_L2_ALGORITHM_VERSION,
     AggregateL2QualityState,

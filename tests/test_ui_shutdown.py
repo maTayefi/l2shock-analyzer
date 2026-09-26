@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from l2shock.ui import shutdown as shutdown_module
@@ -18,6 +20,11 @@ def _isolate_background_runtimes(
     monkeypatch.setattr(
         shutdown_module,
         "peek_remote_import_runtime",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        shutdown_module,
+        "peek_manual_shock_runtime",
         lambda: None,
     )
     yield
@@ -63,44 +70,48 @@ class FakeRuntime:
         return self._forced_result
 
 
-@pytest.mark.asyncio
-async def test_shutdown_orders_fetch_processing_tasks_engine_and_server(
+class FakeShockRuntime:
+    """Mirrors ManualShockRuntime: snapshot() plus stop_and_wait only."""
+
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        cooperative_result: bool = True,
+        running: bool = True,
+    ) -> None:
+        self._events = events
+        self._cooperative_result = cooperative_result
+        self._running = running
+
+    def snapshot(self) -> SimpleNamespace:
+        return SimpleNamespace(is_running=self._running)
+
+    async def stop_and_wait(
+        self,
+        *,
+        grace_seconds: float,
+    ) -> bool:
+        self._events.append(f"shock:cooperative:{grace_seconds}")
+
+        if self._cooperative_result:
+            self._running = False
+
+        return self._cooperative_result
+
+
+def _patch_tail(
     monkeypatch: pytest.MonkeyPatch,
+    events: list[str],
+    *,
+    pending: int = 0,
 ) -> None:
-    reset_state_for_tests()
-    events: list[str] = []
-
-    fetch_runtime = FakeRuntime(
-        events,
-        name="fetch",
-    )
-    processing_runtime = FakeRuntime(
-        events,
-        name="processing",
-    )
-
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_fetch_runtime",
-        lambda: fetch_runtime,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_processing_runtime",
-        lambda: processing_runtime,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_analysis_runtime",
-        lambda: None,
-    )
-
     async def cancel_tasks(
         *,
         timeout_seconds: float,
     ) -> int:
         events.append(f"tasks:{timeout_seconds}")
-        return 0
+        return pending
 
     monkeypatch.setattr(
         shutdown_module,
@@ -112,6 +123,49 @@ async def test_shutdown_orders_fetch_processing_tasks_engine_and_server(
         "reset_engine",
         lambda: events.append("engine"),
     )
+
+
+def _patch_owners(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fetch=None,
+    processing=None,
+    shock=None,
+) -> None:
+    monkeypatch.setattr(
+        shutdown_module,
+        "peek_manual_fetch_runtime",
+        lambda: fetch,
+    )
+    monkeypatch.setattr(
+        shutdown_module,
+        "peek_manual_processing_runtime",
+        lambda: processing,
+    )
+    monkeypatch.setattr(
+        shutdown_module,
+        "peek_manual_shock_runtime",
+        lambda: shock,
+    )
+
+
+def test_lm_analysis_runtime_is_not_referenced_by_shutdown() -> None:
+    assert not hasattr(shutdown_module, "peek_manual_analysis_runtime")
+
+
+@pytest.mark.asyncio
+async def test_shutdown_orders_fetch_processing_tasks_engine_and_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset_state_for_tests()
+    events: list[str] = []
+
+    _patch_owners(
+        monkeypatch,
+        fetch=FakeRuntime(events, name="fetch"),
+        processing=FakeRuntime(events, name="processing"),
+    )
+    _patch_tail(monkeypatch, events)
 
     async def stop_server() -> None:
         events.append("server")
@@ -151,52 +205,16 @@ async def test_shutdown_forces_fetch_after_grace_timeout(
     reset_state_for_tests()
     events: list[str] = []
 
-    fetch_runtime = FakeRuntime(
-        events,
-        name="fetch",
-        cooperative_result=False,
+    _patch_owners(
+        monkeypatch,
+        fetch=FakeRuntime(events, name="fetch", cooperative_result=False),
     )
-
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_fetch_runtime",
-        lambda: fetch_runtime,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_processing_runtime",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_analysis_runtime",
-        lambda: None,
-    )
-
-    async def cancel_tasks(
-        *,
-        timeout_seconds: float,
-    ) -> int:
-        events.append(f"tasks:{timeout_seconds}")
-        return 0
-
-    monkeypatch.setattr(
-        shutdown_module,
-        "cancel_and_wait_for_tracked_tasks",
-        cancel_tasks,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "reset_engine",
-        lambda: events.append("engine"),
-    )
+    _patch_tail(monkeypatch, events)
 
     await shutdown_module.shutdown_runtime(
         request_server_stop=False,
         fetch_grace_seconds=2.0,
         fetch_force_cancel_seconds=3.0,
-        processing_grace_seconds=5.0,
-        processing_force_cancel_seconds=6.0,
         other_task_timeout_seconds=4.0,
     )
 
@@ -215,50 +233,18 @@ async def test_shutdown_forces_processing_after_grace_timeout(
     reset_state_for_tests()
     events: list[str] = []
 
-    processing_runtime = FakeRuntime(
-        events,
-        name="processing",
-        cooperative_result=False,
+    _patch_owners(
+        monkeypatch,
+        processing=FakeRuntime(
+            events,
+            name="processing",
+            cooperative_result=False,
+        ),
     )
-
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_fetch_runtime",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_processing_runtime",
-        lambda: processing_runtime,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_analysis_runtime",
-        lambda: None,
-    )
-
-    async def cancel_tasks(
-        *,
-        timeout_seconds: float,
-    ) -> int:
-        events.append(f"tasks:{timeout_seconds}")
-        return 0
-
-    monkeypatch.setattr(
-        shutdown_module,
-        "cancel_and_wait_for_tracked_tasks",
-        cancel_tasks,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "reset_engine",
-        lambda: events.append("engine"),
-    )
+    _patch_tail(monkeypatch, events)
 
     await shutdown_module.shutdown_runtime(
         request_server_stop=False,
-        fetch_grace_seconds=2.0,
-        fetch_force_cancel_seconds=3.0,
         processing_grace_seconds=5.0,
         processing_force_cancel_seconds=6.0,
         other_task_timeout_seconds=4.0,
@@ -301,39 +287,8 @@ async def test_shutdown_raises_admission_barrier_before_runtime_stop(
             del timeout_seconds
             raise AssertionError("forced cancellation was not expected")
 
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_fetch_runtime",
-        lambda: BarrierCheckingRuntime(),
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_processing_runtime",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_analysis_runtime",
-        lambda: None,
-    )
-
-    async def cancel_tasks(
-        *,
-        timeout_seconds: float,
-    ) -> int:
-        del timeout_seconds
-        return 0
-
-    monkeypatch.setattr(
-        shutdown_module,
-        "cancel_and_wait_for_tracked_tasks",
-        cancel_tasks,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "reset_engine",
-        lambda: None,
-    )
+    _patch_owners(monkeypatch, fetch=BarrierCheckingRuntime())
+    _patch_tail(monkeypatch, [])
 
     await shutdown_module.shutdown_runtime(
         request_server_stop=False,
@@ -348,55 +303,15 @@ async def test_shutdown_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reset_state_for_tests()
-    engine_disposals = 0
+    events: list[str] = []
 
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_fetch_runtime",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_processing_runtime",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_analysis_runtime",
-        lambda: None,
-    )
+    _patch_owners(monkeypatch)
+    _patch_tail(monkeypatch, events)
 
-    async def cancel_tasks(
-        *,
-        timeout_seconds: float,
-    ) -> int:
-        del timeout_seconds
-        return 0
+    await shutdown_module.shutdown_runtime(request_server_stop=False)
+    await shutdown_module.shutdown_runtime(request_server_stop=False)
 
-    monkeypatch.setattr(
-        shutdown_module,
-        "cancel_and_wait_for_tracked_tasks",
-        cancel_tasks,
-    )
-
-    def dispose_engine() -> None:
-        nonlocal engine_disposals
-        engine_disposals += 1
-
-    monkeypatch.setattr(
-        shutdown_module,
-        "reset_engine",
-        dispose_engine,
-    )
-
-    await shutdown_module.shutdown_runtime(
-        request_server_stop=False,
-    )
-    await shutdown_module.shutdown_runtime(
-        request_server_stop=False,
-    )
-
-    assert engine_disposals == 1
+    assert events.count("engine") == 1
 
 
 @pytest.mark.asyncio
@@ -411,39 +326,13 @@ async def test_shutdown_skips_idle_runtimes(
     fetch_runtime.is_running = False
     processing_runtime.is_running = False
 
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_fetch_runtime",
-        lambda: fetch_runtime,
+    _patch_owners(
+        monkeypatch,
+        fetch=fetch_runtime,
+        processing=processing_runtime,
+        shock=FakeShockRuntime(events, running=False),
     )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_processing_runtime",
-        lambda: processing_runtime,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_analysis_runtime",
-        lambda: None,
-    )
-
-    async def cancel_tasks(
-        *,
-        timeout_seconds: float,
-    ) -> int:
-        events.append(f"tasks:{timeout_seconds}")
-        return 0
-
-    monkeypatch.setattr(
-        shutdown_module,
-        "cancel_and_wait_for_tracked_tasks",
-        cancel_tasks,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "reset_engine",
-        lambda: events.append("engine"),
-    )
+    _patch_tail(monkeypatch, events)
 
     await shutdown_module.shutdown_runtime(
         request_server_stop=False,
@@ -457,139 +346,66 @@ async def test_shutdown_skips_idle_runtimes(
 
 
 @pytest.mark.asyncio
-async def test_shutdown_orders_fetch_processing_analysis_tasks_engine(
+async def test_shutdown_orders_fetch_processing_shock_tasks_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reset_state_for_tests()
     events: list[str] = []
 
-    fetch_runtime = FakeRuntime(
-        events,
-        name="fetch",
+    _patch_owners(
+        monkeypatch,
+        fetch=FakeRuntime(events, name="fetch"),
+        processing=FakeRuntime(events, name="processing"),
+        shock=FakeShockRuntime(events),
     )
-    processing_runtime = FakeRuntime(
-        events,
-        name="processing",
-    )
-    analysis_runtime = FakeRuntime(
-        events,
-        name="analysis",
-    )
-
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_fetch_runtime",
-        lambda: fetch_runtime,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_processing_runtime",
-        lambda: processing_runtime,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_analysis_runtime",
-        lambda: analysis_runtime,
-    )
-
-    async def cancel_tasks(
-        *,
-        timeout_seconds: float,
-    ) -> int:
-        events.append(f"tasks:{timeout_seconds}")
-        return 0
-
-    monkeypatch.setattr(
-        shutdown_module,
-        "cancel_and_wait_for_tracked_tasks",
-        cancel_tasks,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "reset_engine",
-        lambda: events.append("engine"),
-    )
+    _patch_tail(monkeypatch, events)
 
     await shutdown_module.shutdown_runtime(
         request_server_stop=False,
         fetch_grace_seconds=2.0,
-        fetch_force_cancel_seconds=3.0,
         processing_grace_seconds=5.0,
-        processing_force_cancel_seconds=6.0,
         analysis_grace_seconds=7.0,
-        analysis_force_cancel_seconds=8.0,
         other_task_timeout_seconds=4.0,
     )
 
     assert events == [
         "fetch:cooperative:2.0",
         "processing:cooperative:5.0",
-        "analysis:cooperative:7.0",
+        "shock:cooperative:7.0",
         "tasks:4.0",
         "engine",
     ]
 
 
 @pytest.mark.asyncio
-async def test_shutdown_forces_analysis_after_grace_timeout(
+async def test_shock_worker_outliving_grace_blocks_engine_disposal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reset_state_for_tests()
     events: list[str] = []
 
-    analysis_runtime = FakeRuntime(
-        events,
-        name="analysis",
-        cooperative_result=False,
+    _patch_owners(
+        monkeypatch,
+        shock=FakeShockRuntime(events, cooperative_result=False),
     )
+    _patch_tail(monkeypatch, events)
 
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_fetch_runtime",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_processing_runtime",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_analysis_runtime",
-        lambda: analysis_runtime,
-    )
+    with pytest.raises(
+        RuntimeError,
+        match="background work remained active",
+    ):
+        await shutdown_module.shutdown_runtime(
+            request_server_stop=False,
+            analysis_grace_seconds=7.0,
+            other_task_timeout_seconds=4.0,
+        )
 
-    async def cancel_tasks(
-        *,
-        timeout_seconds: float,
-    ) -> int:
-        events.append(f"tasks:{timeout_seconds}")
-        return 0
-
-    monkeypatch.setattr(
-        shutdown_module,
-        "cancel_and_wait_for_tracked_tasks",
-        cancel_tasks,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "reset_engine",
-        lambda: events.append("engine"),
-    )
-
-    await shutdown_module.shutdown_runtime(
-        request_server_stop=False,
-        analysis_grace_seconds=7.0,
-        analysis_force_cancel_seconds=8.0,
-        other_task_timeout_seconds=4.0,
-    )
-
+    # There is no forced step for the non-interruptible shock detector.
     assert events == [
-        "analysis:cooperative:7.0",
-        "analysis:forced:8.0",
+        "shock:cooperative:7.0",
         "tasks:4.0",
-        "engine",
     ]
+    assert get_state().shutdown_complete is False
 
 
 @pytest.mark.asyncio
@@ -599,46 +415,16 @@ async def test_shutdown_does_not_dispose_engine_when_worker_remains_active(
     reset_state_for_tests()
     events: list[str] = []
 
-    processing_runtime = FakeRuntime(
-        events,
-        name="processing",
-        cooperative_result=False,
-        forced_result=False,
+    _patch_owners(
+        monkeypatch,
+        processing=FakeRuntime(
+            events,
+            name="processing",
+            cooperative_result=False,
+            forced_result=False,
+        ),
     )
-
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_fetch_runtime",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_processing_runtime",
-        lambda: processing_runtime,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_analysis_runtime",
-        lambda: None,
-    )
-
-    async def cancel_tasks(
-        *,
-        timeout_seconds: float,
-    ) -> int:
-        events.append(f"tasks:{timeout_seconds}")
-        return 0
-
-    monkeypatch.setattr(
-        shutdown_module,
-        "cancel_and_wait_for_tracked_tasks",
-        cancel_tasks,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "reset_engine",
-        lambda: events.append("engine"),
-    )
+    _patch_tail(monkeypatch, events)
 
     with pytest.raises(
         RuntimeError,
@@ -671,39 +457,8 @@ async def test_shutdown_does_not_dispose_engine_when_tracked_tasks_remain(
     reset_state_for_tests()
     events: list[str] = []
 
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_fetch_runtime",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_processing_runtime",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_analysis_runtime",
-        lambda: None,
-    )
-
-    async def cancel_tasks(
-        *,
-        timeout_seconds: float,
-    ) -> int:
-        events.append(f"tasks:{timeout_seconds}")
-        return 2
-
-    monkeypatch.setattr(
-        shutdown_module,
-        "cancel_and_wait_for_tracked_tasks",
-        cancel_tasks,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "reset_engine",
-        lambda: events.append("engine"),
-    )
+    _patch_owners(monkeypatch)
+    _patch_tail(monkeypatch, events, pending=2)
 
     with pytest.raises(
         RuntimeError,
@@ -729,53 +484,18 @@ async def test_shutdown_stops_remote_import_before_processing(
     reset_state_for_tests()
     events: list[str] = []
 
-    remote_import_runtime = FakeRuntime(
-        events,
-        name="remote_import",
-    )
-    processing_runtime = FakeRuntime(
-        events,
-        name="processing",
-    )
+    remote_import_runtime = FakeRuntime(events, name="remote_import")
 
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_fetch_runtime",
-        lambda: None,
+    _patch_owners(
+        monkeypatch,
+        processing=FakeRuntime(events, name="processing"),
     )
     monkeypatch.setattr(
         shutdown_module,
         "peek_remote_import_runtime",
         lambda: remote_import_runtime,
     )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_processing_runtime",
-        lambda: processing_runtime,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "peek_manual_analysis_runtime",
-        lambda: None,
-    )
-
-    async def cancel_tasks(
-        *,
-        timeout_seconds: float,
-    ) -> int:
-        events.append(f"tasks:{timeout_seconds}")
-        return 0
-
-    monkeypatch.setattr(
-        shutdown_module,
-        "cancel_and_wait_for_tracked_tasks",
-        cancel_tasks,
-    )
-    monkeypatch.setattr(
-        shutdown_module,
-        "reset_engine",
-        lambda: events.append("engine"),
-    )
+    _patch_tail(monkeypatch, events)
 
     await shutdown_module.shutdown_runtime(
         request_server_stop=False,

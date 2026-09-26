@@ -78,7 +78,6 @@ def test_health_snapshot_reports_foundation_status(
 
     implemented = snapshot["implemented_subsystems"]
     assert implemented["database_foundation"] is True
-    assert implemented["price_filter_policy"] is True
     assert implemented["downloader"] is True
     assert implemented["fetch_orchestration"] is True
     assert implemented["manual_fetch_ui"] is True
@@ -111,11 +110,11 @@ def test_health_snapshot_reports_foundation_status(
     assert implemented["remote_hf_artifact_importer"] is True
     assert implemented["remote_hf_range_import_runtime"] is True
     assert implemented["timeframe_aggregation"] is True
-    assert implemented["verified_analysis_loading"] is True
-    assert implemented["segmented_price_filtering"] is True
-    assert implemented["liquidity_movement_analysis"] is True
-    assert implemented["analysis_execution_orchestration"] is True
-    assert implemented["analysis_result_cache"] is True
+    assert implemented["verified_l2_only_loading"] is True
+    assert implemented["shock_start_detection"] is True
+    assert implemented["shock_channel_evidence"] is True
+    assert implemented["shock_b_area_review"] is True
+    assert implemented["shock_top_n_overlay"] is True
     assert implemented["analysis_runtime"] is True
     assert implemented["analysis_ui"] is True
     assert implemented["analysis_chart_workspace"] is True
@@ -123,10 +122,20 @@ def test_health_snapshot_reports_foundation_status(
     assert implemented["chart_viewport_preservation"] is True
     assert implemented["custom_gapped_crosshair"] is True
     assert implemented["table_to_chart_navigation"] is True
-    assert implemented["selected_lm_emphasis"] is True
-    assert implemented["chart_timeframe_switching"] is True
-    assert implemented["analysis_json_export"] is True
     assert implemented["chart_export"] is True
+
+    for retired in (
+        "price_filter_policy",
+        "verified_analysis_loading",
+        "segmented_price_filtering",
+        "liquidity_movement_analysis",
+        "analysis_execution_orchestration",
+        "analysis_result_cache",
+        "selected_lm_emphasis",
+        "chart_timeframe_switching",
+        "analysis_json_export",
+    ):
+        assert retired not in implemented
     assert implemented["production_diagnostics"] is True
     assert implemented["preset_crud_ui"] is True
     assert implemented["aggregate_preset_crud"] is True

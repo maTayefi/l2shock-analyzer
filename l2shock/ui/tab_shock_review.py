@@ -25,7 +25,11 @@ from l2shock.analysis.shock_start import (
     ShockStartConfig,
     ShockStructuralScale,
 )
-from l2shock.ui.analysis_controls import (
+from l2shock.analysis.shock_review import (
+    SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION,
+    SHOCK_REVIEW_ORDER_LABELS,
+)
+from l2shock.ui.analysis_inputs import (
     load_enabled_analysis_presets,
     parse_local_analysis_datetime,
 )
@@ -34,7 +38,6 @@ from l2shock.ui.shock_legend import open_shock_color_legend
 from l2shock.ui.shock_chart_options import MAX_SHOCK_CHART_TOP_N
 from l2shock.ui.chart_interactions import (
     AnalysisChartController,
-    AnalysisChartInteractionError,
     capture_shock_time_viewport,
 )
 from l2shock.ui.components import create_tracked_task
@@ -43,10 +46,7 @@ from l2shock.ui.echarts import (
     empty_echart_option,
     set_echart_options,
 )
-from l2shock.ui.shock_inspection import (
-    ShockInspectionModel,
-    publish_shock_selection,
-)
+from l2shock.ui.shock_inspection import ShockInspectionModel
 from l2shock.ui.shock_view_selection import (
     build_shock_view_selection,
 )
@@ -619,6 +619,13 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
                 max=MAX_SHOCK_CHART_TOP_N,
                 step=1,
             )
+            # Changing the order re-sorts existing measurements; it never
+            # reruns loading or detection.
+            order_select = ui.select(
+                dict(SHOCK_REVIEW_ORDER_LABELS),
+                value=SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION,
+                label="Inspection order",
+            ).classes("w-80")
             view_timeframe_input = ui.select(
                 {
                     0: "Auto: finest bars within budget",
@@ -854,157 +861,6 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
         view_area_input.value = position
         await _show_bounded_view()
 
-    async def _select_row_one_second_legacy(event: Any) -> None:
-        # Previous separate one-second chart path. No longer wired to the
-        # table; kept only until the LM/legacy cleanup batch deletes it.
-        nonlocal selection_generation
-        nonlocal selected_owner_id, selected_position, bounded_owner_id
-
-        row = _event_row(event)
-        current_model = model
-
-        if row is None or current_model is None:
-            status.text = "No completed B-area row was selected."
-            return
-
-        try:
-            position = int(row["inspection_position"])
-        except KeyError, TypeError, ValueError:
-            status.text = "Selected row has no inspection position."
-            return
-
-        if row.get("id") != (f"{current_model.review.review_id}:{position}"):
-            status.text = "Selected row belongs to another review."
-            return
-
-        selection_generation += 1
-        my_generation = selection_generation
-        _clear_export_owner()
-
-        try:
-            selection = current_model.select(position)
-            window = selection.window
-            price_candles = None
-
-            try:
-                price_candles = await asyncio.to_thread(
-                    load_shock_price_context,
-                    base=(
-                        current_model.review.evidence_result.candidate_scan.dataset.request.base
-                    ),
-                    source_start_utc=window.seconds[0].timestamp_utc,
-                    source_end_utc_exclusive=(
-                        window.seconds[-1].timestamp_utc + timedelta(seconds=1)
-                    ),
-                    bar_starts_utc=tuple(
-                        second.timestamp_utc for second in window.seconds
-                    ),
-                    timeframe_seconds=1,
-                )
-            except Exception:
-                # Missing or corrupt price, an unavailable DB, or an
-                # unsupported price hour must never suppress verified L2.
-                log.exception(
-                    "Optional price context unavailable for B area #%s.",
-                    position,
-                )
-
-            # The thread may finish after another selection or review.
-            if (
-                my_generation != selection_generation
-                or model is not current_model
-                or runtime.snapshot().last_review is not current_model.review
-            ):
-                return
-
-            if price_candles is not None:
-                try:
-                    # The loader returns ECharts [open, close, low, high].
-                    # The one-second builder accepts (open, high, low, close).
-                    price_by_second = {
-                        second.timestamp_utc: (
-                            candle[0],
-                            candle[3],
-                            candle[2],
-                            candle[1],
-                        )
-                        for second, candle in zip(window.seconds, price_candles)
-                        if candle is not None
-                    }
-                    priced_selection = current_model.select(
-                        position,
-                        price_by_second=price_by_second,
-                    )
-                except Exception:
-                    log.exception(
-                        "Optional price candles could not be plotted "
-                        "for B area #%s inspection.",
-                        position,
-                    )
-                else:
-                    selection = priced_selection
-
-            status.text = f"Publishing B area #{position}"
-
-            commit = await publish_shock_selection(
-                controller,
-                selection,
-            )
-        except AnalysisChartInteractionError as exc:
-            # A known browser-acknowledgement failure: warn without a
-            # traceback, then show the same area through the bounded L2
-            # viewport. Presentation only; the review is unchanged.
-            log.warning(
-                "One-second chart for B area #%s was not acknowledged: %s",
-                position,
-                exc,
-            )
-
-            if my_generation != selection_generation or model is not current_model:
-                return
-
-            view_area_input.value = position
-            await _show_bounded_view()
-
-            if selected_position == position:
-                status.text = (
-                    f"B area #{position}: one-second inspection chart "
-                    f"unavailable ({str(exc)[:240]}); showing its bounded "
-                    "L2 viewport instead."
-                )
-            return
-        except Exception as exc:
-            log.exception("Could not publish selected Shock-Start area.")
-            status.text = (
-                f"Could not display B area #{position}: "
-                f"{str(exc)[:300]} (see the application log)."
-            )
-            return
-
-        if (
-            commit is None
-            or my_generation != selection_generation
-            or model is not current_model
-            or runtime.snapshot().last_review is not current_model.review
-            or commit.owner_id != selection.owner_id
-        ):
-            return
-
-        bounded_owner_id = None
-        selected_owner_id = selection.owner_id
-        selected_position = position
-        view_area_input.value = position
-        table.selected[:] = [row]
-        table.update()
-        export_png_button.enable()
-        export_svg_button.enable()
-        view_button.enable()
-
-        status.text = (
-            f"Showing B area #{position}; "
-            f"{len(selection.window.seconds)} one-second slots. "
-            "Price is not required."
-        )
 
     async def _show_bounded_view() -> None:
         nonlocal selection_generation
@@ -1205,6 +1061,17 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
                 status.text = "Review completed without a result."
                 return
 
+            selected_order = str(
+                order_select.value or SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION
+            )
+
+            if review.order_version != selected_order:
+                try:
+                    review = runtime.reorder_last_review(selected_order)
+                except (RuntimeError, TypeError, ValueError) as exc:
+                    status.text = f"Could not apply inspection order: {exc}"
+                    return
+
             _clear_display()
             model = ShockInspectionModel(review)
             page_input.value = 1
@@ -1234,6 +1101,53 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
         elif snapshot.phase is ShockRuntimePhase.FAILED:
             _clear_display()
             status.text = f"Shock-Start review failed: {snapshot.last_error}"
+
+    def _apply_inspection_order(_event: Any = None) -> None:
+        nonlocal model
+
+        selected_order = str(
+            order_select.value or SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION
+        )
+        snapshot = runtime.snapshot()
+
+        if snapshot.is_running:
+            status.text = (
+                "The inspection order will apply when the running review "
+                "completes."
+            )
+            return
+
+        current = snapshot.last_review
+
+        if current is None or current.order_version == selected_order:
+            return
+
+        try:
+            review = runtime.reorder_last_review(selected_order)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            status.text = f"Could not change inspection order: {exc}"
+            return
+
+        _clear_display()
+        model = ShockInspectionModel(review)
+        page_input.value = 1
+        view_area_input.value = 1
+        _show_page()
+
+        label = SHOCK_REVIEW_ORDER_LABELS.get(selected_order, selected_order)
+
+        if review.ordered_areas:
+            view_button.enable()
+            status.text = (
+                f"Inspection order: {label}. "
+                "Opening the bounded L2 viewport for area #1\u2026"
+            )
+            asyncio.create_task(_show_bounded_view())
+        else:
+            view_button.disable()
+            status.text = f"Inspection order: {label}. No B areas to inspect."
+
+    order_select.on_value_change(_apply_inspection_order)
 
     async def _export_image(image_format: str) -> None:
         current_model = model

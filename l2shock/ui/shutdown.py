@@ -4,25 +4,23 @@
 Shutdown sequence:
 
 1. raise the process admission barrier;
-2. request cooperative fetch cancellation;
-3. wait for bounded fetch finalization;
-4. force-cancel the fetch only if its grace period expires;
+2. stop automatic fetch (cooperative, then bounded force-cancel);
+3. request cooperative manual-fetch cancellation;
+4. force-cancel manual fetch only if its grace period expires;
 5. request cooperative remote-import cancellation;
-6. wait for bounded remote-import finalization;
-7. force-cancel remote import only if its grace period expires;
-8. request cooperative processing cancellation;
-9. wait for bounded processing finalization;
-10. force-cancel processing only if its grace period expires;
-11. request cooperative analysis cancellation;
-12. wait for bounded analysis finalization;
-13. force-cancel analysis only if its grace period expires;
-14. cancel and await remaining unrelated tracked tasks;
-15. dispose SQLAlchemy connection pools;
-16. optionally request NiceGUI server shutdown.
+6. force-cancel remote import only if its grace period expires;
+7. request cooperative processing cancellation;
+8. force-cancel processing only if its grace period expires;
+9. request cooperative Shock-Start review stop and wait a bounded time;
+   the synchronous detector has no cancellation hook, so there is no
+   forced step: a worker outliving the grace period blocks engine disposal;
+10. cancel and await remaining unrelated tracked tasks;
+11. dispose SQLAlchemy connection pools;
+12. optionally request NiceGUI server shutdown.
 
-Processing cancellation remains cooperative at the synchronous worker boundary.
-Cancelling the owning asyncio task does not assume that asyncio can directly
-terminate a worker thread.
+Cancelling an owning asyncio task never assumes that asyncio can terminate a
+worker thread. If any owner cannot prove its worker stopped, the engine is not
+disposed and shutdown is not published as complete.
 """
 
 from __future__ import annotations
@@ -34,15 +32,14 @@ from typing import Final
 from nicegui import app as nicegui_app
 
 from l2shock.db.engine import reset_engine
-from l2shock.ui.analysis_runtime import peek_manual_analysis_runtime
-from l2shock.ui.shock_runtime import peek_manual_shock_runtime
-from l2shock.ui.components import cancel_and_wait_for_tracked_tasks
-from l2shock.ui.fetch_runtime import peek_manual_fetch_runtime
 from l2shock.ui.automatic_fetch_runtime import (
     peek_automatic_fetch_runtime,
 )
+from l2shock.ui.components import cancel_and_wait_for_tracked_tasks
+from l2shock.ui.fetch_runtime import peek_manual_fetch_runtime
 from l2shock.ui.processing_runtime import peek_manual_processing_runtime
 from l2shock.ui.remote_import_runtime import peek_remote_import_runtime
+from l2shock.ui.shock_runtime import peek_manual_shock_runtime
 from l2shock.ui.state import get_state
 
 log = logging.getLogger(__name__)
@@ -54,7 +51,6 @@ _REMOTE_IMPORT_FORCE_CANCEL_SECONDS: Final[float] = 15.0
 _PROCESSING_GRACE_SECONDS: Final[float] = 30.0
 _PROCESSING_FORCE_CANCEL_SECONDS: Final[float] = 15.0
 _ANALYSIS_GRACE_SECONDS: Final[float] = 30.0
-_ANALYSIS_FORCE_CANCEL_SECONDS: Final[float] = 15.0
 _OTHER_TASK_TIMEOUT_SECONDS: Final[float] = 10.0
 
 
@@ -68,7 +64,6 @@ async def shutdown_runtime(
     processing_grace_seconds: float = _PROCESSING_GRACE_SECONDS,
     processing_force_cancel_seconds: float = (_PROCESSING_FORCE_CANCEL_SECONDS),
     analysis_grace_seconds: float = _ANALYSIS_GRACE_SECONDS,
-    analysis_force_cancel_seconds: float = (_ANALYSIS_FORCE_CANCEL_SECONDS),
     other_task_timeout_seconds: float = _OTHER_TASK_TIMEOUT_SECONDS,
 ) -> None:
     """Perform idempotent bounded application shutdown."""
@@ -191,34 +186,6 @@ async def shutdown_runtime(
                         "cancellation timeout."
                     )
 
-        analysis_runtime = peek_manual_analysis_runtime()
-
-        if analysis_runtime is not None and analysis_runtime.is_running:
-            log.info("Requesting cooperative manual-analysis stop.")
-
-            analysis_stopped = await analysis_runtime.stop_and_wait(
-                grace_seconds=analysis_grace_seconds,
-            )
-
-            if not analysis_stopped:
-                log.warning(
-                    "Manual analysis did not stop within %.3f seconds; "
-                    "requesting bounded task cancellation while preserving "
-                    "the worker's cooperative cancellation event.",
-                    analysis_grace_seconds,
-                )
-
-                analysis_stopped = await analysis_runtime.force_cancel_and_wait(
-                    timeout_seconds=analysis_force_cancel_seconds,
-                )
-
-                if not analysis_stopped:
-                    all_operation_owners_stopped = False
-                    log.error(
-                        "Manual analysis task remained pending after forced "
-                        "cancellation timeout."
-                    )
-
         shock_runtime = peek_manual_shock_runtime()
 
         if shock_runtime is not None and shock_runtime.snapshot().is_running:
@@ -238,6 +205,7 @@ async def shutdown_runtime(
                     "database engine disposal is blocked.",
                     analysis_grace_seconds,
                 )
+
         pending = await cancel_and_wait_for_tracked_tasks(
             timeout_seconds=other_task_timeout_seconds,
         )

@@ -1,5 +1,5 @@
 # l2shock/ui/shock_inspection.py
-"""Paged Shock-Start inspection and existing-controller publication bridge.
+"""Paged Shock-Start inspection rows and one-second selection windows.
 
 A completed ShockReview owns the rows. The selected B area determines which
 bounded one-second L2 window to build. Nothing here runs a scan, reads price,
@@ -20,10 +20,7 @@ from l2shock.analysis.shock_window import (
     ShockAreaWindow,
     build_shock_area_window,
 )
-from l2shock.ui.chart_interactions import (
-    AnalysisChartCommit,
-    AnalysisChartController,
-)
+
 from l2shock.ui.shock_chart_options import (
     PriceBySecond,
     build_shock_chart_options,
@@ -215,27 +212,7 @@ class ShockInspectionModel:
         )
 
 
-async def publish_shock_selection(
-    controller: AnalysisChartController,
-    selection: ShockInspectionSelection,
-) -> AnalysisChartCommit | None:
-    """Publish through the existing token-acknowledged chart controller.
 
-    The caller must still guard against a *newer UI selection* superseding
-    this one, just as the existing Analysis tab guards runtime-result
-    ownership after browser acknowledgement.
-    """
-    if not isinstance(controller, AnalysisChartController):
-        raise TypeError("controller must be AnalysisChartController")
-
-    if not isinstance(selection, ShockInspectionSelection):
-        raise TypeError("selection must be ShockInspectionSelection")
-
-    return await controller.publish(
-        selection.option,
-        owner_id=selection.owner_id,
-        preserve_viewport=False,
-    )
 
 
 __all__ = [
@@ -243,5 +220,4 @@ __all__ = [
     "ShockInspectionModel",
     "ShockInspectionPage",
     "ShockInspectionSelection",
-    "publish_shock_selection",
 ]

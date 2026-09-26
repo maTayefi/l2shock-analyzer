@@ -479,3 +479,28 @@ def test_total_b_and_c_have_distinct_marker_styles():
     assert b_marker["name"] == "Representative B"
     assert c_marker["name"] == "Representative C"
     assert b_marker["lineStyle"]["color"] != (c_marker["lineStyle"]["color"])
+
+
+def test_ui_default_order_is_v3_while_backend_default_stays_v2():
+    import inspect
+    from pathlib import Path
+
+    import l2shock.ui.tab_shock_review as tab_module
+    from l2shock.analysis.shock_review import (
+        SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION,
+        SHOCK_REVIEW_ORDER_LABELS,
+        SHOCK_REVIEW_ORDER_VERSION,
+        SHOCK_REVIEW_ORDER_VERSION_V3,
+    )
+
+    assert SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION == SHOCK_REVIEW_ORDER_VERSION_V3
+    assert "default" in SHOCK_REVIEW_ORDER_LABELS[SHOCK_REVIEW_ORDER_VERSION_V3]
+    assert (
+        inspect.signature(review_shock_areas).parameters["order_version"].default
+        == SHOCK_REVIEW_ORDER_VERSION
+    )
+
+    source = Path(tab_module.__file__).read_text(encoding="utf-8")
+    assert "value=SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION" in source
+    assert "SHOCK_REVIEW_ORDER_VERSION)" not in source
+    assert source.count("order_select.value or SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION") == 2

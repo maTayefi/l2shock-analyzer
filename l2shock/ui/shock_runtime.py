@@ -26,7 +26,11 @@ from l2shock.analysis.shock_evidence import (
     describe_shock_evidence,
 )
 from l2shock.analysis.shock_execution import run_verified_shock_scan
-from l2shock.analysis.shock_review import ShockReview, review_shock_areas
+from l2shock.analysis.shock_review import (
+    ShockReview,
+    reorder_shock_review,
+    review_shock_areas,
+)
 from l2shock.analysis.shock_start import ShockStartConfig
 from l2shock.db.engine import session_scope
 from l2shock.timeutils import now_utc
@@ -209,6 +213,28 @@ class ManualShockRuntime:
         self._task = task
         state.tracked_tasks.add(task)
         return task
+
+    def reorder_last_review(self, order_version: str) -> ShockReview:
+        """Re-sort the completed review in place; no loading or detection.
+
+        Runs on the event loop. It is cheap because every measurement is
+        reused, and it is refused while a review is running.
+        """
+        task = self._task
+
+        if task is not None and not task.done():
+            raise ShockRuntimeBusyError(
+                "Cannot change inspection order while a review is running"
+            )
+
+        review = self._last_review
+
+        if review is None:
+            raise ShockRuntimeBusyError("No completed Shock-Start review to reorder")
+
+        reordered = reorder_shock_review(review, order_version=order_version)
+        self._last_review = reordered
+        return reordered
 
     def request_stop(self) -> bool:
         task = self._task
