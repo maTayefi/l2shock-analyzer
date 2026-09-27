@@ -71,44 +71,50 @@ def test_database_max_overflow_rejects_non_integer_values(
 
 
 @pytest.mark.parametrize(
-    "value",
+    ("key", "value"),
     [
-        True,
-        False,
-        1.5,
-        -0.5,
-        "1.5",
-        object(),
+        ("activity_timeframes", ["1s"]),
+        ("default_activity_timeframe", "1s"),
+        ("default_chart_max_bars", 2000),
+        ("price_context_bars_before", 3),
+        ("price_context_bars_after", 3),
     ],
 )
-def test_analysis_context_rejects_non_integer_values(
+def test_retired_lm_era_analysis_keys_have_actionable_error(
+    key: str,
     value: object,
 ) -> None:
     raw = _minimal_config()
-    raw["analysis"] = {
-        "price_context_bars_before": value,
-    }
+    raw["analysis"] = {key: value}
 
-    with pytest.raises(
-        ValidationError,
-        match="price_context_bars_before",
-    ):
+    with pytest.raises(ValidationError, match=rf"analysis\.{key}"):
         Settings(**raw)
+
+
+def test_retired_lm_era_analysis_fields_are_gone() -> None:
+    fields = type(Settings(**_minimal_config()).analysis).model_fields
+
+    for key in (
+        "activity_timeframes",
+        "default_activity_timeframe",
+        "default_chart_max_bars",
+        "price_context_bars_before",
+        "price_context_bars_after",
+    ):
+        assert key not in fields, key
 
 
 def test_integer_configuration_strings_remain_supported() -> None:
     raw = _minimal_config()
     raw["database"]["max_overflow"] = "7"
     raw["analysis"] = {
-        "price_context_bars_before": "0",
-        "price_context_bars_after": "3",
+        "l2_long_invalid_warning_seconds": "90",
     }
 
     settings = Settings(**raw)
 
     assert settings.database.max_overflow == 7
-    assert settings.analysis.price_context_bars_before == 0
-    assert settings.analysis.price_context_bars_after == 3
+    assert settings.analysis.l2_long_invalid_warning_seconds == 90
 
 
 def test_lm_configuration_section_is_retired() -> None:
@@ -206,7 +212,7 @@ def test_automatic_fetch_catch_up_window_is_bounded(
         ("app", "port", True),
         ("database", "pool_size", 5.0),
         ("storage", "raw_retention_hours", 72.0),
-        ("analysis", "default_chart_max_bars", 400.0),
+        ("analysis", "l2_long_invalid_warning_seconds", 60.0),
     ],
 )
 def test_positive_integer_configuration_rejects_precoercion_values(

@@ -9,8 +9,8 @@ Price is real traded OHLC. Larger price bars aggregate the first real Open,
 maximum High, minimum Low, final real Close, and total trade count.
 
 Missing one-second observations are never forward-filled. They are represented
-as invalid coverage and create a hard discontinuity for later segmentation and
-Liquidity Movement detection.
+as invalid coverage and create a hard discontinuity that Shock-Start detection
+and viewing bars never bridge.
 """
 
 from __future__ import annotations
@@ -354,7 +354,7 @@ class AggregatedL2Bar:
 
     # Numerical summaries of usable one-second observations in this bucket.
     # These do not change endpoint ownership, quality, coverage, or whether
-    # the aligned bar is eligible for chart display or LM analysis.
+    # the aligned bar is eligible for chart display.
     bid_ohlc: L2OHLC | None = None
     ask_ohlc: L2OHLC | None = None
     total_ohlc: L2OHLC | None = None
@@ -411,8 +411,7 @@ class AggregatedL2Bar:
         """Return normalized Bid-Ask Imbalance for diagnostics.
 
         This normalized ratio is retained as a derived analytical helper, but
-        the user-facing fourth liquidity panel and LM metric use Order-Book
-        Delta instead.
+        the user-facing fourth liquidity panel uses Order-Book Delta instead.
         """
         total = self.total_liquidity
 
@@ -685,7 +684,7 @@ def aggregate_l2_seconds(
             total_running.accept(_exact_nonnegative_decimal_sum(bid_value, ask_value))
 
             # Match AggregatedL2Bar.bid_ask_delta() at the endpoint. In
-            # particular, do not change LM's established Delta precision.
+            # particular, keep the established 34-digit Delta precision.
             with localcontext(
                 Context(
                     prec=34,

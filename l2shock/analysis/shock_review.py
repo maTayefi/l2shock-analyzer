@@ -29,7 +29,6 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from fractions import Fraction
-from statistics import median
 from types import MappingProxyType
 
 from l2shock.analysis.robust_stats import midpoint_percentile_ranks
@@ -292,40 +291,6 @@ def _scaled_total_bounds(
         Fraction(min(available), scaled.denominator),
         Fraction(max(available), scaled.denominator),
     )
-
-
-def _total_at(seconds, index: int) -> Fraction:
-    """Legacy per-second accessor; the review path uses _ScaledTotals."""
-    if not 0 <= index < len(seconds):
-        raise ShockReviewError("B-area index lies outside its dataset")
-
-    second = seconds[index]
-    if second.quality is not BookSampleQuality.VALID:
-        raise ShockReviewError("B-area Total diagnostic touches invalid L2 coverage")
-
-    return Fraction(second.bid_liquidity) + Fraction(second.ask_liquidity)
-
-
-def _valid_total_bounds(seconds) -> tuple[Fraction, Fraction] | None:
-    """Legacy exact min/max Total over every VALID second of the scan."""
-    low: Fraction | None = None
-    high: Fraction | None = None
-
-    for second in seconds:
-        if second.quality is not BookSampleQuality.VALID:
-            continue
-
-        total = Fraction(second.bid_liquidity) + Fraction(second.ask_liquidity)
-
-        if low is None or total < low:
-            low = total
-        if high is None or total > high:
-            high = total
-
-    if low is None or high is None:
-        return None
-
-    return low, high
 
 
 def _bc_sharpness_squared(height_fraction: Fraction, seconds: int) -> Fraction:
@@ -779,10 +744,6 @@ def review_shock_areas(
         review_id=_review_id(result, order_version=version),
         order_version=version,
     )
-
-
-# Retained for callers that still compute a Python-level median directly.
-_statistics_median = median
 
 
 __all__ = [

@@ -613,6 +613,7 @@ l2shock/analysis/l2_seconds.py
 l2shock/analysis/multi_market.py
 l2shock/analysis/robust_stats.py
 l2shock/analysis/shock_dataset.py
+l2shock/analysis/shock_diagnostic.py
 l2shock/analysis/shock_diagnostic_cli.py
 l2shock/analysis/shock_evidence.py
 l2shock/analysis/shock_execution.py

@@ -1,7 +1,7 @@
 # l2shock/ui/tab_shock_review.py
 """Shock-Start section of the Analysis tab.
 
-This is intentionally distinct from the legacy LM controls during migration.
+Shock-Start is the sole Analysis workflow.
 Price is optional visual context, never a condition for running a review.
 """
 
@@ -177,7 +177,10 @@ def build_shock_request(
     if end < start:
         raise ValueError("End UTC must not precede Start UTC")
 
-    if (end - start).total_seconds() > 86_400:
+    # Closed endpoints each own their one-second slot: endpoints 86,400 s
+    # apart would load 86,401 slots. Match the diagnostic CLI and the
+    # calendar handoff, which both allow at most 86,400 slots.
+    if (end - start).total_seconds() >= _MAX_SHOCK_SCAN_SECONDS:
         raise ValueError("Shock-Start scan cannot exceed 24 hours")
 
     count = _scale_count(scale_count)
@@ -240,7 +243,7 @@ def _shock_handoff_range(
     if end < start:
         raise ValueError("Handoff end precedes its start")
 
-    if (end - start).total_seconds() <= _MAX_SHOCK_SCAN_SECONDS:
+    if (end - start).total_seconds() < _MAX_SHOCK_SCAN_SECONDS:
         return start, end, False
 
     return end - timedelta(seconds=_MAX_SHOCK_SCAN_SECONDS - 1), end, True
@@ -380,7 +383,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
     with ui.card().classes("w-full"):
         ui.label("Shock-Start — verified Total L2").classes("text-xl font-semibold")
         ui.label(
-            "Separate from legacy LM during migration. "
+            "Shock-Start is the sole Analysis workflow. "
             "Detection uses verified one-second L2. Verified Binance "
             "trade-price candles are optional chart context, loaded "
             "only when a chart is opened."

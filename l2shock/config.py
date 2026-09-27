@@ -530,16 +530,18 @@ class RemoteConfig(StrictConfigModel):
         return bool(self.hf_repo_id and self.hf_token.get_secret_value().strip())
 
 
+_RETIRED_ANALYSIS_KEYS = (
+    "activity_timeframes",
+    "default_activity_timeframe",
+    "default_chart_max_bars",
+    "price_context_bars_before",
+    "price_context_bars_after",
+)
+
+
 class AnalysisConfig(StrictConfigModel):
     supported_bases: list[str] = Field(default_factory=lambda: ["BTC", "ETH"])
     base_sampling_interval_ms: int = 1000
-    activity_timeframes: list[str] = Field(
-        default_factory=lambda: ["1s", "5s", "10s", "15s", "30s"]
-    )
-    default_activity_timeframe: str = "1s"
-    default_chart_max_bars: int = 2000
-    price_context_bars_before: int = 3
-    price_context_bars_after: int = 3
     l2_long_invalid_warning_seconds: int = 60
     price_long_invalid_warning_minutes: int = 3
 
@@ -554,6 +556,14 @@ class AnalysisConfig(StrictConfigModel):
                 "analysis.lm was removed together with the Liquidity Movement "
                 "detector; delete the analysis.lm block from config.yaml"
             )
+        if isinstance(data, dict):
+            retired = [key for key in _RETIRED_ANALYSIS_KEYS if key in data]
+            if retired:
+                names = ", ".join(f"analysis.{key}" for key in retired)
+                raise ValueError(
+                    f"{names} was only read by the removed Liquidity "
+                    "Movement workflow; delete it from config.yaml"
+                )
         return data
 
     @field_validator("supported_bases")
@@ -592,31 +602,7 @@ class AnalysisConfig(StrictConfigModel):
             )
         return result
 
-    @field_validator("activity_timeframes")
-    @classmethod
-    def _activity_timeframes(cls, value: list[str]) -> list[str]:
-        allowed = ("1s", "5s", "10s", "15s", "30s")
-        result: list[str] = []
-        seen: set[str] = set()
-
-        for raw in value or []:
-            item = str(raw or "").strip()
-            if item not in allowed:
-                raise ValueError(
-                    "analysis.activity_timeframes contains unsupported "
-                    f"value {item!r}"
-                )
-            if item not in seen:
-                seen.add(item)
-                result.append(item)
-
-        if not result:
-            raise ValueError("analysis.activity_timeframes cannot be empty")
-
-        return result
-
     @field_validator(
-        "default_chart_max_bars",
         "l2_long_invalid_warning_seconds",
         "price_long_invalid_warning_minutes",
         mode="before",
@@ -627,27 +613,6 @@ class AnalysisConfig(StrictConfigModel):
             value,
             field_name=f"analysis.{info.field_name}",
         )
-
-    @field_validator(
-        "price_context_bars_before",
-        "price_context_bars_after",
-        mode="before",
-    )
-    @classmethod
-    def _nonnegative_context(cls, value: Any, info) -> int:
-        return _strict_nonnegative_int(
-            value,
-            field_name=f"analysis.{info.field_name}",
-        )
-
-    @model_validator(mode="after")
-    def _default_activity_is_supported(self) -> AnalysisConfig:
-        if self.default_activity_timeframe not in self.activity_timeframes:
-            raise ValueError(
-                "analysis.default_activity_timeframe must be present in "
-                "analysis.activity_timeframes"
-            )
-        return self
 
 
 class Settings(BaseSettings):

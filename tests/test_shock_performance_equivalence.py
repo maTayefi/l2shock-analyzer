@@ -339,9 +339,19 @@ def test_scaled_totals_match_exact_bid_plus_ask() -> None:
     from l2shock.analysis.aggregation import L2Second
     from l2shock.analysis.shock_review import (
         _scaled_totals,
-        _valid_total_bounds,
         _scaled_total_bounds,
     )
+
+    def _reference_valid_total_bounds(values):
+        """Pre-Batch-37 exact min/max Total over VALID seconds (reference)."""
+        totals = [
+            Fraction(item.bid_liquidity) + Fraction(item.ask_liquidity)
+            for item in values
+            if item.quality is BookSampleQuality.VALID
+        ]
+        if not totals:
+            return None
+        return min(totals), max(totals)
     from l2shock.ingest.sampling import BookSampleInvalidReason, BookSampleQuality
 
     rng = random.Random(99)
@@ -388,7 +398,7 @@ def test_scaled_totals_match_exact_bid_plus_ask() -> None:
             second.quality is not BookSampleQuality.VALID
         )
 
-    assert _scaled_total_bounds(scaled) == _valid_total_bounds(seconds)
+    assert _scaled_total_bounds(scaled) == _reference_valid_total_bounds(seconds)
 
 
 def test_channel_series_scaling_is_exact_and_cache_is_neutral() -> None:
@@ -423,3 +433,14 @@ def test_channel_series_scaling_is_exact_and_cache_is_neutral() -> None:
     ]
 
     assert first == second == fresh
+
+
+def test_legacy_review_helpers_are_removed() -> None:
+    import l2shock.analysis.shock_review as review_module
+
+    for name in ("_total_at", "_valid_total_bounds", "_statistics_median"):
+        assert not hasattr(review_module, name), name
+
+    # The integer fast paths that replaced them remain available.
+    for name in ("_scaled_totals", "_scaled_total_bounds", "_median_and_mad_scaled"):
+        assert callable(getattr(review_module, name)), name

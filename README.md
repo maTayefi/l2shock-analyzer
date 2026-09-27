@@ -1,7 +1,7 @@
 # L2 Liquidity Shock Analyzer
 
 Local historical order-book research application for reconstructing
-CryptoHFTData L2 feeds, deriving compact liquidity observations, detecting
+CryptoHFTData L2 feeds, deriving compact liquidity observations,
 retrospectively locating Shock-Start B areas in verified one-second Total L2,
 and displaying bounded Bid / Ask / Total / Delta viewports with optional
 Binance perpetual price context.
@@ -51,7 +51,7 @@ compact versioned hourly PostgreSQL blocks
     v
 on-demand timeframe aggregation
     v
-Liquidity Movement detection, ranking, and visualization
+Shock-Start detection, B-area review, and visualization
 ```
 ## Default remote preprocessing profile
 
@@ -1091,8 +1091,8 @@ Bybit BTCUSDT orderbook
 Bybit ETHUSDT orderbook
 ```
 
-Binance Futures trades remain the sole price source for chart OHLC and price
-filtering.
+Binance Futures trades remain the sole price source for optional chart OHLC
+context.
 
 OKX trade files are not included in normal production acquisition merely
 because their schema is available. The OKX integration currently contributes
@@ -1263,7 +1263,7 @@ component data or narrow the requested range.
 
 This prevents changes such as Binance-only liquidity followed by Binance+OKX
 liquidity from producing artificial Bid, Ask, Total, Delta, or Imbalance steps
-that could be misclassified as Liquidity Movements.
+that could be misclassified as Shock-Start B areas.
 
 Aggregate coverage provenance records:
 
@@ -1353,16 +1353,14 @@ A semantic change includes any change to:
 - liquidity depth calculation;
 - bucket sampling;
 - data-quality interpretation;
-- price-filter eligibility;
-- timeline segmentation;
-- LM boundaries or confirmation;
-- LM candidate inclusion;
-- normalization;
-- percentile or modified-Z calculation;
-- ranking;
-- cross-timeframe support;
-- highlight ownership;
-- event plotting location.
+- gap and invalid-second handling;
+- structural scales, pivot radii, forward horizon, or acceleration ratio;
+- turning or acceleration start rules;
+- B-area partitioning or representative choice;
+- channel evidence offsets and thresholds;
+- review measurements or inspection-order keys;
+- percentile calculation;
+- where B, C, or B-area bands are plotted.
 
 Semantic changes must never be made silently.
 
@@ -1371,12 +1369,9 @@ refactoring, cancellation, error handling, testing, and storage optimization
 only when analytical output remains mathematically equivalent.
 
 
-LM ranking V2 is a semantic change. The former terminal-endpoint-only
-extremeness evidence was replaced by an equal-weight mean of directional
-starting-pivot extremeness and terminal-extremum extremeness.
-
-Candidate detection, LM start/end ownership, confirmation ownership, Top-N
-recall, percentile calculations, and modified-Z calculations remain unchanged.
+Shock-Start semantic versions are recorded in the Shock-Start semantic
+contract section below. Changing any rule there requires a new algorithm,
+schema, or order version.
 
 ### Raw archive and PostgreSQL boundary
 
@@ -2705,7 +2700,7 @@ An end time exactly on a bar boundary includes the bar beginning at that
 boundary.
 
 The automatic chart timeframe is the finest supported timeframe whose snapped
-bar count does not exceed the configured maximum chart bars. If no supported
+bar count does not exceed the caller-supplied maximum bar count. If no supported
 timeframe fits, the coarsest supported timeframe is selected and the UI may
 warn that the target was exceeded.
 
@@ -2726,7 +2721,7 @@ endpoint invalid or missing:
 ```
 
 Any invalid or missing one-second L2 observation creates an explicit hard
-discontinuity. Later LM detection and timeframe analysis must not bridge that
+discontinuity. Shock-Start detection and viewing bars must not bridge that
 discontinuity merely because an aggregate endpoint is numerically available.
 
 Real traded price uses standard OHLC aggregation over valid one-second trade
@@ -2764,17 +2759,19 @@ no second contains a valid real-trade candle:
 
 Invalid and missing lower-level price observations remain explicit coverage
 facts. They are not forward-filled. Any such observation creates a hard
-discontinuity for LM segmentation even when a larger degraded OHLC bar can be
-constructed from other real trades in that interval.
+discontinuity for that price bar even when a larger degraded OHLC bar can be
+constructed from other real trades in that interval. Price discontinuities
+never split, move, or block a Shock-Start L2 scan.
 
 Fixed-duration bucket alignment is UTC internally. User-visible timestamps are
 converted to the configured display timezone without changing bucket identity.
 
 
-### Verified aligned analysis datasets
+### Verified Shock-Start L2 dataset
 
-Analysis loading reads compact L2 and price rows through their normal verified
-PostgreSQL repository boundaries.
+`l2shock/analysis/shock_dataset.py` loads compact L2 rows only through the
+verified `AnalyticalRepository` read path (`verify_codec=True`). It never reads
+price rows.
 
 Every loaded row is checked for:
 
@@ -2788,92 +2785,32 @@ quality-summary consistency
 typed source provenance
 ```
 
-The loader decodes authoritative one-second observations and aligns L2 and
-price by exact UTC second identity.
+The user's closed range is snapped to whole seconds: each endpoint owns its
+containing one-second slot, and the loaded range is half-open. Shock-Start
+scans own at most 86,400 slots: the UI and the diagnostic CLI both reject
+endpoints 24 hours or more apart.
 
-A missing persisted L2 or price hour is not silently omitted from coverage.
-Its absent seconds become explicit invalid/missing coverage during aggregation.
+A missing persisted component hour becomes explicit INVALID seconds. It is
+never zero-filled and never forward-filled.
 
-Activity and chart resolutions are built independently from the same verified
-one-second inputs:
-
-```text
-activity timeframe:
-    user-selected from 1s, 5s, 10s, 15s, 30s
-
-chart timeframe:
-    automatically selected from the fixed-duration registry according to the
-    configured maximum chart-bar count
-```
-
-Each resolution applies its own permissive closed-endpoint snapping. Therefore
-activity and chart series may have different aligned outer ranges while
-remaining owned by one analysis request.
-
-For every aligned aggregated bar, the dataset retains:
+Single-market presets use their component rows directly. Aggregate presets
+resolve their component preset hashes, then per second:
 
 ```text
-exact L2 endpoint values
-exact real-trade aggregate OHLC
-price-filter eligibility
-display-only clipped OHLC
-L2 coverage diagnostics
-price coverage diagnostics
-hard-discontinuity state
-explicit discontinuity reasons
+every expected market VALID      -> exact Bid and Ask sums, VALID
+no expected market VALID         -> INVALID second (hard break)
+some but not all markets VALID   -> the scan is rejected with a
+                                    market-coverage error
 ```
 
-A bar belongs to a continuous analysis core only when:
-
-```text
-true price OHLC intersects the active price bounds
-and
-price coverage contains no invalid/missing lower-level second
-and
-L2 coverage contains no invalid/missing lower-level second
-and
-the L2 endpoint owns valid Bid and Ask Liquidity
-```
-
-A larger degraded bar may remain visible for diagnostics, but it cannot hide a
-lower-level discontinuity or join two LM candidate runs.
-
-Price-excluded periods remain explicit discontinuity runs. They are not removed
-and concatenated into a false continuous timeline.
-
-Detection context may include a configured number of adjacent valid
-price-excluded bars before or after one core segment. Context:
-
-```text
-cannot cross a hard L2 or price boundary
-cannot include another eligible core segment
-cannot merge two independently eligible segments
-```
-
-Each dataset receives a deterministic analysis ID. Its canonical identity
-includes:
-
-```text
-base
-data-preset hash
-closed requested UTC range
-activity timeframe
-automatic chart timeframe and bar budget
-price bounds
-context counts
-software/schema version
-expected hourly coverage
-exact persisted L2 content hashes
-exact persisted price content hashes
-```
-
-Changing display colors, panel visibility, or temporary chart navigation does
-not change this analysis identity.
+Price availability, trade counts, chart timeframe, and viewing bars are never
+inputs to this dataset.
 
 
 ### Price source identity
 
-Price charts and price filtering use real Binance USD-M USDT perpetual trades:
+Price charts use real Binance USD-M USDT perpetual trades as optional context
+(never a Shock-Start detection input):
 
 ```text
 BTCUSDT
@@ -3236,15 +3173,14 @@ forward-fill.
 A valid reconstructed book may retain its last state through a quiet bucket,
 but only while initialization and sequence continuity remain proven.
 
-An LM:
+A Shock-Start hypothesis:
 
-- cannot start or end on an invalid observation;
-- cannot cross an invalid run;
-- cannot cross a filtered-time discontinuity;
-- may overlap degraded observations only while retaining explicit quality
-  diagnostics.
+- cannot place A, B, or C on an invalid second;
+- cannot cross an invalid or missing second;
+- is never produced from partial aggregate-market coverage; the verified
+  loader rejects such a scan instead.
 
-Warnings do not automatically block analysis of other valid segments.
+Invalid seconds do not block detection in other valid runs of the same scan.
 
 A persistent red warning region is required when:
 
@@ -3259,122 +3195,36 @@ real Binance traded price is invalid or unavailable for more than
 3 consecutive minutes.
 ```
 
-### LM analysis execution and deterministic result identity
+### Application-owned Shock-Start runtime
 
-Liquidity Movement execution starts from one verified aligned analysis dataset.
+Verified L2 loading, compact-channel decoding, Shock-Start detection, channel
+evidence, and B-area review are synchronous analytical operations.
 
-For each unique analytical timeframe owned by that dataset, the executor runs
-the same detector for every configured liquidity metric:
+The application runs them in one worker thread owned by
+`l2shock/ui/shock_runtime.py` (operation name `manual_shock_review`) so the
+NiceGUI event loop remains responsive.
 
-```text
-Bid Liquidity
-Ask Liquidity
-Total Liquidity
-Bid-Ask Imbalance
-```
-
-Activity and chart resolutions are separate when their timeframe labels differ.
-If both roles resolve to the same timeframe, that timeframe is executed once.
-The system must not duplicate candidates merely because one series has both
-activity and chart presentation ownership.
-
-For each metric and timeframe, scan bounds are calculated from the complete
-usable selected-metric series. They are not inferred only from detected
-candidate endpoints.
-
-Streams with fewer than two usable values or with zero metric range produce an
-explicit empty result slice. They do not fail the complete analysis.
-
-The executor then performs:
-
-```text
-segment-scoped candidate detection
--> explicit metric/timeframe scan bounds
--> independent metric/timeframe/direction population ranking
--> Top-N height/sharpness recall union
--> immutable result slices
-```
-
-Every execution receives a deterministic SHA-256 identity derived from:
-
-```text
-aligned dataset analysis ID
-selected metrics
-unique analytical timeframe labels
-detector schema and algorithm versions
-confirmation-retracement configuration
-detector Decimal precision
-ranking schema and algorithm versions
-Top-N configuration
-ranking priorities
-ranking Decimal precision
-analysis-execution schema and algorithm versions
-```
-
-The execution identity excludes:
-
-```text
-chart colors
-visibility toggles
-table sort order
-selected table row
-crosshair position
-zoom and navigation state
-progress callbacks
-cache state
-```
-
-Changing a semantic detector or ranking setting creates a different execution
-identity.
-
-Completed immutable results may be stored in a bounded process-local LRU cache.
-A cache hit reuses only an exact matching execution identity. Cancelled or
-failed executions must never publish partial results into the cache.
-
-Progress callbacks are operational diagnostics. A progress-rendering failure
-does not alter detection or ranking truth.
-
-
-### Application-owned analysis runtime
-
-Verified dataset loading, compact-channel decoding, timeframe aggregation,
-Shock-Start detection, channel evidence, and B-area review are synchronous analytical
-operations.
-
-The application executes them in a worker thread so the NiceGUI event loop
-remains responsive.
-
-Analysis shares one process-wide operation admission boundary with:
+Shock-Start review shares one process-wide operation admission boundary with:
 
 ```text
 Manual Fetch
 Manual Processing
-Manual Analysis
+Remote HF Import
+Shock-Start review
 ```
 
 Only one of those operations may run at a time.
 
-The runtime owns:
-
-```text
-operation UUID
-cooperative cancellation Event
-latest progress
-latest immutable completed result
-latest secret-safe error
-bounded process-local analysis cache
-```
-
 Database sessions are created and closed inside the worker thread which uses
 them. ORM objects never cross the worker/event-loop boundary.
 
-Stop Analysis sets the thread-safe cancellation event. The synchronous
-executor checks that event between analytical slices and before cache
-publication.
+Stop is cooperative at stage boundaries: between the scan, evidence, and review
+stages, and after the worker returns. It cannot interrupt a detector call that
+is already running. Cancelling an asyncio wrapper is never treated as if it
+forcibly terminated the Python worker thread.
 
-Native cancellation of the owning asyncio task also sets the cooperative event
-and waits for the worker boundary. Cancelling an asyncio wrapper is never
-treated as if it forcibly terminated the Python worker thread.
+A stopped, cancelled, or failed run never publishes a partial scan, evidence
+result, or review.
 
 Application shutdown starts from the global header Shutdown button (top right,
 outside the tabs, visible on every tab) after confirmation. The full sequence,
@@ -3391,444 +3241,9 @@ raise admission barrier
 -> stop NiceGUI
 ```
 
-A cancelled or failed analysis never publishes a partial result into the cache.
+Completed reviews are process-local presentation/runtime objects. They are not
+PostgreSQL rows, raw source storage, or database backups.
 
-Completed analysis results are process-local presentation/runtime objects. They
-are not PostgreSQL rows, raw source storage, or database backups.
-
-
-### Functional Analysis controls and result table
-
-The Analysis tab constructs one immutable verified-analysis request from:
-
-```text
-base asset
-enabled data-preset hash
-closed local-time start/end inputs
-activity timeframe
-maximum chart-bar budget
-optional minimum and maximum price bounds
-price-filter context counts
-LM confirmation fraction
-Top-N height count
-Top-N sharpness count
-```
-
-User-local datetimes are converted strictly through the configured IANA
-timezone. Ambiguous or nonexistent local times are rejected.
-
-Only enabled persisted data presets are selectable. Selecting a preset does not
-edit or reinterpret its semantic identity.
-
-Run Analysis uses the application-owned analysis runtime. Manual Fetch, Manual
-Processing, and Manual Analysis remain mutually exclusive through the shared
-process operation boundary.
-
-The first result UI presents the selected candidate union:
-
-```text
-Top N by height evidence
-union
-Top N by sharpness evidence
-```
-
-for every independent:
-
-```text
-metric
-x timeframe
-x direction
-```
-
-population.
-
-The result table retains sortable diagnostics including:
-
-```text
-candidate start and extremum times
-confirmation time
-offline-terminal state
-absolute and relative height
-bar count
-sharpness
-height percentile and modified-Z evidence
-sharpness percentile and modified-Z evidence
-primary and secondary ranking evidence
-directional start extremeness
-directional end extremeness
-equal-weight boundary extremeness
-retracement magnitude quality
-retracement count quality
-quality diagnostics
-selection flags
-```
-
-Table values are presentation copies. Exact analytical Decimal values remain
-owned by the immutable process-local analysis result.
-
-The Analysis UI includes synchronized chart rendering, selected-candidate
-navigation, browser render acknowledgement, chart-timeframe rebuilding, and
-JSON/PNG/SVG export.
-
-All chart controls remain presentation-only unless an explicit chart timeframe
-is selected. An explicit chart timeframe rebuilds the verified analytical
-series and therefore owns a new deterministic Analysis identity.
-
-
-### Synchronized Analysis chart workspace
-
-The first Analysis chart workspace uses one ECharts instance containing five
-vertically stacked grids:
-
-```text
-Binance perpetual price candlesticks
-Bid Liquidity
-Ask Liquidity
-Total Liquidity
-Bid-Ask Imbalance
-```
-
-One ECharts instance owns:
-
-```text
-one canonical chart-timeframe category identity
-linked x-axis pointers
-shared inside zoom
-shared slider zoom
-shared horizontal navigation
-```
-
-The price panel uses display-only clipped OHLC when active price bounds require
-clipping. Exact real Binance OHLC remains unchanged in the immutable analysis
-result.
-
-The chart displays chart-timeframe core-eligible bars. Invalid or
-price-filter-excluded runs are compressed from the visible category sequence,
-but every compression boundary receives an explicit timeline-jump marker with:
-
-```text
-skipped elapsed seconds
-discontinuity reasons
-persistent-warning state
-```
-
-A timeline jump must never be presented as ordinary contiguous elapsed time.
-
-Long data warnings use the configured project thresholds:
-
-```text
-L2 invalid/unavailable for more than 60 seconds
-real traded price invalid/unavailable for more than 180 seconds
-```
-
-Liquidity Movement highlight visibility is presentation-only.
-
-The initial visibility controls independently own:
-
-```text
-Price destination
-liquidity-subplot destination
-activity-timeframe candidates
-chart-timeframe candidates
-Top-N height selection
-Top-N sharpness selection
-Bid / Ask / Total / Imbalance metric layers
-```
-
-Changing those controls does not change:
-
-```text
-candidate detection
-population statistics
-ranking
-Top-N selection
-analysis identity
-stored data
-```
-
-Individual candidate opacity uses the ranking diagnostic
-`priority_weighted_evidence` and the configured linear alpha range.
-
-Same-direction overlapping candidates accumulate by alpha composition.
-Combined upward/downward opacity is bounded by the configured accumulated-alpha
-cap.
-
-Cross-timeframe overlap remains visualization aggregation only. Candidates from
-different timeframe populations never compete statistically merely because
-their chart highlights overlap.
-
-The chart workspace now includes:
-
-```text
-browser render acknowledgement
-stale-publication rejection
-custom gapped Price crosshair
-vertical-only liquidity-panel cursor lines
-table-row navigation
-selected-LM emphasis
-explicit chart-timeframe rebuilding
-timestamp-owned left-edge restoration
-deterministic JSON export
-browser-owned PNG and SVG export
-```
-
-These capabilities do not alter persisted data or LM ranking truth.
-
-
-### Chart publication and interaction ownership
-
-Every complete Analysis chart option receives a unique hidden render identity.
-
-A chart generation is considered committed only after the browser confirms:
-
-```text
-the expected render-token series exists
-the expected category count exists
-the ECharts instance has a usable width and height
-the Python widget has not been superseded by a later publication
-```
-
-Updating only NiceGUI's stored component property is insufficient because the
-live ECharts instance may retain removed series or graphics.
-
-Updating only the live ECharts instance is also insufficient because a later
-NiceGUI component update may replay an older stored property.
-
-Therefore publication requires:
-
-```text
-NiceGUI/Vue complete options property
-+
-ECharts setOption(notMerge=true)
-+
-browser acknowledgement
-```
-
-Presentation-only highlight changes preserve the current percentage-based
-dataZoom viewport when the same completed Analysis result remains the owner.
-
-The custom Analysis crosshair is browser-side and does not round-trip mousemove
-events through Python.
-
-On the Price panel it uses four line segments with an approximately 50-pixel
-gap around the pointer:
-
-```text
-left horizontal
-right horizontal
-upper vertical
-lower vertical
-```
-
-On Bid, Ask, Total, and Imbalance panels it uses synchronized vertical-only
-lines.
-
-Native ECharts axis-pointer lines remain transparent while their category and
-tooltip ownership remains available.
-
-Clicking a selected-LM table row navigates both chart dataZoom components to
-the candidate's compressed chart-category interval. Navigation is accepted only
-when:
-
-```text
-the current Analysis result owns the row
-the browser-acknowledged chart generation is still current
-the candidate overlaps visible chart-timeframe core bars
-```
-
-Table navigation, crosshair graphics, zoom state, and visibility controls are
-presentation-only. They never change:
-
-```text
-candidate detection
-ranking populations
-Top-N selection
-analysis identity
-stored data
-```
-
-
-### Selected-LM emphasis and Analysis export
-
-Clicking a selected Liquidity Movement table row adds an amber focus region to
-the candidate interval in all five synchronized chart panels.
-
-Selected focus is presentation-only. It does not change:
-
-```text
-candidate boundaries
-ranking evidence
-Top-N selection
-analysis identity
-stored analytical data
-```
-
-The selected focus owner is retained across presentation-only highlight
-rerenders while the same immutable Analysis result continues to own the chart.
-
-Completed Analysis results can be exported as deterministic JSON.
-
-The JSON export contains:
-
-```text
-analysis and dataset identities
-dataset provenance
-execution schema and algorithm versions
-exact semantic configuration
-metric/timeframe slices
-scan bounds
-all candidates
-all rankings
-selected-candidate identities
-exact analytical decimals as canonical strings
-display timezone identity
-```
-
-The JSON export excludes:
-
-```text
-browser render tokens
-zoom state
-crosshair state
-selected table-row presentation state
-temporary chart visibility controls
-```
-
-PNG and SVG exports are produced from the exact browser-acknowledged chart
-generation.
-
-Immediately before image capture, export verifies that:
-
-```text
-the current Analysis result still owns the chart
-the acknowledged render token is unchanged
-the browser ECharts instance still contains that token
-```
-
-Image export clones the live chart option into an off-screen ECharts instance.
-Transient custom-crosshair graphics are removed from the clone. Selected-LM
-focus regions remain because they are deliberate series-owned presentation
-state.
-
-PNG uses a Canvas export clone. SVG uses an SVG-renderer export clone.
-
-Exported Analysis JSON, PNG, and SVG files are research artifacts. They are not
-database backups.
-
-
-### Explicit chart-timeframe rebuilding
-
-The chart timeframe may be:
-
-```text
-automatic
-or
-one explicitly selected registered fixed-duration timeframe
-```
-
-Automatic selection chooses the finest registered fixed timeframe whose
-permissively snapped chart range fits the configured maximum automatic chart
-bar count.
-
-An explicit chart-timeframe selection is analytical input. It does not resample
-or interpolate the existing browser chart.
-
-Changing it performs:
-
-```text
-new immutable AnalysisDatasetRequest
--> verified PostgreSQL compact-row loading
--> fixed-timeframe aggregation
--> price-filter segmentation
--> chart-timeframe LM detection
--> isolated population ranking
--> new deterministic dataset identity
--> new deterministic execution identity
--> complete acknowledged chart publication
-```
-
-The explicit selection policy and requested chart timeframe are included in
-dataset provenance.
-
-Activity-timeframe and chart-timeframe LM populations remain independent. If
-the explicit chart timeframe equals the activity timeframe, the execution
-engine continues to process that unique series only once.
-
-Before a chart-timeframe rebuild begins, the application may capture the
-currently acknowledged chart's:
-
-```text
-visible left-edge UTC timestamp
-visible real elapsed duration
-source chart-timeframe duration
-```
-
-After the new result is browser-acknowledged, it maps the old UTC left edge to
-the nearest visible category in the new compressed timeline and restores an
-approximately equal elapsed duration.
-
-Timestamp-based restoration is accepted only when:
-
-```text
-the old chart generation was acknowledged
-the captured viewport belongs to the exact request being rebuilt
-the new completed result owns that request
-the new chart generation is acknowledged
-the new chart still owns the expected render token
-```
-
-Filtered or invalid runs remain hard analytical discontinuities. Timestamp
-mapping may move to the nearest visible category when the exact old edge is not
-present, but it never recreates an excluded category or joins separate
-analytical segments.
-
-Calendar-month timeframes remain excluded from the fixed-duration registry.
-They require a separate calendar-aware aggregation and identity contract.
-
-
-### Multi-timeframe behavior
-
-The stored one-second series may be aggregated into:
-
-```text
-1s
-5s
-10s
-15s
-30s
-automatic chart timeframe
-```
-
-One shared detector implementation is applied to each derived series.
-
-Rankings remain independent by metric, timeframe, and direction.
-
-Cross-timeframe overlap is visualization aggregation only. It must not merge
-statistical ranking populations.
-
-A time/price region supported by several strong candidates may become more
-visible through accumulated highlight alpha.
-
-### Highlight behavior
-
-Default direction colors:
-
-```text
-Upward LM   = blue
-Downward LM = red
-```
-
-Individual alpha is score-driven, initially within approximately:
-
-```text
-0.05 to 0.18
-```
-
-Overlapping highlights may accumulate, but effective alpha should be capped
-around `0.35-0.40` to preserve candle readability.
-
-Visibility controls affect rendering only. They never change detection,
-scoring, ranking, or stored data.
 
 ### Timezone contract
 
@@ -3913,10 +3328,10 @@ chart colors
 visible panels
 chart timeframe
 activity timeframe
-LM parameters
+Shock-Start scale, evidence, and inspection-order settings
 Top-N
-highlight opacity
-price display filters
+annotation visibility switches
+optional price context
 temporary UI state
 ```
 
@@ -4058,8 +3473,8 @@ coverage is `VALID`.
 
 If at least one but fewer than all expected markets contribute, the pure
 aggregation layer represents the second as `DEGRADED` and retains the exact
-partial sum for diagnostics. Verified Liquidity Movement Analysis rejects that
-second whenever it overlaps the effective activity or chart range.
+partial sum for diagnostics. The verified Shock-Start loader rejects the complete
+scan when such a second lies inside the selected range.
 
 The missing market is never interpreted as zero liquidity.
 
@@ -4171,27 +3586,26 @@ Range reads use half-open UTC bounds:
 This repository persists no raw L2 rows and does not promote acquisition or
 reconstruction status. Processing orchestration owns those later transitions.
 
-### Analysis identity and exports
+### Shock-Start identity and exports
 
-Every analysis result and export must include provenance sufficient to identify:
+Every completed review carries three deterministic SHA-256 identities:
 
-- base;
-- scan bounds;
-- timezone;
-- price source;
-- data preset hash;
-- depth bounds;
-- metric;
-- activity timeframe;
-- chart timeframe;
-- LM settings;
-- ranking settings;
-- quality policy;
-- software version;
-- analysis schema version;
-- source-hour identities.
+```text
+input_id    base, preset hash, requested and snapped UTC range, and every
+            expected component hour with its content SHA-256 (null if absent)
+scan_id     input_id, detector version, acceleration ratio, and every
+            structural scale (name, minimum leg fraction, pivot radius,
+            forward-radius multiplier)
+review_id   the reviewed evidence result, the review schema, and the
+            inspection-order version
+```
 
-JSON, PNG, and SVG exports must never be presented as database backups.
+Price, chart timeframe, viewing bars, zoom, colours, row selection, and the
+annotation switches are never part of these identities.
+
+JSON review-row exports use exact rational strings. JSON, PNG, and SVG exports
+are research artifacts and must never be presented as database backups.
+
 
 ### Explicit non-goals
 
@@ -4445,8 +3859,8 @@ Implementation order:
 8. market eligibility and preset identity;
 9. compact hourly storage;
 10. trade-price OHLC;
-11. timeframe aggregation and filtering;
-12. LM detection and ranking;
+11. timeframe aggregation;
+12. Shock-Start detection, channel evidence, and B-area review;
 13. orchestration and caching;
 14. Fetch and Settings UI;
 15. Analysis UI;

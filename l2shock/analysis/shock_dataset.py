@@ -2,7 +2,7 @@
 """Verified, price-independent one-second L2 input for Shock-Start Analysis.
 
 This module does not read price rows, construct price-eligible segments,
-change LM, or write to the database. Missing L2 seconds remain explicit
+or write to the database. Missing L2 seconds remain explicit
 invalid observations; no liquidity value is forward-filled.
 """
 
