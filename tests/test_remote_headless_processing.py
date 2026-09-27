@@ -631,3 +631,16 @@ def test_headless_price_skips_exact_binance_zero_price_trade_rows(
 
     assert "BINANCE ZERO-PRICE TRADE ROW SKIPPED" in caplog.text
     assert "skipped_zero_price_rows=1" in caplog.text
+
+
+def test_headless_l2_docstring_and_type_check_precede_logging() -> None:
+    import pytest
+
+    from l2shock.remote.headless_processing import process_l2_archive_headlessly
+
+    assert (process_l2_archive_headlessly.__doc__ or "").startswith(
+        "Process one explicit local order-book archive"
+    )
+
+    with pytest.raises(TypeError, match="ProcessingSourceArchive"):
+        process_l2_archive_headlessly(object(), object())  # type: ignore[arg-type]

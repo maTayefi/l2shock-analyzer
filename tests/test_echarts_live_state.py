@@ -388,3 +388,14 @@ async def test_failed_apply_fails_fast_with_browser_error() -> None:
     assert "reset stale ECharts flags=__flagInMainProcess" in reason
     assert "last browser error=TypeError: x is undefined" in reason
     assert len(chart.client.codes) == 1
+
+
+def test_live_probe_series_summary_is_outside_registry_try() -> None:
+    from l2shock.ui.echarts import _LIVE_STATE_PROBE_JS
+
+    apply_index = _LIVE_STATE_PROBE_JS.index("var applyRecord = null;")
+    series_index = _LIVE_STATE_PROBE_JS.index("var seriesList = asList(option.series);")
+    registry_block = _LIVE_STATE_PROBE_JS[apply_index:series_index]
+
+    assert "} catch (error) {}" in registry_block
+    assert _LIVE_STATE_PROBE_JS.count("var seriesList") == 1

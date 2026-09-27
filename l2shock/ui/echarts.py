@@ -683,6 +683,7 @@ _LIVE_STATE_PROBE_JS: Final[str] = r"""
                     )
                 };
             }
+        } catch (error) {}
 
         var seriesList = asList(option.series);
         var seriesNames = seriesList.slice(0, 8).map(function (item) {
@@ -690,7 +691,6 @@ _LIVE_STATE_PROBE_JS: Final[str] = r"""
                 ? String(item.name).slice(0, 48)
                 : "";
         });
-        } catch (error) {}
 
         return {
             ok: true,

@@ -16,6 +16,7 @@ Important boundaries:
 
 from __future__ import annotations
 
+import logging as _logging
 import math
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
@@ -23,9 +24,8 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, TypeAlias
+from typing import Any, Final, TypeAlias
 
-import pyarrow as pa
 import pyarrow.parquet as pq
 
 from l2shock.acquisition.models import SourceDataKind, SourceFileSpec
@@ -38,6 +38,8 @@ DEFAULT_BATCH_SIZE: Final[int] = 65_536
 DEFAULT_MAX_EVENT_ROWS: Final[int] = 1_000_000
 DEFAULT_CANCELLATION_CHECK_INTERVAL_ROWS: Final[int] = 4_096
 MAX_RETAINED_DIAGNOSTIC_ISSUES: Final[int] = 100
+
+_integer_log = _logging.getLogger(__name__)
 
 _ORDERBOOK_COLUMNS: Final[tuple[str, ...]] = (
     "received_time",
@@ -68,7 +70,6 @@ _TRADE_COLUMNS: Final[tuple[str, ...]] = (
 )
 
 # Required-column sets used by _validate_projected_columns.
-# _ORDERBOOK_REQUIRED_COLUMNS was referenced but never defined.
 _ORDERBOOK_REQUIRED_COLUMNS: Final[frozenset[str]] = frozenset(_ORDERBOOK_COLUMNS)
 _TRADES_REQUIRED_COLUMNS: Final[frozenset[str]] = frozenset(_TRADE_COLUMNS)
 
@@ -456,11 +457,6 @@ def _nullable_text(
         row_number=row_number,
     )
     return normalized
-
-
-import logging as _logging
-
-_integer_log = _logging.getLogger(__name__)
 
 
 def _integer(

@@ -20,6 +20,7 @@ There is no second L2 or price implementation here.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -60,16 +61,14 @@ from l2shock.remote.artifact_codec import (
     read_remote_artifact_file,
     write_remote_artifact_file,
 )
-
-import logging
-
-log = logging.getLogger(__name__)
 from l2shock.remote.contracts import (
     RemoteArtifactKey,
     RemoteArtifactKind,
     RemoteArtifactManifest,
     RemoteSourceHourReference,
 )
+
+log = logging.getLogger(__name__)
 
 
 def _positive_integer(
@@ -234,15 +233,6 @@ def process_l2_archive_headlessly(
     cancellation_check_interval_levels: int = 1_024,
     imbalance_decimal_precision: int = 34,
 ) -> HeadlessL2ProcessingOutput:
-    log.info(
-        "HEADLESS L2 PROCESSING START: venue=%s symbol=%s hour=%s "
-        "has_input_checkpoint=%s local_path=%s",
-        target_archive.spec.venue,
-        target_archive.spec.symbol,
-        target_archive.spec.hour_utc.isoformat(),
-        input_checkpoint_bytes is not None,
-        target_archive.local_path,
-    )
     """Process one explicit local order-book archive without PostgreSQL.
 
     The optional checkpoint must belong to the immediately preceding UTC hour
@@ -254,6 +244,16 @@ def process_l2_archive_headlessly(
 
     if not isinstance(target_archive, ProcessingSourceArchive):
         raise TypeError("target_archive must be ProcessingSourceArchive")
+
+    log.info(
+        "HEADLESS L2 PROCESSING START: venue=%s symbol=%s hour=%s "
+        "has_input_checkpoint=%s file=%s",
+        target_archive.spec.venue,
+        target_archive.spec.symbol,
+        target_archive.spec.hour_utc.isoformat(),
+        input_checkpoint_bytes is not None,
+        target_archive.local_path.name,
+    )
 
     target = target_archive.spec
     _validate_l2_preset(
