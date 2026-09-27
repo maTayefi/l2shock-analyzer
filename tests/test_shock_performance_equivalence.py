@@ -352,6 +352,7 @@ def test_scaled_totals_match_exact_bid_plus_ask() -> None:
         if not totals:
             return None
         return min(totals), max(totals)
+
     from l2shock.ingest.sampling import BookSampleInvalidReason, BookSampleQuality
 
     rng = random.Random(99)
