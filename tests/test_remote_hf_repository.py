@@ -700,3 +700,71 @@ def test_publication_retry_delay_floors_zero_retry_after(
         )
         == module._MINIMUM_CONFLICT_RETRY_SECONDS
     )
+
+
+def test_publication_repairs_compatible_manifest_only_pair(tmp_path: Path) -> None:
+    api = FakeHfApi()
+    calls: list[dict[str, object]] = []
+    repository = _repository(api, tmp_path, calls)
+    artifact = _price_artifact()
+    key = artifact.manifest.key
+
+    api.snapshots[api.head][
+        key.manifest_relative_path
+    ] = artifact.manifest.canonical_json_bytes
+
+    result = repository.publish_artifact(artifact)
+
+    assert result.created is True
+    snapshot = api.snapshots[api.head]
+    assert key.relative_path in snapshot
+    assert snapshot[key.manifest_relative_path] == (
+        artifact.manifest.canonical_json_bytes
+    )
+    assert repository.require_artifact(key, revision=result.revision).artifact == (
+        artifact
+    )
+
+
+def test_publication_repairs_compatible_artifact_only_pair(tmp_path: Path) -> None:
+    from l2shock.remote.artifact_codec import write_remote_artifact_file
+
+    api = FakeHfApi()
+    calls: list[dict[str, object]] = []
+    repository = _repository(api, tmp_path, calls)
+    artifact = _price_artifact()
+    key = artifact.manifest.key
+
+    lone = tmp_path / "lone-artifact.parquet"
+    write_remote_artifact_file(lone, artifact)
+    api.snapshots[api.head][key.relative_path] = lone.read_bytes()
+
+    result = repository.publish_artifact(artifact)
+
+    assert result.created is True
+    assert key.manifest_relative_path in api.snapshots[api.head]
+    assert repository.require_artifact(key, revision=result.revision).artifact == (
+        artifact
+    )
+
+
+def test_publication_rejects_conflicting_lone_manifest(tmp_path: Path) -> None:
+    import pytest
+
+    from l2shock.remote.hf_repository import HuggingFaceArtifactConflictError
+
+    api = FakeHfApi()
+    calls: list[dict[str, object]] = []
+    repository = _repository(api, tmp_path, calls)
+    artifact = _price_artifact()
+    other = _price_artifact(price="101.5")
+    key = artifact.manifest.key
+
+    api.snapshots[api.head][
+        key.manifest_relative_path
+    ] = other.manifest.canonical_json_bytes
+
+    with pytest.raises(HuggingFaceArtifactConflictError):
+        repository.publish_artifact(artifact)
+
+    assert api.create_commit_calls == []

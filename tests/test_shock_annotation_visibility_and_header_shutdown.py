@@ -176,7 +176,17 @@ def test_shutdown_is_in_global_header_not_settings() -> None:
 
     assert "shutdown_runtime(request_server_stop=True)" in control_source
     assert "Confirm Application Shutdown" in control_source
-    assert "if state.shutdown_started:" in control_source
+
+    # Batch 1 intentionally removed the old one-shot state.shutdown_started
+    # guard from shutdown_control.py. The header control now uses a local
+    # in-progress flag, reports shutdown failure, and allows retry.
+    assert "if state.shutdown_started:" not in control_source
+    assert "shutdown_in_progress" in control_source
+    assert "nonlocal shutdown_in_progress" in control_source
+    assert "state.shutdown_complete" in control_source
+    assert "if shutdown_in_progress or state.shutdown_complete:" in control_source
+    assert "async def _run_shutdown" in control_source
+    assert "Shutdown again to retry" in control_source
 
 
 def test_display_timezone_adds_formatters_without_mutation() -> None:
@@ -244,3 +254,14 @@ def test_tab_wires_data_quality_switch_as_display_only() -> None:
         "dataset_l2_warning_regions",
     ):
         assert forbidden not in handler_source
+
+
+def test_header_shutdown_reports_failure_and_allows_retry() -> None:
+    from pathlib import Path
+
+    import l2shock.ui.shutdown_control as control
+
+    source = Path(control.__file__).read_text(encoding="utf-8")
+    assert "async def _run_shutdown" in source
+    assert "press " in source and "Shutdown again to retry" in source
+    assert "shutdown_in_progress" in source

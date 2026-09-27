@@ -599,9 +599,13 @@ def _run_l2(args: argparse.Namespace) -> dict[str, object]:
         imbalance_decimal_precision=(args.imbalance_decimal_precision),
     )
 
+    # Same rule as the remote worker and local processing: an all-invalid
+    # hour must never publish an authoritative output checkpoint.
+    from l2shock.remote_worker import _l2_artifact_for_publication
+
     return _publish_artifact_pair(
         args.output_dir,
-        output.artifact,
+        _l2_artifact_for_publication(output),
         overwrite=args.overwrite,
     )
 

@@ -1300,7 +1300,10 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
                 # because browser acknowledgement must be awaited.
                 # _show_bounded_view uses the same generation/review
                 # guards as a manually requested viewport.
-                asyncio.create_task(_show_bounded_view())
+                create_tracked_task(
+                    _show_bounded_view(),
+                    name="l2shock-shock-viewport-after-review",
+                )
             else:
                 view_button.disable()
                 status.text = "Review complete: no B areas to inspect."
@@ -1350,7 +1353,10 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
                 f"Inspection order: {label}. "
                 "Opening the bounded L2 viewport for area #1\u2026"
             )
-            asyncio.create_task(_show_bounded_view())
+            create_tracked_task(
+                _show_bounded_view(),
+                name="l2shock-shock-viewport-after-reorder",
+            )
         else:
             view_button.disable()
             status.text = f"Inspection order: {label}. No B areas to inspect."

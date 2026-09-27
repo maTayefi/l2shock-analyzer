@@ -208,3 +208,19 @@ async def test_fetch_completion_does_not_clear_newer_operation_owner() -> None:
 
     assert state.active_operation_name == "settings_maintenance"
     assert state.active_operation_started_at == _utc(12)
+
+
+def test_fetch_start_without_event_loop_rolls_back_admission() -> None:
+    reset_state_for_tests()
+    runtime = ManualFetchRuntime()
+    runtime.attach_coordinator(FakeCoordinator())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError):
+        runtime.start(
+            requested_start_utc=_utc(12),
+            requested_end_utc=_utc(13),
+        )
+
+    assert get_state().active_operation_name == ""
+    assert get_state().active_operation_started_at is None
+    assert runtime.is_running is False

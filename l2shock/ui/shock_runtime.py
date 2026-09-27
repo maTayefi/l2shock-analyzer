@@ -192,19 +192,25 @@ class ManualShockRuntime:
         state.active_operation_name = _OPERATION_NAME
         state.active_operation_started_at = started_at
 
+        coroutine = self._run(
+            request=request,
+            config=config,
+            evidence_config=evidence_config,
+            stop_event=stop_event,
+        )
+
         try:
             task = asyncio.create_task(
-                self._run(
-                    request=request,
-                    config=config,
-                    evidence_config=evidence_config,
-                    stop_event=stop_event,
-                ),
+                coroutine,
                 name="l2shock-manual-shock-review",
             )
         except BaseException:
-            state.active_operation_name = ""
-            state.active_operation_started_at = None
+            coroutine.close()
+
+            if state.active_operation_name == _OPERATION_NAME:
+                state.active_operation_name = ""
+                state.active_operation_started_at = None
+
             self._stop_event = None
             self._operation_id = None
             self._phase = ShockRuntimePhase.IDLE
@@ -341,10 +347,24 @@ class ManualShockRuntime:
             if worker is not None:
                 # Do not release the process lock or clear admission while
                 # the synchronous worker still uses its database session.
-                try:
-                    await asyncio.shield(worker)
-                except Exception:
-                    log.exception("Shock worker failed during task cancellation.")
+                # A thread cannot be cancelled, so keep joining through any
+                # number of repeated task cancellations.
+                while not worker.done():
+                    try:
+                        await asyncio.shield(worker)
+                    except asyncio.CancelledError:
+                        stop_event.set()
+                        continue
+                    except Exception:
+                        break
+
+                if not worker.cancelled():
+                    try:
+                        worker.result()
+                    except ShockRuntimeStopped:
+                        pass
+                    except Exception:
+                        log.exception("Shock worker failed during task cancellation.")
 
             self._last_review = None
             self._phase = ShockRuntimePhase.STOPPED

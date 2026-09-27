@@ -7,11 +7,15 @@ Settings tab used before; only the placement changed.
 
 from __future__ import annotations
 
+import logging
+
 from nicegui import ui
 
 from l2shock.ui.components import create_tracked_task, persistent_notify
 from l2shock.ui.shutdown import shutdown_runtime
 from l2shock.ui.state import get_state
+
+log = logging.getLogger(__name__)
 
 
 def build_shutdown_header_button() -> None:
@@ -57,8 +61,10 @@ def build_shutdown_header_button() -> None:
         .tooltip("Application Shutdown (safe, confirmed)")
     )
 
+    shutdown_in_progress = False
+
     def _open_shutdown_dialog() -> None:
-        if state.shutdown_started:
+        if shutdown_in_progress or state.shutdown_complete:
             ui.notify(
                 "Application shutdown is already in progress.",
                 type="warning",
@@ -67,10 +73,39 @@ def build_shutdown_header_button() -> None:
 
         shutdown_dialog.open()
 
+    def _restore_shutdown_controls() -> None:
+        try:
+            shutdown_button.enable()
+            confirm_button.enable()
+        except Exception:
+            log.exception("Could not restore shutdown controls.")
+
+    async def _run_shutdown() -> None:
+        nonlocal shutdown_in_progress
+
+        try:
+            await shutdown_runtime(request_server_stop=True)
+        except Exception as exc:
+            log.exception("Application shutdown did not complete.")
+            _restore_shutdown_controls()
+            persistent_notify(
+                "Shutdown could not prove that every worker stopped "
+                f"({type(exc).__name__}). New operations stay blocked. "
+                "Wait for the active worker to finish, then press "
+                "Shutdown again to retry.",
+                title="Application Shutdown",
+                notification_type="negative",
+            )
+        finally:
+            shutdown_in_progress = False
+
     async def _confirmed_shutdown() -> None:
-        if state.shutdown_started:
+        nonlocal shutdown_in_progress
+
+        if shutdown_in_progress or state.shutdown_complete:
             return
 
+        shutdown_in_progress = True
         shutdown_button.disable()
         confirm_button.disable()
         shutdown_dialog.close()
@@ -83,11 +118,12 @@ def build_shutdown_header_button() -> None:
         )
 
         task = create_tracked_task(
-            shutdown_runtime(request_server_stop=True),
+            _run_shutdown(),
             name="l2shock-application-shutdown",
         )
 
         if task is None:
+            shutdown_in_progress = False
             shutdown_button.enable()
             confirm_button.enable()
             persistent_notify(

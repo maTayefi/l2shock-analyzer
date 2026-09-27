@@ -444,18 +444,34 @@ class ManualProcessingRuntime:
         state.active_operation_name = "manual_processing"
         state.active_operation_started_at = started_at
 
-        task = asyncio.create_task(
-            self._run(
-                operation_id=operation_id,
-                started_at=started_at,
-                requested_start_utc=start,
-                requested_end_utc=end,
-                lower_depth_fraction=lower_depth_fraction,
-                upper_depth_fraction=upper_depth_fraction,
-                cancellation_event=cancellation_event,
-            ),
-            name="l2shock-manual-processing",
+        coroutine = self._run(
+            operation_id=operation_id,
+            started_at=started_at,
+            requested_start_utc=start,
+            requested_end_utc=end,
+            lower_depth_fraction=lower_depth_fraction,
+            upper_depth_fraction=upper_depth_fraction,
+            cancellation_event=cancellation_event,
         )
+
+        try:
+            task = asyncio.create_task(
+                coroutine,
+                name="l2shock-manual-processing",
+            )
+        except BaseException:
+            coroutine.close()
+
+            with self._state_lock:
+                self._operation_id = None
+                self._started_at = None
+                self._cancellation_event = None
+
+            if state.active_operation_name == "manual_processing":
+                state.active_operation_name = ""
+                state.active_operation_started_at = None
+
+            raise
 
         self._task = task
         state.tracked_tasks.add(task)

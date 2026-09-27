@@ -114,3 +114,13 @@ def test_calendar_handoff_clip_is_accepted_by_the_request_limit():
         end_utc=end.isoformat(),
         **_COMMON_SCALES,
     )
+
+
+def test_bounded_view_publication_uses_tracked_tasks() -> None:
+    from pathlib import Path
+
+    import l2shock.ui.tab_shock_review as tab
+
+    source = Path(tab.__file__).read_text(encoding="utf-8")
+    assert "asyncio.create_task(_show_bounded_view())" not in source
+    assert source.count("_show_bounded_view(),") >= 2

@@ -642,16 +642,88 @@ class HuggingFaceDatasetRepository:
             checkpoint_bytes=predecessor.artifact.output_checkpoint,
         )
 
+    def _require_compatible_partial_pair(
+        self,
+        artifact: RemoteProcessedArtifact,
+        *,
+        revision: str,
+    ) -> None:
+        """Allow repair of a lone member only when it matches ``artifact``.
+
+        The revision is an immutable commit SHA, so both reads observe the
+        same repository state. Any conflicting or unverifiable lone member
+        remains a hard immutable-content conflict.
+        """
+
+        key = artifact.manifest.key
+        artifact_path = self._download_optional(
+            key.relative_path,
+            revision=revision,
+        )
+        manifest_path = self._download_optional(
+            key.manifest_relative_path,
+            revision=revision,
+        )
+
+        if (artifact_path is None) == (manifest_path is None):
+            # Both present or both absent contradicts the partial-pair
+            # observation at the same immutable revision. Fail closed.
+            raise HuggingFacePartialArtifactError(
+                "Hugging Face partial-pair state changed at a pinned revision"
+            )
+
+        if manifest_path is not None:
+            try:
+                existing_manifest = manifest_path.read_bytes()
+            except OSError as exc:
+                raise HuggingFaceRepositoryError(
+                    "Could not read the existing lone Hugging Face manifest"
+                ) from exc
+
+            if existing_manifest != artifact.manifest.canonical_json_bytes:
+                raise HuggingFaceArtifactConflictError(
+                    "An existing lone Hugging Face manifest owns different "
+                    "content than the requested immutable artifact"
+                )
+
+            return
+
+        assert artifact_path is not None
+
+        try:
+            existing_artifact = read_remote_artifact_file(
+                artifact_path,
+                expected_key=key,
+            )
+        except Exception as exc:
+            raise HuggingFaceArtifactConflictError(
+                "An existing lone Hugging Face artifact failed verification"
+            ) from exc
+
+        if existing_artifact != artifact:
+            raise HuggingFaceArtifactConflictError(
+                "An existing lone Hugging Face artifact owns different "
+                "content than the requested immutable artifact"
+            )
+
     def _existing_matches(
         self,
         artifact: RemoteProcessedArtifact,
         *,
         revision: str,
     ) -> DownloadedHuggingFaceArtifact | None:
-        existing = self.download_artifact(
-            artifact.manifest.key,
-            revision=revision,
-        )
+        try:
+            existing = self.download_artifact(
+                artifact.manifest.key,
+                revision=revision,
+            )
+        except HuggingFacePartialArtifactError:
+            # Publication-only repair path. Reads stay strict elsewhere.
+            self._require_compatible_partial_pair(
+                artifact,
+                revision=revision,
+            )
+            return None
 
         if existing is None:
             return None

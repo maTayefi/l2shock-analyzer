@@ -1025,3 +1025,31 @@ def test_blocked_artifact_without_frontier_allows_later_self_init_attempt() -> N
     )
 
     assert selected == _hour(1)
+
+
+async def test_predecessor_artifact_exists_distinguishes_absent_predecessor() -> None:
+    import inspect
+
+    import l2shock.remote_worker as worker_module
+    from l2shock.remote.hf_repository import HuggingFaceArtifactNotFoundError
+
+    class _Absent:
+        def download_l2_predecessor_checkpoint(self, key, *, revision):
+            raise HuggingFaceArtifactNotFoundError("absent")
+
+    class _Present:
+        def download_l2_predecessor_checkpoint(self, key, *, revision):
+            return object()
+
+    kwargs = {"target_key": object(), "pinned_revision": "a" * 40}
+
+    assert (
+        await worker_module._predecessor_artifact_exists(_Absent(), **kwargs) is False
+    )
+    assert (
+        await worker_module._predecessor_artifact_exists(_Present(), **kwargs) is True
+    )
+
+    source = inspect.getsource(worker_module.process_remote_hour)
+    assert "predecessor_artifact_present" in source
+    assert "refusing" in source

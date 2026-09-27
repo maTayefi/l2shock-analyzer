@@ -150,13 +150,25 @@ class ManualFetchRuntime:
         state.active_operation_name = "manual_fetch"
         state.active_operation_started_at = self._started_at
 
-        task = asyncio.create_task(
-            self._run(
-                requested_start_utc=start,
-                requested_end_utc=end,
-            ),
-            name="l2shock-manual-fetch",
+        coroutine = self._run(
+            requested_start_utc=start,
+            requested_end_utc=end,
         )
+
+        try:
+            task = asyncio.create_task(
+                coroutine,
+                name="l2shock-manual-fetch",
+            )
+        except BaseException:
+            coroutine.close()
+            self._started_at = None
+
+            if state.active_operation_name == "manual_fetch":
+                state.active_operation_name = ""
+                state.active_operation_started_at = None
+
+            raise
 
         self._task = task
         state.tracked_tasks.add(task)

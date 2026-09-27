@@ -1194,6 +1194,30 @@ async def _inspect_existing_state(
     )
 
 
+async def _predecessor_artifact_exists(
+    repository: HuggingFaceDatasetRepository,
+    *,
+    target_key: RemoteArtifactKey,
+    pinned_revision: str,
+) -> bool:
+    """Return whether the immediately preceding L2 artifact exists at all.
+
+    A checkpoint-less predecessor (an immutable blocked-hour marker) exists;
+    it proves the chain is already broken at this point. An absent
+    predecessor proves nothing: a later seed could still own that hour.
+    """
+    try:
+        await asyncio.to_thread(
+            repository.download_l2_predecessor_checkpoint,
+            target_key,
+            revision=pinned_revision,
+        )
+    except HuggingFaceArtifactNotFoundError:
+        return False
+
+    return True
+
+
 async def _predecessor_checkpoint(
     repository: HuggingFaceDatasetRepository,
     *,
@@ -1438,6 +1462,15 @@ async def process_remote_hour(
             predecessor_required=False,
         )
 
+        predecessor_artifact_present = checkpoint_bytes is not None
+
+        if not predecessor_artifact_present:
+            predecessor_artifact_present = await _predecessor_artifact_exists(
+                repository,
+                target_key=target_l2_key,
+                pinned_revision=existing.pinned_revision,
+            )
+
         log.info(
             "REMOTE L2 INITIALIZATION INPUT: venue=%s instrument=%s "
             "hour=%s predecessor_checkpoint_available=%s "
@@ -1574,6 +1607,19 @@ async def process_remote_hour(
                 l2_output.quality_summary.get("valid_count"),
                 l2_output.quality_summary.get("invalid_count"),
             )
+
+            if (
+                reason == "replay_finished_without_usable_checkpoint"
+                and not predecessor_artifact_present
+            ):
+                # README contract: an update-only target without its
+                # predecessor publishes no L2 artifact. Do not occupy the
+                # immutable path; a later seed may still own this hour.
+                raise RemoteWorkerCheckpointBlockedError(
+                    "Target replay produced no usable checkpoint and the "
+                    "immediately preceding L2 artifact is absent; refusing "
+                    "to publish a permanent blocked-hour marker"
+                )
 
         # Keep all subsequent publication, provenance logging, and result
         # construction on the checkpoint-safe artifact.

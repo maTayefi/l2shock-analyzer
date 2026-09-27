@@ -389,3 +389,83 @@ def test_remote_cli_builds_bybit_component_preset() -> None:
     assert market.provider == "cryptohftdata"
     assert market.venue == "bybit"
     assert market.instrument == "BTCUSDT"
+
+
+def test_l2_cli_all_invalid_locked_hour_publishes_no_checkpoint(
+    tmp_path: Path,
+) -> None:
+    raw_root = tmp_path / "input"
+    output_root = tmp_path / "output"
+    spec = _spec(SourceDataKind.ORDERBOOK)
+    path = spec.local_path(raw_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    received = _epoch_ns(_hour()) + 100_000_000
+    event_time = received // 1_000_000
+    rows = [
+        {
+            "received_time": received,
+            "event_time": event_time,
+            "transaction_time": event_time,
+            "symbol": "BTCUSDT",
+            "event_type": "snapshot",
+            "first_update_id": None,
+            "final_update_id": None,
+            "prev_final_update_id": None,
+            "last_update_id": 100,
+            "side": side,
+            "price": "100",
+            "quantity": "2",
+            "order_count": None,
+        }
+        for side in ("bid", "ask")
+    ]
+    pq.write_table(pa.Table.from_pylist(rows), path, compression="zstd")
+
+    assert (
+        main(
+            [
+                "l2",
+                "--venue",
+                "binance_futures",
+                "--instrument",
+                "BTCUSDT",
+                "--hour",
+                "2026-09-14T12:00:00Z",
+                "--depth-lower",
+                "0",
+                "--depth-upper",
+                "0.01",
+                "--input-dir",
+                str(raw_root),
+                "--output-dir",
+                str(output_root),
+                "--producer-git-commit",
+                "a" * 40,
+                "--batch-size",
+                "1",
+            ]
+        )
+        == 0
+    )
+
+    preset = build_binance_futures_data_preset(
+        base="BTC",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+    key = RemoteArtifactKey(
+        kind=RemoteArtifactKind.L2,
+        provider="cryptohftdata",
+        venue="binance_futures",
+        instrument="BTCUSDT",
+        hour_utc=_hour(),
+        preset_hash=preset.preset_hash,
+    )
+    decoded = read_remote_artifact_file(
+        output_root.joinpath(*key.relative_path.split("/")),
+        expected_key=key,
+    )
+
+    assert decoded.output_checkpoint is None
+    assert decoded.manifest.output_checkpoint_content_sha256 is None

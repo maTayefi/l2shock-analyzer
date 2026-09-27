@@ -258,9 +258,18 @@ def _checkpoint_files(
         )
         return checkpoint_files, filesystem_issues
 
+    def _record_walk_error(exc: OSError) -> None:
+        filesystem_issues.append(
+            {
+                "path": str(getattr(exc, "filename", None) or root),
+                "error": type(exc).__name__,
+            }
+        )
+
     for current, directory_names, file_names in os.walk(
         root,
         topdown=True,
+        onerror=_record_walk_error,
         followlinks=False,
     ):
         current_path = Path(current)
@@ -850,6 +859,21 @@ def analytical_consistency_diagnostics(
             _encoded_size,
         ) in l2_rows
     }
+    l2_by_preset_content = {
+        (
+            str(base),
+            require_aware_utc("L2 hour", hour_utc),
+            str(preset_hash),
+            str(content_sha256),
+        )
+        for (
+            base,
+            hour_utc,
+            preset_hash,
+            content_sha256,
+            _encoded_size,
+        ) in l2_rows
+    }
     price_by_content = {
         (
             str(base),
@@ -865,6 +889,7 @@ def analytical_consistency_diagnostics(
     }
 
     expected_l2: set[tuple[str, datetime, str]] = set()
+    expected_l2_by_preset: set[tuple[str, datetime, str, str]] = set()
     expected_price: set[tuple[str, datetime, str]] = set()
 
     missing_processed_outputs: list[dict[str, object]] = []
@@ -931,7 +956,62 @@ def analytical_consistency_diagnostics(
                 }
             )
 
+        preset_outputs: dict[str, str] = {}
+
+        if data_kind_text == "orderbook":
+            raw_outputs = quality.get("analytical_outputs_by_preset")
+            outputs_malformed = raw_outputs is not None and not isinstance(
+                raw_outputs, Mapping
+            )
+
+            if isinstance(raw_outputs, Mapping):
+                for raw_preset, raw_digest in raw_outputs.items():
+                    preset_digest = _canonical_sha256_or_none(raw_preset)
+                    output_digest = _canonical_sha256_or_none(raw_digest)
+
+                    if preset_digest is None or output_digest is None:
+                        outputs_malformed = True
+                        continue
+
+                    preset_outputs[preset_digest] = output_digest
+
+            if outputs_malformed:
+                malformed_processed_metadata.append(
+                    {
+                        **source_payload,
+                        "problem": (
+                            "analytical_outputs_by_preset is not a mapping "
+                            "of canonical preset hashes to canonical "
+                            "content hashes"
+                        ),
+                    }
+                )
+
+        for preset_digest, output_digest in sorted(preset_outputs.items()):
+            preset_identity = (
+                base,
+                hour,
+                preset_digest,
+                output_digest,
+            )
+            expected_l2_by_preset.add(preset_identity)
+
+            if preset_identity not in l2_by_preset_content:
+                missing_processed_outputs.append(
+                    {
+                        **source_payload,
+                        "expected_preset_hash": preset_digest,
+                        "expected_content_sha256": output_digest,
+                    }
+                )
+
+        preset_owned_digests = set(preset_outputs.values())
+
         for digest in hashes:
+            if digest in preset_owned_digests:
+                # Preset-owned outputs were verified above with their exact
+                # preset identity; do not also accept a wrong-preset row.
+                continue
             identity = (
                 base,
                 hour,
@@ -986,7 +1066,10 @@ def analytical_consistency_diagnostics(
             "encoded_size_bytes": size,
         }
 
-        if identity not in expected_l2:
+        if (
+            identity not in expected_l2
+            and (str(base), hour, str(preset_hash), digest) not in expected_l2_by_preset
+        ):
             orphan_l2.append(payload)
 
         if size > large_l2_row_bytes:
@@ -1113,7 +1196,10 @@ def performance_diagnostics(
         .where(
             FetchRun.ended_at.is_not(None),
         )
-        .order_by(FetchRun.started_at.desc())
+        .order_by(
+            FetchRun.started_at.desc(),
+            FetchRun.operation_id.desc(),
+        )
         .limit(maximum_fetch_runs)
     ).all()
 

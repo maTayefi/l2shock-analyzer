@@ -686,3 +686,27 @@ async def test_runtime_builds_bybit_preset_for_bybit_orderbook() -> None:
             "BTCUSDT",
         )
     ]
+
+
+def test_processing_start_without_event_loop_rolls_back_admission() -> None:
+    reset_state_for_tests()
+
+    async def loader(_start, _end, _lower, _upper):
+        return ()
+
+    runtime = ManualProcessingRuntime(
+        target_loader=loader,
+        l2_coordinator_factory=lambda _sink: FakeL2Coordinator(),
+        price_coordinator_factory=lambda _sink: FakePriceCoordinator(),
+    )
+
+    with pytest.raises(RuntimeError):
+        runtime.start(
+            requested_start_utc=_hour(12),
+            requested_end_utc=_hour(13),
+            lower_depth_fraction=Decimal("0"),
+            upper_depth_fraction=Decimal("0.01"),
+        )
+
+    assert get_state().active_operation_name == ""
+    assert runtime.snapshot().operation_id is None

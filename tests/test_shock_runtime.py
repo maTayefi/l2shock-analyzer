@@ -173,3 +173,90 @@ def test_failure_does_not_publish_partial_review_or_sql_details(monkeypatch):
         assert state.operation_lock.locked() is False
 
     asyncio.run(scenario())
+
+
+async def test_repeated_cancellation_keeps_shock_lock_until_worker_exits() -> None:
+    import asyncio
+    import threading
+
+    import pytest
+
+    from l2shock.ui.shock_runtime import ManualShockRuntime
+    from l2shock.ui.state import get_state, reset_state_for_tests
+
+    reset_state_for_tests()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_runner(request, config, evidence_config, stop_event):
+        entered.set()
+        if not release.wait(timeout=5.0):
+            raise TimeoutError("test did not release the worker")
+        return object()
+
+    runtime = ManualShockRuntime()
+    runtime._runner = blocking_runner
+    task = asyncio.create_task(
+        runtime._run(
+            request=None,
+            config=None,
+            evidence_config=None,
+            stop_event=threading.Event(),
+        )
+    )
+
+    try:
+        assert await asyncio.to_thread(entered.wait, 2.0)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert get_state().operation_lock.locked()
+    finally:
+        release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert not get_state().operation_lock.locked()
+
+
+def test_shock_start_without_event_loop_rolls_back_admission() -> None:
+    import warnings
+
+    import pytest
+
+    from l2shock.analysis.shock_dataset import ShockDatasetRequest
+    from l2shock.ui.shock_runtime import ManualShockRuntime
+    from l2shock.ui.state import get_state, reset_state_for_tests
+    from l2shock.ui.tab_shock_review import build_shock_request
+
+    reset_state_for_tests()
+    request, config = build_shock_request(
+        base="BTC",
+        preset_hash="a" * 64,
+        start_utc="2026-09-24T00:00:00Z",
+        end_utc="2026-09-24T00:10:00Z",
+        major_fraction="0.20",
+        medium_fraction="0.10",
+        minor_fraction="0.05",
+    )
+    assert isinstance(request, ShockDatasetRequest)
+
+    from l2shock.analysis.shock_evidence import ShockEvidenceConfig
+
+    runtime = ManualShockRuntime()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+
+        with pytest.raises(RuntimeError):
+            runtime.start(
+                request=request,
+                config=config,
+                evidence_config=ShockEvidenceConfig(),
+            )
+
+    assert get_state().active_operation_name == ""
+    assert get_state().active_operation_started_at is None

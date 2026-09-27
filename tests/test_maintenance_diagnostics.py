@@ -90,3 +90,73 @@ def test_fixed_diagnostic_time_is_timezone_aware() -> None:
     )
 
     assert value.utcoffset() is not None
+
+
+def test_checkpoint_walk_errors_are_reported(tmp_path, monkeypatch) -> None:
+    import l2shock.maintenance_diagnostics as diagnostics
+
+    def failing_walk(root, *, topdown, onerror, followlinks):
+        onerror(PermissionError(13, "denied", str(root / "locked")))
+        return iter(())
+
+    monkeypatch.setattr(diagnostics.os, "walk", failing_walk)
+    files, issues = diagnostics._checkpoint_files(tmp_path)
+
+    assert files == []
+    assert issues == [{"path": str(tmp_path / "locked"), "error": "PermissionError"}]
+
+
+def test_analytical_consistency_is_preset_aware() -> None:
+    from datetime import datetime, timezone
+
+    from sqlalchemy.orm import Session
+
+    import l2shock.maintenance_diagnostics as diagnostics
+
+    hour = datetime(2026, 9, 2, 12, tzinfo=timezone.utc)
+    content = "d" * 64
+    expected_preset = "1" * 64
+    other_preset = "2" * 64
+
+    class _Rows:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return list(self._rows)
+
+    def run(l2_preset: str) -> dict[str, object]:
+        batches = [
+            [
+                (
+                    "cryptohftdata",
+                    "binance_futures",
+                    "orderbook",
+                    "BTCUSDT",
+                    hour,
+                    "processed",
+                    {
+                        "analytical_content_sha256": content,
+                        "analytical_content_sha256s": [content],
+                        "analytical_outputs_by_preset": {expected_preset: content},
+                    },
+                )
+            ],
+            [("BTC", hour, l2_preset, content, 100)],
+            [],
+        ]
+        session = Session()
+        session.execute = lambda *_args, **_kwargs: _Rows(batches.pop(0))
+        return diagnostics.analytical_consistency_diagnostics(session)
+
+    wrong = run(other_preset)
+    assert wrong["missing_processed_output_count"] == 1
+    assert wrong["orphan_l2_row_count"] == 1
+    assert wrong["missing_processed_outputs"][0]["expected_preset_hash"] == (
+        expected_preset
+    )
+
+    right = run(expected_preset)
+    assert right["missing_processed_output_count"] == 0
+    assert right["orphan_l2_row_count"] == 0
+    assert right["malformed_processed_metadata_count"] == 0

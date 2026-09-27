@@ -568,18 +568,34 @@ class RemoteImportRuntime:
         state.active_operation_name = "remote_hf_import"
         state.active_operation_started_at = started_at
 
-        task = asyncio.create_task(
-            self._run(
-                operation_id=operation_id,
-                started_at=started_at,
-                requested_start_utc=start,
-                requested_end_utc=end,
-                selected_bases=selected_bases,
-                keys=keys,
-                cancellation_event=cancellation_event,
-            ),
-            name="l2shock-remote-hf-import",
+        coroutine = self._run(
+            operation_id=operation_id,
+            started_at=started_at,
+            requested_start_utc=start,
+            requested_end_utc=end,
+            selected_bases=selected_bases,
+            keys=keys,
+            cancellation_event=cancellation_event,
         )
+
+        try:
+            task = asyncio.create_task(
+                coroutine,
+                name="l2shock-remote-hf-import",
+            )
+        except BaseException:
+            coroutine.close()
+
+            with self._state_lock:
+                self._operation_id = None
+                self._started_at = None
+                self._cancellation_event = None
+
+            if state.active_operation_name == "remote_hf_import":
+                state.active_operation_name = ""
+                state.active_operation_started_at = None
+
+            raise
 
         self._task = task
         state.tracked_tasks.add(task)
