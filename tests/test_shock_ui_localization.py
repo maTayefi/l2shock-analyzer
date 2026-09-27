@@ -89,3 +89,48 @@ def test_shock_legend_colors_match_chart_builder() -> None:
         "b_area",
     ):
         assert _COLORS[key] in colors
+
+
+def test_settings_timestamps_are_shown_in_local_timezone() -> None:
+    from l2shock.ui.tab_settings import _local_timestamp_text
+
+    expected = "2026-09-23T20:34:00+03:30 (Asia/Tehran)"
+    instant = datetime(2026, 9, 23, 17, 4, tzinfo=timezone.utc)
+
+    assert _local_timestamp_text(instant, "Asia/Tehran") == expected
+    assert _local_timestamp_text("2026-09-23T17:04:00+00:00", "Asia/Tehran") == (
+        expected
+    )
+    assert _local_timestamp_text("2026-09-23T17:04:00Z", "Asia/Tehran") == expected
+    assert _local_timestamp_text("", "Asia/Tehran") == ""
+    assert _local_timestamp_text(None, "Asia/Tehran") == ""
+    assert _local_timestamp_text("not-a-time", "Asia/Tehran") == "not-a-time"
+
+
+def test_ui_status_texts_no_longer_show_utc_times() -> None:
+    from pathlib import Path
+
+    import l2shock.ui.tab_fetch as fetch_module
+    import l2shock.ui.tab_settings as settings_module
+    import l2shock.ui.tab_shock_review as review_module
+
+    fetch_source = Path(fetch_module.__file__).read_text(encoding="utf-8")
+    settings_source = Path(settings_module.__file__).read_text(encoding="utf-8")
+    review_source = Path(review_module.__file__).read_text(encoding="utf-8")
+
+    assert "source UTC" not in fetch_source
+    assert "expires_at_utc.isoformat()" not in settings_source
+    assert "UTC zoom" not in review_source
+    assert "visible UTC interval" not in review_source
+
+
+def test_bounded_view_normalizes_integral_float_position() -> None:
+    from pathlib import Path
+
+    import l2shock.ui.tab_shock_review as review_module
+
+    source = Path(review_module.__file__).read_text(encoding="utf-8")
+
+    assert "raw_position = view_area_input.value" in source
+    assert "raw_position.is_integer()" in source
+    assert "        position = view_area_input.value\n" not in source

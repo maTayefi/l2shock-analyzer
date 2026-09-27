@@ -52,9 +52,19 @@ from l2shock.ui.shock_view_selection import (
 )
 from l2shock.ui.shock_annotation_visibility import (
     with_shock_annotation_visibility,
+    with_shock_display_timezone,
 )
 from l2shock.ui.shock_price_context import (
     load_shock_price_context,
+    load_shock_price_warning_regions,
+)
+from l2shock.ui.shock_warning_regions import (
+    ShockWarningOverlay,
+    ShockWarningRegion,
+    clip_warning_regions,
+    dataset_l2_warning_regions,
+    warning_threshold_seconds_from_minutes,
+    with_shock_warning_regions,
 )
 from l2shock.ui.shock_runtime import (
     ShockRuntimeBusyError,
@@ -372,7 +382,10 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
     # Unmodified option of the committed bounded viewport, and the
     # (lines_and_labels, b_bands) visibility it is currently shown with.
     bounded_base_option: dict[str, Any] | None = None
-    bounded_annotations: tuple[bool, bool] | None = None
+    # (lines_and_labels, b_bands, data_quality_warnings)
+    bounded_annotations: tuple[bool, bool, bool] | None = None
+    # Clipped outage regions of the committed viewport (display only).
+    bounded_warnings: ShockWarningOverlay | None = None
     preset_loading = False
     enabled_preset_hashes: set[str] = set()
 
@@ -547,6 +560,14 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
                 "Show B-area bands",
                 value=True,
             ).tooltip("Hide the shaded B-area bands.")
+            warning_regions_switch = ui.switch(
+                "Show data-quality warnings",
+                value=True,
+            ).tooltip(
+                "Show or hide the red regions where L2 or Binance price was "
+                "unavailable for longer than the configured limits. Display "
+                "only: detection, review, and status messages are unchanged."
+            )
 
         status = ui.label("No Shock-Start review run in this session.")
 
@@ -600,11 +621,11 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
         ).classes("text-xs text-gray-500")
 
         ui.label(
-            "Selected-area inspection stays at one-second resolution. "
-            "Optionally switch this same chart to a bounded L2 viewing "
-            "viewport around the selected B area. Viewing bars do not "
-            "change detection. Switching this B area's bounded viewing "
-            "timeframe preserves its visible UTC interval where possible."
+            "Clicking a row opens that B area in a bounded L2 viewport. "
+            'Choose "1 second" viewing bars for exact one-second '
+            "inspection. Viewing bars never change detection. Switching "
+            "this B area's viewing timeframe preserves its visible time "
+            "interval where possible."
         ).classes("text-xs text-gray-500")
 
         with ui.row().classes("w-full gap-3 flex-wrap items-end"):
@@ -884,17 +905,95 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
         view_area_input.value = position
         await _show_bounded_view()
 
-    def _annotation_visibility() -> tuple[bool, bool]:
+    def _annotation_visibility() -> tuple[bool, bool, bool]:
         return (
             bool(annotation_lines_switch.value),
             bool(annotation_bands_switch.value),
+            bool(warning_regions_switch.value),
+        )
+
+    def _presented_option(
+        base_option: dict[str, Any],
+        visibility: tuple[bool, bool, bool],
+        warnings: ShockWarningOverlay | None,
+    ) -> dict[str, Any]:
+        """Display-only transforms of a cached, unmodified base option.
+
+        Order matters: annotations first, then warnings, so the B-band
+        switch and the warning switch are independent. The time labels
+        are localized last; the chart coordinates stay UTC.
+        """
+        shown = with_shock_annotation_visibility(
+            base_option,
+            show_lines_and_labels=visibility[0],
+            show_b_bands=visibility[1],
+        )
+
+        if visibility[2] and warnings is not None:
+            shown = with_shock_warning_regions(shown, overlay=warnings)
+
+        return with_shock_display_timezone(shown, get_settings().app.timezone)
+
+    async def _load_warning_overlay(
+        current_model: ShockInspectionModel,
+        viewport: Any,
+    ) -> ShockWarningOverlay:
+        """Outage regions for one viewport. Failures never block the chart."""
+        analysis_settings = get_settings().analysis
+        dataset = current_model.review.evidence_result.candidate_scan.dataset
+        view_start = viewport.source_start_utc
+        view_end = viewport.source_end_utc_exclusive
+
+        l2_regions: tuple[ShockWarningRegion, ...] = ()
+        price_regions: tuple[ShockWarningRegion, ...] = ()
+
+        try:
+            whole_scan_regions = await asyncio.to_thread(
+                dataset_l2_warning_regions,
+                dataset.seconds,
+                window_start_utc=dataset.start_utc,
+                window_end_utc_exclusive=dataset.end_utc,
+                minimum_exclusive_seconds=(
+                    analysis_settings.l2_long_invalid_warning_seconds
+                ),
+            )
+            l2_regions = clip_warning_regions(
+                whole_scan_regions,
+                view_start_utc=view_start,
+                view_end_utc_exclusive=view_end,
+            )
+        except Exception:
+            log.exception(
+                "L2 outage regions unavailable for B area #%s viewport.",
+                viewport.inspection_position,
+            )
+
+        try:
+            price_regions = await asyncio.to_thread(
+                load_shock_price_warning_regions,
+                base=dataset.request.base,
+                view_start_utc=view_start,
+                view_end_utc_exclusive=view_end,
+                minimum_exclusive_seconds=warning_threshold_seconds_from_minutes(
+                    analysis_settings.price_long_invalid_warning_minutes
+                ),
+            )
+        except Exception:
+            log.exception(
+                "Price outage regions unavailable for B area #%s viewport.",
+                viewport.inspection_position,
+            )
+
+        return ShockWarningOverlay(
+            l2_regions=l2_regions,
+            price_regions=price_regions,
         )
 
     async def _apply_annotation_visibility() -> None:
         """Re-publish the committed viewport with the requested annotations.
 
         No data is reloaded and no review is rerun: the cached, unmodified
-        option is transformed and published with the current UTC zoom.
+        option is transformed and published with the current zoom.
         A viewport that is still being built reads the switches itself.
         """
         nonlocal bounded_annotations
@@ -902,6 +1001,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
         requested = _annotation_visibility()
         owner = bounded_owner_id
         base_option = bounded_base_option
+        warnings = bounded_warnings
         commit = controller.commit
 
         if (
@@ -920,11 +1020,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
 
         try:
             new_commit = await controller.publish(
-                with_shock_annotation_visibility(
-                    base_option,
-                    show_lines_and_labels=requested[0],
-                    show_b_bands=requested[1],
-                ),
+                _presented_option(base_option, requested, warnings),
                 owner_id=owner,
                 preserve_viewport=False,
                 shock_time_viewport=old_time_viewport,
@@ -948,7 +1044,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
     async def _show_bounded_view() -> None:
         nonlocal selection_generation
         nonlocal selected_owner_id, selected_position, bounded_owner_id
-        nonlocal bounded_base_option, bounded_annotations
+        nonlocal bounded_base_option, bounded_annotations, bounded_warnings
 
         current_model = model
 
@@ -962,8 +1058,14 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
         # Row selection writes its position into this control. If the user
         # subsequently enters another number, that explicit request wins.
         # build_shock_view_selection validates the resulting position before
-        # any chart is published.
-        position = view_area_input.value
+        # any chart is published. ui.number returns 3.0 after the user types
+        # into it; normalize so the owner id matches the committed "…:3".
+        raw_position = view_area_input.value
+        position = (
+            int(raw_position)
+            if isinstance(raw_position, float) and raw_position.is_integer()
+            else raw_position
+        )
 
         selection_generation += 1
         my_generation = selection_generation
@@ -1064,12 +1166,23 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
                 "L2 viewing viewport"
             )
 
+            # Loaded even when the switch is off, so turning it on later
+            # needs no reload.
+            used_warnings = await _load_warning_overlay(current_model, viewport)
+
+            if (
+                my_generation != selection_generation
+                or model is not current_model
+                or runtime.snapshot().last_review is not current_model.review
+            ):
+                return
+
             used_annotations = _annotation_visibility()
             commit = await controller.publish(
-                with_shock_annotation_visibility(
+                _presented_option(
                     viewport.option,
-                    show_lines_and_labels=used_annotations[0],
-                    show_b_bands=used_annotations[1],
+                    used_annotations,
+                    used_warnings,
                 ),
                 owner_id=viewport.owner_id,
                 preserve_viewport=False,
@@ -1104,6 +1217,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
         bounded_owner_id = viewport.owner_id
         bounded_base_option = viewport.option
         bounded_annotations = used_annotations
+        bounded_warnings = used_warnings
         selected_owner_id = viewport.owner_id
         selected_position = viewport.inspection_position
         view_area_input.value = viewport.inspection_position
@@ -1131,7 +1245,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
             f"slots as {viewport.displayed_bars} "
             f"{viewport.timeframe_seconds}s viewing bars "
             f"(maximum {requested_max_bars}). "
-            "Previous bounded-view UTC zoom was requested when available; "
+            "Previous bounded-view zoom was kept when available; "
             "Price remains optional." + _top_n_status(viewport)
         )
 
@@ -1320,6 +1434,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
     table.on("rowClick", _select_row)
     annotation_lines_switch.on_value_change(_apply_annotation_visibility)
     annotation_bands_switch.on_value_change(_apply_annotation_visibility)
+    warning_regions_switch.on_value_change(_apply_annotation_visibility)
 
     ui.timer(
         interval=0.25,

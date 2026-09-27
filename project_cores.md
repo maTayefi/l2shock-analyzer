@@ -144,6 +144,7 @@ l2shock/ui/shock_runtime.py
 l2shock/ui/shock_view_bars.py
 l2shock/ui/shock_view_chart_options.py
 l2shock/ui/shock_view_selection.py
+l2shock/ui/shock_warning_regions.py
 l2shock/ui/shutdown.py
 l2shock/ui/shutdown_control.py
 l2shock/ui/state.py
@@ -265,6 +266,7 @@ tests/test_shock_ui_localization.py
 tests/test_shock_view_bars.py
 tests/test_shock_view_chart_options.py
 tests/test_shock_view_selection.py
+tests/test_shock_warning_regions.py
 tests/test_tab_settings_lock_contract.py
 tests/test_tab_shock_review.py
 tests/test_timeframe_aggregation.py
@@ -715,6 +717,7 @@ l2shock/ui/shock_runtime.py
 l2shock/ui/shock_view_bars.py
 l2shock/ui/shock_view_chart_options.py
 l2shock/ui/shock_view_selection.py
+l2shock/ui/shock_warning_regions.py
 l2shock/ui/shutdown.py
 l2shock/ui/shutdown_control.py
 l2shock/ui/state.py
@@ -746,6 +749,7 @@ tests/test_shock_ui_localization.py
 tests/test_shock_view_bars.py
 tests/test_shock_view_chart_options.py
 tests/test_shock_view_selection.py
+tests/test_shock_warning_regions.py
 tests/test_tab_settings_lock_contract.py
 tests/test_tab_shock_review.py
 tests/test_ui_fetch_runtime.py

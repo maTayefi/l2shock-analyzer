@@ -113,3 +113,24 @@ def test_readme_documents_shock_dataset_runtime_and_identity() -> None:
     assert "### Shock-Start identity and exports" in README
     assert "manual_shock_review" in README
     assert "observations, detecting\nretrospectively" not in README
+
+
+def test_readme_documents_implemented_warning_regions_and_local_time() -> None:
+    from pathlib import Path
+
+    readme = Path(__file__).resolve().parents[1] / "README.md"
+    flat = " ".join(readme.read_text(encoding="utf-8").split())
+
+    for marker in (
+        "Persistent red data-outage warning regions are drawn",
+        "analysis.l2_long_invalid_warning_seconds (default 60)",
+        "analysis.price_long_invalid_warning_minutes (default 3)",
+        '"Show data-quality warnings" switch',
+        'legend entry "Data-outage warning"',
+        "Only presentation is localized",
+        "chart coordinates stay UTC",
+    ):
+        assert marker in flat, marker
+
+    assert "A persistent red warning region is required when" not in flat
+    assert flat.count("```") % 2 == 0

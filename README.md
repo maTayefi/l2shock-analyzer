@@ -2654,8 +2654,57 @@ separately:
 ### Fixed-duration timeframe aggregation
 
 The stored one-second series is the authoritative analytical base.
+Shock-Start detection, channel evidence, and review measurements always run on
+verified one-second L2. Viewing timeframes are presentation only.
 
-Version 1 fixed-duration aggregation supports:
+#### Shock-Start viewing bars
+
+The bounded Shock-Start viewport builds its own viewing bars in
+`l2shock/ui/shock_view_bars.py`. It does not call the snapping or aggregation
+functions of `l2shock/analysis/timeframes.py` or
+`l2shock/analysis/aggregation.py`.
+
+Supported viewing timeframes are:
+
+```text
+Auto
+1s
+5s
+15s
+1m
+5m
+15m
+1h
+```
+
+Viewing bars are aligned to UTC multiples of the viewing timeframe. The first
+and last bar of a viewport may cover only part of their interval.
+
+Auto selects the finest supported viewing timeframe whose bar count fits the
+user's "Maximum viewing bars" input (1-5000). An explicit viewing timeframe
+that does not fit is rejected; it is never silently coarsened. The bar budget
+never trims one-second source seconds from the viewport.
+
+The viewing-bar builder requires contiguous one-second input. Invalid seconds
+stay explicit; they are never dropped or zero-filled. If any second inside a
+viewing bar is invalid, all four L2 channels (Bid, Ask, Total, Delta) of that
+bar are null.
+
+B-area bands and A/B/C anchors keep exact one-second UTC coordinates. They are
+not snapped to viewing-bar boundaries.
+
+Any invalid or missing one-second L2 observation creates an explicit hard
+discontinuity. Shock-Start detection and viewing bars must not bridge that
+discontinuity merely because an aggregate endpoint is numerically available.
+
+#### Retained aggregation foundation
+
+`l2shock/analysis/timeframes.py` and `l2shock/analysis/aggregation.py` remain
+as tested foundation. `aggregation.py` also owns the `L2Second` type used by
+the verified Shock-Start dataset path. Their snapping and multi-timeframe
+aggregation functions are not wired into the Shock-Start UI.
+
+The foundation supports these fixed-duration timeframes:
 
 ```text
 1s
@@ -2684,9 +2733,8 @@ Calendar month timeframes (`1M`, `3M`, `6M`) are deferred until a separate
 calendar-aware ownership contract is implemented. A month must never be
 silently represented as a fixed number of seconds.
 
-User-selected analysis endpoints are interpreted as a closed continuous-time
-range `[m, n]`. For active timeframe `T`, the effective bar-aligned loading
-range is:
+For a closed continuous-time range `[m, n]` and timeframe `T`, the foundation's
+bar-aligned loading range is:
 
 ```text
 snapped_start = floor(m, T)
@@ -2695,19 +2743,11 @@ snapped_end   = floor(n, T) + T
 effective range = [snapped_start, snapped_end)
 ```
 
-Therefore both timeframe bars containing the selected endpoints are included.
-An end time exactly on a bar boundary includes the bar beginning at that
-boundary.
+Its automatic timeframe selection picks the finest supported timeframe whose
+snapped bar count fits a caller-supplied bar budget.
 
-The automatic chart timeframe is the finest supported timeframe whose snapped
-bar count does not exceed the caller-supplied maximum bar count. If no supported
-timeframe fits, the coarsest supported timeframe is selected and the UI may
-warn that the target was exceeded.
-
-L2 liquidity is a reconstructed state metric. A larger L2 bar owns the final
-one-second L2 state in its interval.
-
-L2 aggregate quality is:
+In the foundation, L2 liquidity is a reconstructed state metric and a larger
+L2 bar owns the final one-second L2 state in its interval:
 
 ```text
 all seconds valid and endpoint valid:
@@ -2719,10 +2759,6 @@ endpoint valid but an earlier second is invalid or missing:
 endpoint invalid or missing:
     INVALID
 ```
-
-Any invalid or missing one-second L2 observation creates an explicit hard
-discontinuity. Shock-Start detection and viewing bars must not bridge that
-discontinuity merely because an aggregate endpoint is numerically available.
 
 Real traded price uses standard OHLC aggregation over valid one-second trade
 candles:
@@ -3182,18 +3218,26 @@ A Shock-Start hypothesis:
 
 Invalid seconds do not block detection in other valid runs of the same scan.
 
-A persistent red warning region is required when:
+Persistent red data-outage warning regions are drawn as background bands on
+the bounded Shock-Start viewport:
 
 ```text
-L2 is invalid or unavailable for more than 60 consecutive seconds.
+L2      invalid, missing, or partial-market coverage for more than
+        analysis.l2_long_invalid_warning_seconds (default 60) consecutive
+        seconds; measured over the whole loaded scan, then clipped to the
+        viewport; drawn on all five panels
+price   no valid Binance trade candle for more than
+        analysis.price_long_invalid_warning_minutes (default 3) consecutive
+        minutes; measured over the viewport widened by the threshold on each
+        side, then clipped; drawn on the Price panel only
 ```
 
-A persistent red warning region is required when:
-
-```text
-real Binance traded price is invalid or unavailable for more than
-3 consecutive minutes.
-```
+A run exactly equal to the threshold is not flagged. Invalid and missing
+seconds merge into one run. The "Show data-quality warnings" switch (on by
+default) hides or shows the regions without reloading data or rerunning the
+review. Regions are presentation only: they never change detection, review
+identity, ordering, or status messages. If a region cannot be computed, the
+chart still opens without it.
 
 ### Application-owned Shock-Start runtime
 
@@ -3257,8 +3301,17 @@ Default:
 Asia/Tehran
 ```
 
-Ambiguous or nonexistent DST local times must be rejected rather than silently
-resolved.
+Ambiguous or nonexistent DST local times must be rejected rather than
+silently resolved.
+
+Charts keep UTC coordinates internally (axis data, B-area bands, warning
+regions, zoom capture and restore). Only presentation is localized: time-axis
+labels, the crosshair label, and the tooltip header use the configured
+timezone, and the tooltip header names it. Review-table timestamps, the
+Shock-Start, fetch, processing, and remote-import range inputs, the Automatic
+Fetch status, the maintenance preview expiry, and the diagnostics report time
+are shown in the configured timezone. UTC is kept for storage, identities, and
+exported files.
 
 ### Preset identity
 
@@ -3758,6 +3811,10 @@ annotations    "Show B/C lines and rank labels" and "Show B-area bands" (both
                no reload and no review rerun; the next viewport follows them
 order control  the UI "Inspection order" selector opens on v3 and re-sorts
                the completed review in place
+warnings       "Show data-quality warnings" (on by default) shows red outage
+               background bands; legend entry "Data-outage warning"
+time labels    axis labels, crosshair, and tooltip header in the configured
+               timezone; chart coordinates stay UTC
 ```
 
 Not part of Shock-Start (do not reintroduce silently): LM retracement

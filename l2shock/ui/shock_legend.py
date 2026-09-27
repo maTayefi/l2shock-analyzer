@@ -1,8 +1,8 @@
 # l2shock/ui/shock_legend.py
 """Color legend for the Shock-Start review chart.
 
-Every swatch is read from ``SHOCK_CHART_COLORS``, the same mapping that
-``build_shock_chart_options`` uses, so the legend cannot drift from the chart.
+Every swatch is read from ``SHOCK_CHART_COLORS``, the same mapping the
+bounded viewport chart uses, so the legend cannot drift from the chart.
 Presentation only: opening it never touches review or detection state.
 """
 
@@ -70,6 +70,15 @@ SHOCK_LEGEND_ENTRIES: tuple[ShockLegendEntry, ...] = (
         "line",
         "Representative C second, on the Total panel.",
     ),
+    ShockLegendEntry(
+        "Data-outage warning",
+        "data_outage",
+        "fill",
+        "L2 invalid or unavailable longer than the configured seconds "
+        "(all five panels), or Binance price unavailable longer than the "
+        "configured minutes (Price panel only). Controlled by "
+        '"Show data-quality warnings"; never changes the review.',
+    ),
     *(
         ShockLegendEntry(
             f"Top-N rank #{rank}",
@@ -86,6 +95,8 @@ SHOCK_LEGEND_ENTRIES: tuple[ShockLegendEntry, ...] = (
 
 _NOTES: tuple[str, ...] = (
     "A break in an L2 line is a missing second, never zero liquidity.",
+    "Chart times (axis labels, crosshair label, tooltip header) are shown "
+    "in the configured display timezone; data and B bands stay in UTC.",
     "Highlights are presentation only; they never rerun or change the review.",
     "The selected area is always yellow and labelled with its own rank. "
     "Top-N ranks are the review's inspection order, not probabilities.",

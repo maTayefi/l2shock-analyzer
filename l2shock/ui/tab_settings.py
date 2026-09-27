@@ -9,11 +9,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from nicegui import ui
 
 from l2shock.config import get_settings
+from l2shock.timeutils import utc_to_local
 from l2shock.diagnostics import (
     production_diagnostics_report,
     report_json_bytes,
@@ -43,6 +45,32 @@ from l2shock.ui.components import (
 from l2shock.ui.state import get_state
 
 log = logging.getLogger(__name__)
+
+
+def _local_timestamp_text(value: object, timezone_name: str) -> str:
+    """Display text for a UTC instant in the configured local timezone.
+
+    Accepts an aware datetime or ISO-8601 text. Blank input gives "".
+    Unparseable or naive input is returned unchanged rather than guessed.
+    """
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+
+        if not text:
+            return ""
+
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return text
+
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return str(value)
+
+    local = utc_to_local(parsed.astimezone(timezone.utc), timezone_name)
+    return f"{local.isoformat(timespec='seconds')} ({timezone_name})"
 
 
 def _diagnostics_export_filename(
@@ -876,7 +904,11 @@ def build_settings_tab() -> None:
                 f"Candidates: {preview.candidate_count:,}\n"
                 f"Candidate bytes: {preview.candidate_bytes:,}\n"
                 f"Blocked: {preview.blocked_count:,}\n"
-                f"Preview expires: {preview.expires_at_utc.isoformat()}"
+                "Preview expires: "
+                + _local_timestamp_text(
+                    preview.expires_at_utc,
+                    get_settings().app.timezone,
+                )
             )
             maintenance_dialog_token.set_text(f"Preview token: {preview.token}")
 
@@ -1164,7 +1196,10 @@ def build_settings_tab() -> None:
         report_ok = report.get("ok") is True
         diagnostics_ok.set_text("OK" if report_ok else "ATTENTION")
 
-        generated = str(report.get("generated_at_utc") or "")
+        generated = _local_timestamp_text(
+            report.get("generated_at_utc"),
+            get_settings().app.timezone,
+        )
         diagnostics_status.set_text(
             "Latest report generated at " f"{generated or 'an unknown time'}."
         )

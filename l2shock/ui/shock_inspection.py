@@ -1,13 +1,11 @@
 # l2shock/ui/shock_inspection.py
-"""Paged Shock-Start inspection rows and one-second selection windows.
+"""Paged Shock-Start inspection rows for the review results table.
 
-A completed ShockReview owns the rows. The selected B area determines which
-bounded one-second L2 window to build. Nothing here runs a scan, reads price,
-publishes a partial review, or ranks areas again.
-
-The returned chart option carries the temporal metadata required by the
-existing AnalysisChartController. The controller still owns render identity,
-browser acknowledgement, crosshair installation, and image export.
+A completed ShockReview owns the rows. Nothing here runs a scan, reads
+price, publishes a chart, or ranks areas again. A row click opens its B area
+through the bounded L2 viewport (shock_view_selection); the former
+one-second selection path (ShockInspectionModel.select) was retired in
+Batch 45A.
 """
 
 from __future__ import annotations
@@ -16,19 +14,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from l2shock.analysis.shock_review import ShockReview
-from l2shock.analysis.shock_window import (
-    ShockAreaWindow,
-    build_shock_area_window,
-)
-
-from l2shock.ui.shock_chart_options import (
-    PriceBySecond,
-    build_shock_chart_options,
-)
 
 
 class ShockInspectionError(ValueError):
-    """Invalid inspection position, page, or review ownership."""
+    """Invalid inspection page or review ownership."""
 
 
 def _positive_int(name: str, value: object) -> int:
@@ -52,19 +41,8 @@ class ShockInspectionPage:
     rows: tuple[dict[str, object], ...]
 
 
-@dataclass(frozen=True, slots=True)
-class ShockInspectionSelection:
-    """One controller-ready chart generation for one selected B area."""
-
-    review_id: str
-    inspection_position: int
-    owner_id: str
-    window: ShockAreaWindow
-    option: dict[str, object]
-
-
 class ShockInspectionModel:
-    """Read-only UI projection of a completed ShockReview."""
+    """Read-only table projection of a completed ShockReview."""
 
     def __init__(self, review: ShockReview) -> None:
         if not isinstance(review, ShockReview):
@@ -92,8 +70,7 @@ class ShockInspectionModel:
         end = min(start + size, len(entries))
         rows: list[dict[str, object]] = []
 
-        # Do not serialize or create plotting windows for all 3,782 areas
-        # merely because the user opened the first results-table page.
+        # Serialize only the requested page, never every reviewed area.
         for index in range(start, end):
             entry = entries[index]
             position = index + 1
@@ -146,75 +123,9 @@ class ShockInspectionModel:
             rows=tuple(rows),
         )
 
-    def select(
-        self,
-        inspection_position: int,
-        *,
-        padding_seconds: int = 30,
-        maximum_seconds: int = 3_600,
-        price_by_second: PriceBySecond | None = None,
-    ) -> ShockInspectionSelection:
-        position = _positive_int(
-            "inspection_position",
-            inspection_position,
-        )
-
-        if position > len(self.review.ordered_areas):
-            raise ShockInspectionError(
-                "inspection_position does not identify a reviewed B area"
-            )
-
-        window = build_shock_area_window(
-            self.review,
-            position,
-            padding_seconds=padding_seconds,
-            maximum_seconds=maximum_seconds,
-        )
-        option = build_shock_chart_options(
-            window,
-            price_by_second=price_by_second,
-        )
-
-        timestamps = [second.timestamp_utc.isoformat() for second in window.seconds]
-        count = len(timestamps)
-
-        # These are the existing chart-controller temporal/ownership fields.
-        # Invalid L2 or missing price seconds still occupy their own slots.
-        option["l2shockChartMetadata"] = {
-            "analysis_id": self.review.review_id,
-            "dataset_analysis_id": (self.review.evidence_result.candidate_scan.scan_id),
-            "chart_timeframe": "1s",
-            "activity_timeframe": "1s",
-            "visible_bar_count": count,
-            "visible_start_times_utc": timestamps,
-            "bar_duration_seconds": 1,
-            "source_bar_indices": list(
-                range(
-                    window.first_dataset_index,
-                    window.last_dataset_index + 1,
-                )
-            ),
-            "discontinuities": {},
-            "shock_review_id": self.review.review_id,
-            "shock_inspection_position": position,
-        }
-
-        # An old selected area's export/navigation must not own the newly
-        # selected area, even when both came from the same completed review.
-        owner_id = f"shock:{self.review.review_id}:{position}"
-
-        return ShockInspectionSelection(
-            review_id=self.review.review_id,
-            inspection_position=position,
-            owner_id=owner_id,
-            window=window,
-            option=option,
-        )
-
 
 __all__ = [
     "ShockInspectionError",
     "ShockInspectionModel",
     "ShockInspectionPage",
-    "ShockInspectionSelection",
 ]

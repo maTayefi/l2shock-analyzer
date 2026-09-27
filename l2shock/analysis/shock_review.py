@@ -659,7 +659,7 @@ def _order_measured(
     else:
         scores = _within_tier_percentile_scores(items)
         ranked = sorted(
-            zip(items, scores),
+            zip(items, scores, strict=True),
             key=lambda pair: (
                 -pair[0].highest_scale_fraction,
                 -pair[1],

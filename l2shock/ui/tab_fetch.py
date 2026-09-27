@@ -1318,9 +1318,8 @@ def build_fetch_tab(
                 )
                 automatic_status_label.text = (
                     "Automatic Fetch is active; next incomplete hour: "
-                    f"{local_target.isoformat()} "
-                    f"({settings.app.timezone}; "
-                    f"source UTC {target.isoformat()})."
+                    f"{local_target.isoformat(timespec='minutes')} "
+                    f"({settings.app.timezone})."
                 )
 
             automatic_status_label.classes(replace="text-xs text-green-700")

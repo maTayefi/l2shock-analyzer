@@ -127,7 +127,8 @@ def test_non_dict_option_is_rejected() -> None:
 def test_tab_wires_switches_without_rerun() -> None:
     source = (ROOT / "l2shock/ui/tab_shock_review.py").read_text(encoding="utf-8")
 
-    assert source.count("with_shock_annotation_visibility(") == 2
+    assert source.count("with_shock_annotation_visibility(") == 1
+    assert source.count("_presented_option(") >= 3
     assert (
         "annotation_lines_switch.on_value_change(_apply_annotation_visibility)"
         in source
@@ -176,3 +177,70 @@ def test_shutdown_is_in_global_header_not_settings() -> None:
     assert "shutdown_runtime(request_server_stop=True)" in control_source
     assert "Confirm Application Shutdown" in control_source
     assert "if state.shutdown_started:" in control_source
+
+
+def test_display_timezone_adds_formatters_without_mutation() -> None:
+    from l2shock.ui.shock_annotation_visibility import with_shock_display_timezone
+
+    option = _options()
+    before = copy.deepcopy(option)
+
+    shown = with_shock_display_timezone(option, "Asia/Tehran")
+
+    assert option == before
+    assert shown["series"] == option["series"]
+    assert [a["min"] for a in shown["xAxis"]] == [a["min"] for a in option["xAxis"]]
+    assert [a["max"] for a in shown["xAxis"]] == [a["max"] for a in option["xAxis"]]
+
+    for original, axis in zip(option["xAxis"], shown["xAxis"], strict=True):
+        label_js = axis["axisLabel"][":formatter"]
+        assert label_js.startswith("function")
+        assert '"Asia/Tehran"' in label_js
+        assert axis["axisLabel"].get("show") == original.get("axisLabel", {}).get(
+            "show"
+        )
+        assert '"Asia/Tehran"' in axis["axisPointer"]["label"][":formatter"]
+
+    tooltip_js = shown["tooltip"][":formatter"]
+    assert tooltip_js.startswith("function")
+    assert shown["tooltip"]["trigger"] == "axis"
+    for source in (tooltip_js, shown["xAxis"][0]["axisLabel"][":formatter"]):
+        assert "__TZ__" not in source
+        assert "__PARTS__" not in source
+
+
+def test_display_timezone_rejects_unknown_or_unsafe_names() -> None:
+    from l2shock.ui.shock_annotation_visibility import (
+        ShockDisplayTimezoneError,
+        with_shock_display_timezone,
+    )
+
+    for bad in ("Mars/Olympus_Mons", "Asia/Tehran'); alert(1); //", "", None):
+        with pytest.raises(ShockDisplayTimezoneError):
+            with_shock_display_timezone(_options(), bad)  # type: ignore[arg-type]
+
+
+def test_tab_wires_data_quality_switch_as_display_only() -> None:
+    source = (ROOT / "l2shock/ui/tab_shock_review.py").read_text(encoding="utf-8")
+
+    assert '"Show data-quality warnings"' in source
+    assert (
+        "warning_regions_switch.on_value_change(_apply_annotation_visibility)" in source
+    )
+    assert "bounded_warnings = used_warnings" in source
+
+    tree = ast.parse(source)
+    handler = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_apply_annotation_visibility"
+    )
+    handler_source = ast.get_source_segment(source, handler) or ""
+    # Flipping any switch never reloads regions, price, or L2.
+    for forbidden in (
+        "_load_warning_overlay",
+        "load_shock_price_warning_regions",
+        "dataset_l2_warning_regions",
+    ):
+        assert forbidden not in handler_source

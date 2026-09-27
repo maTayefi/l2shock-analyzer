@@ -18,6 +18,12 @@ from typing import Protocol
 from l2shock.db.engine import session_scope
 from l2shock.db.price_repository import PriceAnalyticalRepository
 from l2shock.price import TradeSampleQuality, decode_hourly_trade_ohlc_blocks
+from l2shock.ui.shock_warning_regions import (
+    ShockWarningChannel,
+    ShockWarningRegion,
+    clip_warning_regions,
+    find_long_outage_regions,
+)
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _ONE_SECOND = timedelta(seconds=1)
@@ -215,4 +221,136 @@ def load_shock_price_context(
             source_end_utc_exclusive=source_end_utc_exclusive,
             bar_starts_utc=bar_starts_utc,
             timeframe_seconds=timeframe_seconds,
+        )
+
+
+def price_second_validity_from_repository(
+    repository: PriceHourReader,
+    *,
+    base: str,
+    start_utc: datetime,
+    end_utc_exclusive: datetime,
+) -> tuple[tuple[datetime, bool], ...]:
+    """Return (second, has_valid_trade_candle) for persisted price seconds.
+
+    Seconds of an absent price hour are omitted, so the outage detector
+    treats them as unavailable. Used only for warning regions.
+    """
+    if base not in {"BTC", "ETH"}:
+        raise ValueError("Price context base must be BTC or ETH")
+
+    start = _utc_second(start_utc, "start_utc")
+    end = _utc_second(end_utc_exclusive, "end_utc_exclusive")
+
+    if end <= start:
+        raise ValueError("Price validity interval must be nonempty")
+
+    first_hour = _hour_floor(start)
+    final_hour_exclusive = _hour_floor(end - _ONE_SECOND) + _ONE_HOUR
+
+    hours = repository.list_price_hours(
+        base=base,
+        start_utc=first_hour,
+        end_utc=final_hour_exclusive,
+        verify_codec=True,
+    )
+
+    decoded_by_hour = {}
+
+    for hour in hours:
+        hour_utc = _utc_second(hour.hour_utc, "price hour_utc")
+        if hour_utc != _hour_floor(hour_utc):
+            raise ValueError("Price repository returned a non-hourly row")
+        if not first_hour <= hour_utc < final_hour_exclusive:
+            raise ValueError("Price repository returned an out-of-range hour")
+        if hour_utc in decoded_by_hour:
+            raise ValueError("Price repository returned a duplicate hour")
+        if hour.base != base:
+            raise ValueError("Price repository returned another base")
+        if hour.source_venue != "binance_futures":
+            raise ValueError("Price repository returned a non-Binance source")
+
+        decoded_by_hour[hour_utc] = decode_hourly_trade_ohlc_blocks(hour.encoded)
+
+    observations: list[tuple[datetime, bool]] = []
+
+    for hour_utc in sorted(decoded_by_hour):
+        quality = decoded_by_hour[hour_utc].quality
+        lower = max(start, hour_utc)
+        upper = min(end, hour_utc + _ONE_HOUR)
+        first_offset = int((lower - hour_utc).total_seconds())
+
+        for step in range(int((upper - lower).total_seconds())):
+            observations.append(
+                (
+                    lower + timedelta(seconds=step),
+                    quality[first_offset + step] is TradeSampleQuality.VALID,
+                )
+            )
+
+    return tuple(observations)
+
+
+def price_warning_regions_from_repository(
+    repository: PriceHourReader,
+    *,
+    base: str,
+    view_start_utc: datetime,
+    view_end_utc_exclusive: datetime,
+    minimum_exclusive_seconds: int,
+) -> tuple[ShockWarningRegion, ...]:
+    """Long price outages visible in one viewport.
+
+    The loaded window is widened by the threshold on each side so a long
+    outage that is only partly visible is still detected, then clipped.
+    """
+    if (
+        isinstance(minimum_exclusive_seconds, bool)
+        or not isinstance(minimum_exclusive_seconds, int)
+        or minimum_exclusive_seconds <= 0
+    ):
+        raise ValueError("minimum_exclusive_seconds must be a positive integer")
+
+    view_start = _utc_second(view_start_utc, "view_start_utc")
+    view_end = _utc_second(view_end_utc_exclusive, "view_end_utc_exclusive")
+    padding = timedelta(seconds=minimum_exclusive_seconds)
+    window_start = view_start - padding
+    window_end = view_end + padding
+
+    observations = price_second_validity_from_repository(
+        repository,
+        base=base,
+        start_utc=window_start,
+        end_utc_exclusive=window_end,
+    )
+    regions = find_long_outage_regions(
+        observations,
+        channel=ShockWarningChannel.PRICE,
+        window_start_utc=window_start,
+        window_end_utc_exclusive=window_end,
+        minimum_exclusive_seconds=minimum_exclusive_seconds,
+    )
+
+    return clip_warning_regions(
+        regions,
+        view_start_utc=view_start,
+        view_end_utc_exclusive=view_end,
+    )
+
+
+def load_shock_price_warning_regions(
+    *,
+    base: str,
+    view_start_utc: datetime,
+    view_end_utc_exclusive: datetime,
+    minimum_exclusive_seconds: int,
+) -> tuple[ShockWarningRegion, ...]:
+    """Create and close the database session in the calling worker thread."""
+    with session_scope() as session:
+        return price_warning_regions_from_repository(
+            PriceAnalyticalRepository(session),
+            base=base,
+            view_start_utc=view_start_utc,
+            view_end_utc_exclusive=view_end_utc_exclusive,
+            minimum_exclusive_seconds=minimum_exclusive_seconds,
         )
