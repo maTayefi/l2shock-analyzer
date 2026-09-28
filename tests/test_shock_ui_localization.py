@@ -134,3 +134,13 @@ def test_bounded_view_normalizes_integral_float_position() -> None:
     assert "raw_position = view_area_input.value" in source
     assert "raw_position.is_integer()" in source
     assert "        position = view_area_input.value\n" not in source
+
+
+def test_diagnostics_export_filename_keeps_utc_z_suffix() -> None:
+    from l2shock.ui.tab_settings import _diagnostics_export_filename
+
+    name = _diagnostics_export_filename(
+        {"generated_at_utc": "2089-01-01T12:00:00+00:00"}
+    )
+
+    assert name == "l2shock-production-diagnostics-20890101T120000Z.json"

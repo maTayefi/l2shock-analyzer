@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 import math
+from collections import deque
 from fractions import Fraction
 from typing import Final
 from collections.abc import Iterable
@@ -206,6 +207,45 @@ def _is_turn(
     return value == extreme and neighborhood.index(extreme) == radius
 
 
+def _first_extremes(
+    scaled: tuple[int, ...],
+    windows: Iterable[tuple[int, int]],
+    *,
+    maximum: bool,
+) -> list[int]:
+    """Index of the FIRST-occurring extreme of each half-open window.
+
+    Window starts and ends must both be non-decreasing and every window must
+    be nonempty. An equal value never evicts an earlier index, so the deque
+    front is always the earliest occurrence of the window extreme. This is
+    exactly ``start + window.index(max_or_min(window))`` in O(n) total.
+    """
+    result: list[int] = []
+    candidates: deque[int] = deque()
+    pushed = 0
+
+    for start, end in windows:
+        while pushed < end:
+            value = scaled[pushed]
+
+            if maximum:
+                while candidates and scaled[candidates[-1]] < value:
+                    candidates.pop()
+            else:
+                while candidates and scaled[candidates[-1]] > value:
+                    candidates.pop()
+
+            candidates.append(pushed)
+            pushed += 1
+
+        while candidates[0] < start:
+            candidates.popleft()
+
+        result.append(candidates[0])
+
+    return result
+
+
 def _run_hypotheses(
     values: tuple[Fraction, ...],
     *,
@@ -222,6 +262,10 @@ def _run_hypotheses(
     order-preserving and injective, so min/max, equality, first-index
     plateau ownership, and every threshold test answer exactly as Fraction
     comparisons would. Emitted fields remain the original exact Fractions.
+
+    Forward C extremes and turn neighbourhoods use monotonic sliding windows
+    (O(n) per scale) with first-occurrence ownership identical to the former
+    slice-based ``max(future)`` / ``future.index`` / ``_is_turn`` path.
     """
     results: list[ShockStartHypothesis] = []
     count = len(values)
@@ -246,26 +290,43 @@ def _run_hypotheses(
         if count < 2 * radius + 2:
             continue
 
-        for b in range(radius, count - 1):
+        # With no forward horizon every former slice was empty (skipped).
+        if horizon < 1:
+            continue
+
+        b_values = range(radius, count - 1)
+
+        forward = [(b + 1, min(count, b + horizon + 1)) for b in b_values]
+        forward_max = _first_extremes(scaled, forward, maximum=True)
+        forward_min = _first_extremes(scaled, forward, maximum=False)
+
+        if radius > 0:
+            left = [(b - radius, b) for b in b_values]
+            right = [(b + 1, min(count, b + radius + 1)) for b in b_values]
+            left_max = _first_extremes(scaled, left, maximum=True)
+            left_min = _first_extremes(scaled, left, maximum=False)
+            right_max = _first_extremes(scaled, right, maximum=True)
+            right_min = _first_extremes(scaled, right, maximum=False)
+
+        for position, b in enumerate(b_values):
             a = b - radius
-            c_limit = min(count, b + horizon + 1)
-
-            if c_limit <= b + 1:
-                continue
-
-            future = scaled[b + 1 : c_limit]
             a_scaled = scaled[a]
             b_scaled = scaled[b]
             after_scaled = scaled[min(b + radius, count - 1)]
 
+            # _is_turn requires the complete [b - r, b + r] neighbourhood.
+            turn_window_complete = b + radius + 1 <= count
+
             for direction in ShockStartDirection:
                 if direction is ShockStartDirection.UP:
-                    c_scaled = max(future)
+                    c = forward_max[position]
+                    c_scaled = scaled[c]
                     height_scaled = c_scaled - b_scaled
                     before = b_scaled - a_scaled
                     after = after_scaled - b_scaled
                 else:
-                    c_scaled = min(future)
+                    c = forward_min[position]
+                    c_scaled = scaled[c]
                     height_scaled = b_scaled - c_scaled
                     before = a_scaled - b_scaled
                     after = b_scaled - after_scaled
@@ -273,14 +334,23 @@ def _run_hypotheses(
                 if height_scaled < minimum_height:
                     continue
 
-                # _is_turn is type-generic: integers order exactly like
-                # the Fractions they scale.
-                turning = _is_turn(
-                    scaled,
-                    index=b,
-                    radius=radius,
-                    direction=direction,
-                )
+                # Equivalent to _is_turn: B is the neighbourhood extreme and
+                # no EARLIER neighbour ties it (first-index plateau ownership),
+                # i.e. left side strictly beyond B, right side not beyond B.
+                if radius == 0:
+                    turning = True
+                elif not turn_window_complete:
+                    turning = False
+                elif direction is ShockStartDirection.UP:
+                    turning = (
+                        scaled[left_min[position]] > b_scaled
+                        and scaled[right_min[position]] >= b_scaled
+                    )
+                else:
+                    turning = (
+                        scaled[left_max[position]] < b_scaled
+                        and scaled[right_max[position]] <= b_scaled
+                    )
 
                 # An acceleration continues in the same direction:
                 # compare rates over equal-length before/after windows.
@@ -297,8 +367,6 @@ def _run_hypotheses(
                 else:
                     continue
 
-                # First occurrence of the extreme, as before.
-                c = b + 1 + future.index(c_scaled)
                 height = Fraction(height_scaled, common)
 
                 absolute_a = offset + a

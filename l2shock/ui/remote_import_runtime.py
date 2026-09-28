@@ -38,11 +38,14 @@ from l2shock.remote.contracts import (
     RemoteArtifactKey,
     RemoteArtifactKind,
 )
+from l2shock.db.analytical_repository import AnalyticalRepositoryError
 from l2shock.remote.hf_repository import (
     DownloadedHuggingFaceArtifact,
     HuggingFaceDatasetRepository,
+    HuggingFaceRepositoryError,
 )
 from l2shock.remote.importer import (
+    RemoteArtifactImportError,
     RemoteArtifactImportResult,
     import_downloaded_huggingface_artifact,
 )
@@ -433,6 +436,34 @@ def plan_remote_import_keys(
         hour += timedelta(hours=1)
 
     return tuple(keys)
+
+
+_MAX_ITEM_DIAGNOSTIC_CHARS = 300
+
+# Project-owned error types. Their messages are fixed, secret-free text that
+# tells the user what to fix (conflicting checkpoint, partial HF pair,
+# provenance conflict, unverifiable local raw attachment, ...). Any other
+# exception may carry request/database details and stays type-only.
+_SURFACED_ITEM_ERRORS: tuple[type[BaseException], ...] = (
+    RemoteImportRuntimeError,
+    RemoteArtifactImportError,
+    HuggingFaceRepositoryError,
+    AnalyticalRepositoryError,
+)
+
+
+def _item_diagnostic(exc: BaseException) -> str:
+    """Return a bounded, secret-safe per-artifact failure diagnostic."""
+    if isinstance(exc, _SURFACED_ITEM_ERRORS):
+        text = " ".join(str(exc).split())
+
+        if text:
+            if len(text) > _MAX_ITEM_DIAGNOSTIC_CHARS:
+                text = text[: _MAX_ITEM_DIAGNOSTIC_CHARS - 3] + "..."
+
+            return f"{type(exc).__name__}: {text}"
+
+    return f"Unexpected {type(exc).__name__}"
 
 
 def _production_artifact_importer(
@@ -901,7 +932,7 @@ class RemoteImportRuntime:
                     item = RemoteImportItemResult(
                         key=key,
                         disposition=RemoteImportItemDisposition.ERROR,
-                        diagnostic=(f"Unexpected {type(exc).__name__}"),
+                        diagnostic=_item_diagnostic(exc),
                     )
                     log.exception(
                         "Remote import failed for %s.",

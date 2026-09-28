@@ -512,3 +512,85 @@ async def test_shutdown_stops_remote_import_before_processing(
         "tasks:4.0",
         "engine",
     ]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_blocks_engine_disposal_while_operation_lock_is_held(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset_state_for_tests()
+    events: list[str] = []
+
+    _patch_owners(monkeypatch)
+    _patch_tail(monkeypatch, events)
+
+    state = get_state()
+    await state.operation_lock.acquire()
+    state.active_operation_name = "settings_maintenance"
+
+    try:
+        with pytest.raises(
+            RuntimeError,
+            match="background work remained active",
+        ):
+            await shutdown_module.shutdown_runtime(
+                request_server_stop=False,
+                operation_lock_wait_seconds=0.2,
+                other_task_timeout_seconds=0.1,
+            )
+    finally:
+        state.operation_lock.release()
+
+    assert "engine" not in events
+    assert state.shutdown_complete is False
+
+
+@pytest.mark.asyncio
+async def test_shutdown_proceeds_after_operation_lock_owner_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    reset_state_for_tests()
+    events: list[str] = []
+
+    _patch_owners(monkeypatch)
+    _patch_tail(monkeypatch, events)
+
+    state = get_state()
+    await state.operation_lock.acquire()
+    state.active_operation_name = "preset_management"
+
+    async def _release_soon() -> None:
+        await asyncio.sleep(0.05)
+        state.operation_lock.release()
+
+    releaser = asyncio.create_task(_release_soon())
+
+    await shutdown_module.shutdown_runtime(
+        request_server_stop=False,
+        operation_lock_wait_seconds=2.0,
+        other_task_timeout_seconds=0.1,
+    )
+    await releaser
+
+    assert events == ["tasks:0.1", "engine"]
+    assert state.shutdown_complete is True
+
+
+@pytest.mark.asyncio
+async def test_shutdown_retry_task_starts_after_admission_barrier() -> None:
+    from l2shock.ui import shutdown_control
+
+    reset_state_for_tests()
+    get_state().shutdown_started = True
+    ran: list[bool] = []
+
+    async def _work() -> None:
+        ran.append(True)
+
+    task = shutdown_control._start_shutdown_task(_work())
+
+    assert task is not None
+    await task
+    assert ran == [True]

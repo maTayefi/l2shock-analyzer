@@ -28,6 +28,8 @@ from l2shock.analysis.shock_start import (
 from l2shock.analysis.shock_review import (
     SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION,
     SHOCK_REVIEW_ORDER_LABELS,
+    ShockReview,
+    reorder_shock_review,
 )
 from l2shock.ui.analysis_inputs import (
     load_enabled_analysis_presets,
@@ -67,7 +69,6 @@ from l2shock.ui.shock_warning_regions import (
     with_shock_warning_regions,
 )
 from l2shock.ui.shock_runtime import (
-    ShockRuntimeBusyError,
     ShockRuntimePhase,
     get_manual_shock_runtime,
 )
@@ -97,7 +98,14 @@ def _utc_input(value: object, name: str) -> datetime:
 
 def _scale_fraction(value: object, name: str) -> Decimal:
     try:
-        fraction = Decimal(str(value))
+        if isinstance(value, float):
+            # Browser number inputs deliver binary floats; stepping can
+            # produce noise such as 0.30000000000000004. Twelve significant
+            # digits recover the typed decimal for any realistic threshold
+            # and keep scan identities stable.
+            fraction = Decimal(format(value, ".12g"))
+        else:
+            fraction = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError) as exc:
         raise ValueError(f"{name} must be a decimal fraction") from exc
 
@@ -375,6 +383,12 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
     initial_snapshot = runtime.snapshot()
     observed_completion = initial_snapshot.completion_sequence
     model: ShockInspectionModel | None = None
+    # The runtime-owned completed review this tab's model was derived from.
+    # Inspection order is tab-local: the shared runtime review is never
+    # mutated, so one browser tab cannot invalidate another tab's charts.
+    model_source: ShockReview | None = None
+    # Base whose enabled presets are currently loaded in preset_input.
+    presets_base: str | None = None
     selection_generation = 0
     selected_owner_id: str | None = None
     selected_position: int | None = None
@@ -701,7 +715,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
         ).classes("text-xs text-gray-500")
 
     async def _reload_presets(_event: Any = None) -> None:
-        nonlocal preset_loading, enabled_preset_hashes
+        nonlocal preset_loading, enabled_preset_hashes, presets_base
 
         if preset_loading or runtime.snapshot().is_running:
             return
@@ -721,6 +735,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
             )
             options = {option.preset_hash: option.label for option in matching}
             enabled_preset_hashes = set(options)
+            presets_base = selected_base
 
             previous = preset_input.value
             preset_input.options = options
@@ -738,6 +753,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
         except Exception:
             log.exception("Could not load Shock-Start enabled presets.")
             enabled_preset_hashes = set()
+            presets_base = None
             preset_input.options = {}
             preset_input.value = None
             preset_input.update()
@@ -779,9 +795,19 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
             f"up to {page.page_size} rows. Click a row to inspect it."
         )
 
+    def _review_is_current(candidate: ShockInspectionModel | None) -> bool:
+        """True while ``candidate`` is this tab's model of the runtime review."""
+        return (
+            candidate is not None
+            and candidate is model
+            and model_source is not None
+            and runtime.snapshot().last_review is model_source
+        )
+
     def _clear_display() -> None:
-        nonlocal model, selection_generation, bounded_owner_id
+        nonlocal model, model_source, selection_generation, bounded_owner_id
         model = None
+        model_source = None
         bounded_owner_id = None
         selection_generation += 1
         _clear_export_owner()
@@ -813,6 +839,21 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
 
         if selected_hash not in enabled_preset_hashes:
             status.text = "Select an enabled preset for the chosen base."
+            return
+
+        # A Base change during a running review skips the preset reload, so
+        # the loaded list may still belong to the previous Base.
+        current_base = str(base_input.value or "").strip().upper()
+
+        if presets_base is None or current_base != presets_base:
+            status.text = (
+                "Base changed after presets were loaded; reloading enabled "
+                "presets. Press Run again."
+            )
+            create_tracked_task(
+                _reload_presets(),
+                name="l2shock-shock-preset-reload",
+            )
             return
 
         try:
@@ -1048,10 +1089,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
 
         current_model = model
 
-        if (
-            current_model is None
-            or runtime.snapshot().last_review is not current_model.review
-        ):
+        if current_model is None or not _review_is_current(current_model):
             status.text = "Complete a Shock-Start review before opening a viewport."
             return
 
@@ -1087,7 +1125,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
         if (
             my_generation != selection_generation
             or model is not current_model
-            or runtime.snapshot().last_review is not current_model.review
+            or not _review_is_current(current_model)
         ):
             return
 
@@ -1157,7 +1195,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
             if (
                 my_generation != selection_generation
                 or model is not current_model
-                or runtime.snapshot().last_review is not current_model.review
+                or not _review_is_current(current_model)
             ):
                 return
 
@@ -1173,7 +1211,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
             if (
                 my_generation != selection_generation
                 or model is not current_model
-                or runtime.snapshot().last_review is not current_model.review
+                or not _review_is_current(current_model)
             ):
                 return
 
@@ -1193,7 +1231,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
             if (
                 my_generation == selection_generation
                 and model is current_model
-                and runtime.snapshot().last_review is current_model.review
+                and _review_is_current(current_model)
             ):
                 view_button.enable()
                 status.text = f"Could not display L2 viewport: {exc}"
@@ -1202,7 +1240,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
         if (
             my_generation != selection_generation
             or model is not current_model
-            or runtime.snapshot().last_review is not current_model.review
+            or not _review_is_current(current_model)
         ):
             return
 
@@ -1254,7 +1292,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
             await _apply_annotation_visibility()
 
     def _poll() -> None:
-        nonlocal observed_completion, model
+        nonlocal observed_completion, model, model_source
 
         snapshot = runtime.snapshot()
 
@@ -1274,15 +1312,21 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
                 order_select.value or SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION
             )
 
+            source = review
+
             if review.order_version != selected_order:
                 try:
-                    review = runtime.reorder_last_review(selected_order)
+                    review = reorder_shock_review(
+                        source,
+                        order_version=selected_order,
+                    )
                 except (RuntimeError, TypeError, ValueError) as exc:
                     status.text = f"Could not apply inspection order: {exc}"
                     return
 
             _clear_display()
             model = ShockInspectionModel(review)
+            model_source = source
             page_input.value = 1
             view_area_input.value = 1
             _show_page()
@@ -1315,7 +1359,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
             status.text = f"Shock-Start review failed: {snapshot.last_error}"
 
     def _apply_inspection_order(_event: Any = None) -> None:
-        nonlocal model
+        nonlocal model, model_source
 
         selected_order = str(
             order_select.value or SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION
@@ -1328,19 +1372,29 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
             )
             return
 
-        current = snapshot.last_review
+        # The runtime review is never reordered in place, so it is the
+        # stable source for every tab's local ordering.
+        source = snapshot.last_review
 
-        if current is None or current.order_version == selected_order:
+        if source is None:
+            return
+
+        if (
+            model is not None
+            and model_source is source
+            and model.review.order_version == selected_order
+        ):
             return
 
         try:
-            review = runtime.reorder_last_review(selected_order)
+            review = reorder_shock_review(source, order_version=selected_order)
         except (RuntimeError, TypeError, ValueError) as exc:
             status.text = f"Could not change inspection order: {exc}"
             return
 
         _clear_display()
         model = ShockInspectionModel(review)
+        model_source = source
         page_input.value = 1
         view_area_input.value = 1
         _show_page()
@@ -1372,7 +1426,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
             current_model is None
             or owner is None
             or position is None
-            or runtime.snapshot().last_review is not current_model.review
+            or not _review_is_current(current_model)
         ):
             status.text = "Select an acknowledged B-area chart before exporting."
             return

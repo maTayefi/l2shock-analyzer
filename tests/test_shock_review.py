@@ -333,3 +333,30 @@ def test_ui_default_order_is_v3_while_backend_default_stays_v2():
     assert (
         source.count("order_select.value or SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION") == 2
     )
+
+
+def test_diagnostic_honours_requested_order_version():
+    from l2shock.analysis.shock_diagnostic import build_shock_diagnostic
+    from l2shock.analysis.shock_review import (
+        SHOCK_REVIEW_ORDER_VERSION,
+        SHOCK_REVIEW_ORDER_VERSION_V3,
+    )
+
+    scan_range = max(_TOTALS) - min(_TOTALS)
+    scan = _candidate_scan(
+        (_hypothesis(2, 5, 10, scale="major", scan_range=scan_range),)
+    )
+
+    backend_default = build_shock_diagnostic(scan)
+    ui_default = build_shock_diagnostic(
+        scan,
+        order_version=SHOCK_REVIEW_ORDER_VERSION_V3,
+    )
+
+    assert backend_default.order_version == SHOCK_REVIEW_ORDER_VERSION
+    assert ui_default.order_version == SHOCK_REVIEW_ORDER_VERSION_V3
+    assert backend_default.review_id != ui_default.review_id
+    assert (
+        backend_default.evidence_result.candidate_scan.scan_id
+        == ui_default.evidence_result.candidate_scan.scan_id
+    )

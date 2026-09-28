@@ -19,6 +19,7 @@ from l2shock.analysis.shock_execution import (
     run_verified_shock_scan,
 )
 from l2shock.analysis.shock_review import (
+    SHOCK_REVIEW_ORDER_VERSION,
     ShockReview,
     review_shock_areas,
 )
@@ -161,13 +162,19 @@ def build_shock_diagnostic(
     scan: ShockCandidateScan,
     *,
     evidence_config: ShockEvidenceConfig | None = None,
+    order_version: str = SHOCK_REVIEW_ORDER_VERSION,
 ) -> ShockReview:
-    """Pure post-processing; never loads data or consults price."""
+    """Pure post-processing; never loads data or consults price.
+
+    ``order_version`` changes only inspection order and review identity;
+    candidate detection and evidence measurements are unaffected.
+    """
     return review_shock_areas(
         describe_shock_evidence(
             scan,
             config=evidence_config,
-        )
+        ),
+        order_version=order_version,
     )
 
 
@@ -177,6 +184,7 @@ def run_verified_shock_diagnostic(
     *,
     candidate_config: ShockStartConfig | None = None,
     evidence_config: ShockEvidenceConfig | None = None,
+    order_version: str = SHOCK_REVIEW_ORDER_VERSION,
 ) -> ShockReview:
     """Production read path; the caller owns the database session."""
     scan = run_verified_shock_scan(
@@ -187,6 +195,7 @@ def run_verified_shock_diagnostic(
     return build_shock_diagnostic(
         scan,
         evidence_config=evidence_config,
+        order_version=order_version,
     )
 
 

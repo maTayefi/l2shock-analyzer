@@ -205,3 +205,19 @@ def test_invalid_user_bar_budget_is_rejected(
             1,
             max_bars=budget,
         )
+
+
+def test_lead_in_longer_than_window_keeps_selected_b_visible():
+    selection = build_shock_view_selection(
+        _review(2002),
+        1,
+        source_seconds=5,
+        seconds_before_b=100,
+        timeframe_seconds=1,
+        max_bars=10,
+    )
+
+    # First B is at dataset index 7; the lead-in is clamped to 4 seconds.
+    assert selection.source_seconds == 5
+    assert selection.source_start_utc == _ORIGIN + timedelta(seconds=3)
+    assert selection.source_end_utc_exclusive == _ORIGIN + timedelta(seconds=8)

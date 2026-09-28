@@ -20,12 +20,15 @@ from dataclasses import dataclass
 from enum import StrEnum
 from uuid import uuid4
 
-from l2shock.analysis.shock_dataset import ShockDatasetRequest
+from l2shock.analysis.shock_dataset import (
+    ShockDatasetRequest,
+    load_verified_shock_dataset,
+)
 from l2shock.analysis.shock_evidence import (
     ShockEvidenceConfig,
     describe_shock_evidence,
 )
-from l2shock.analysis.shock_execution import run_verified_shock_scan
+from l2shock.analysis.shock_execution import execute_verified_shock_dataset
 from l2shock.analysis.shock_review import (
     ShockReview,
     reorder_shock_review,
@@ -89,12 +92,15 @@ def _production_runner(
     """Run all synchronous stages in the same worker thread."""
     _checkpoint(stop_event)
 
+    # Hold the database session only for the verified read. The CPU-bound
+    # detector must not pin a pooled connection for the whole scan.
     with session_scope() as session:
-        scan = run_verified_shock_scan(
-            session,
-            request,
-            config=config,
-        )
+        dataset = load_verified_shock_dataset(session, request)
+
+    # Stop can now also take effect between loading and detection.
+    _checkpoint(stop_event)
+
+    scan = execute_verified_shock_dataset(dataset, config=config)
 
     # In particular, do not publish a scan if Stop arrived while the
     # non-interruptible verified loader or detector was executing.

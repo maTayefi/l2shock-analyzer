@@ -131,14 +131,19 @@ def build_shock_view_selection(
     if not 0 <= area.first_b_index < dataset_size:
         raise ShockViewBarsError("Selected B area begins outside its dataset")
 
+    # The selected first B must always lie inside [first, last_exclusive):
+    # clamp the lead-in below the window length, and near the dataset end
+    # shift the window left instead of shrinking it.
+    effective_before_b = min(before_b, requested_seconds - 1)
+    window_seconds = min(requested_seconds, dataset_size)
     first = max(
         0,
-        area.first_b_index - before_b,
+        min(
+            area.first_b_index - effective_before_b,
+            dataset_size - window_seconds,
+        ),
     )
-    last_exclusive = min(
-        dataset_size,
-        first + requested_seconds,
-    )
+    last_exclusive = first + window_seconds
 
     top_entries = review.ordered_areas[:ranked_count]
 

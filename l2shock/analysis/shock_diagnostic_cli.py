@@ -15,12 +15,20 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from l2shock.analysis.shock_dataset import ShockDatasetRequest
+from l2shock.analysis.shock_dataset import (
+    ShockDatasetRequest,
+    load_verified_shock_dataset,
+)
 from l2shock.analysis.shock_diagnostic import (
-    run_verified_shock_diagnostic,
+    build_shock_diagnostic,
     shock_diagnostic_json_bytes,
 )
 from l2shock.analysis.shock_evidence import ShockEvidenceConfig
+from l2shock.analysis.shock_execution import execute_verified_shock_dataset
+from l2shock.analysis.shock_review import (
+    SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION,
+    SHOCK_REVIEW_ORDER_LABELS,
+)
 from l2shock.analysis.shock_start import (
     DEFAULT_SHOCK_SCALES,
     ShockStartConfig,
@@ -45,6 +53,25 @@ def _datetime_utc(text: str) -> datetime:
     ):
         raise argparse.ArgumentTypeError("Timestamp must explicitly specify UTC")
     return result
+
+
+def _finite_decimal(text: str) -> Decimal:
+    """argparse type: exact finite Decimal, reported as a usage error.
+
+    ``decimal.InvalidOperation`` is an ArithmeticError, not a ValueError,
+    so ``type=Decimal`` would escape argparse as a traceback.
+    """
+    try:
+        value = Decimal(str(text).strip())
+    except (InvalidOperation, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            "must be a decimal number such as 0.05"
+        ) from exc
+
+    if not value.is_finite():
+        raise argparse.ArgumentTypeError("must be a finite decimal number")
+
+    return value
 
 
 def _scale(text: str) -> ShockStructuralScale:
@@ -100,8 +127,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--minimum-channel-leg-fraction",
-        type=Decimal,
+        type=_finite_decimal,
         default=Decimal("0.05"),
+    )
+    parser.add_argument(
+        "--order-version",
+        choices=tuple(SHOCK_REVIEW_ORDER_LABELS),
+        default=SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION,
+        help=(
+            "Inspection order; defaults to the UI default so that CLI and "
+            "UI review_id and area order agree for the same request"
+        ),
     )
     parser.add_argument(
         "--output",
@@ -174,19 +210,27 @@ def main(argv: list[str] | None = None) -> int:
             minimum_channel_leg_fraction=(args.minimum_channel_leg_fraction),
         )
 
+        # Hold the database session only for the verified read. The
+        # CPU-bound detector must not pin a pooled connection.
         with session_scope() as session:
-            review = run_verified_shock_diagnostic(
-                session,
-                request,
-                candidate_config=candidate_config,
-                evidence_config=evidence_config,
-            )
+            dataset = load_verified_shock_dataset(session, request)
+
+        scan = execute_verified_shock_dataset(
+            dataset,
+            config=candidate_config,
+        )
+        review = build_shock_diagnostic(
+            scan,
+            evidence_config=evidence_config,
+            order_version=args.order_version,
+        )
 
         contents = shock_diagnostic_json_bytes(review)
         _write_new_file(args.output, contents)
         print(
             f"Wrote {len(review.ordered_areas)} B areas; "
             f"{review.evidence_result.hypothesis_count} hypotheses; "
+            f"order={review.order_version}; "
             f"review_id={review.review_id}",
             file=sys.stderr,
         )

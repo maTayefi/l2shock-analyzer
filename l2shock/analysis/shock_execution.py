@@ -106,11 +106,23 @@ def _execute(
     # an unowned or invalid second. The current detector also enforces gaps.
     from l2shock.ingest.sampling import BookSampleQuality
 
+    seconds = dataset.seconds
+    count = len(seconds)
+
+    # invalid_before[i] = number of non-VALID seconds in seconds[:i]. One O(n)
+    # pass replaces an O(A..C span) walk for every hypothesis.
+    invalid_before = [0] * (count + 1)
+
+    for index, second in enumerate(seconds):
+        invalid_before[index + 1] = invalid_before[index] + (
+            0 if second.quality is BookSampleQuality.VALID else 1
+        )
+
     for item in hypotheses:
-        if any(
-            dataset.seconds[index].quality is not BookSampleQuality.VALID
-            for index in range(item.a_index, item.c_index + 1)
-        ):
+        if not 0 <= item.a_index <= item.b_index <= item.c_index < count:
+            raise ValueError("Shock candidate indices are outside the L2 input")
+
+        if invalid_before[item.c_index + 1] - invalid_before[item.a_index]:
             raise ValueError("Shock candidate crosses invalid L2 coverage")
         if (
             dataset.seconds[item.a_index].timestamp_utc != item.a_utc
@@ -140,6 +152,15 @@ def run_shock_scan_from_repository(
     )
 
 
+def execute_verified_shock_dataset(
+    dataset: VerifiedShockDataset,
+    *,
+    config: ShockStartConfig | None = None,
+) -> ShockCandidateScan:
+    """Detect on an already verified dataset; needs no database session."""
+    return _execute(dataset, config)
+
+
 def run_verified_shock_scan(
     session: Session,
     request: ShockDatasetRequest,
@@ -158,6 +179,7 @@ __all__ = [
     "SHOCK_EXECUTION_SCHEMA",
     "SHOCK_EXECUTION_SCHEMA_VERSION",
     "ShockCandidateScan",
+    "execute_verified_shock_dataset",
     "run_shock_scan_from_repository",
     "run_verified_shock_scan",
 ]

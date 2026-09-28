@@ -445,3 +445,50 @@ def test_legacy_review_helpers_are_removed() -> None:
     # The integer fast paths that replaced them remain available.
     for name in ("_scaled_totals", "_scaled_total_bounds", "_median_and_mad_scaled"):
         assert callable(getattr(review_module, name)), name
+
+
+def test_first_extremes_match_brute_force_first_occurrence() -> None:
+    from l2shock.analysis.shock_start import _first_extremes
+
+    rng = random.Random(2024)
+
+    for _ in range(200):
+        count = rng.randint(1, 80)
+        scaled = tuple(rng.randint(-5, 5) for _ in range(count))
+        width = rng.randint(1, 12)
+        windows = [(start, min(count, start + width)) for start in range(count)]
+
+        for maximum in (True, False):
+            observed = _first_extremes(scaled, windows, maximum=maximum)
+
+            for (start, end), index in zip(windows, observed, strict=True):
+                window = scaled[start:end]
+                extreme = max(window) if maximum else min(window)
+                assert index == start + window.index(extreme)
+
+
+def test_sliding_detector_matches_reference_on_wide_radii_and_plateaus() -> None:
+    config = ShockStartConfig(
+        scales=(
+            ShockStructuralScale("major", Decimal("0.10"), 40),
+            ShockStructuralScale("minor", Decimal("0.02"), 3),
+        )
+    )
+    shape = (
+        [5] * 30
+        + list(range(5, 60))
+        + [60] * 40
+        + list(range(60, 10, -1))
+        + [10] * 20
+        + list(range(10, 40))
+    )
+    values = tuple(Fraction(value) for value in shape)
+    times = tuple(_T0 + timedelta(seconds=i) for i in range(len(values)))
+    scan_range = max(values) - min(values)
+    kwargs = dict(offset=0, times=times, scan_range=scan_range, config=config)
+
+    expected = _reference_run_hypotheses(values, **kwargs)
+    actual = _run_hypotheses(values, **kwargs)
+
+    assert actual == expected
+    assert actual, "fixture must exercise real hypotheses"

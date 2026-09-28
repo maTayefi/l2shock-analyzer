@@ -78,10 +78,12 @@ def _diagnostics_export_filename(
 ) -> str:
     generated = str(report.get("generated_at_utc") or "").strip()
 
+    # The UTC offset must be normalized BEFORE separators are removed;
+    # otherwise "+00:00" never matches and its digits merge into the time.
     compact = (
-        generated.replace("-", "")
+        generated.replace("+00:00", "Z")
+        .replace("-", "")
         .replace(":", "")
-        .replace("+00:00", "Z")
         .replace(".", "")
     )
 

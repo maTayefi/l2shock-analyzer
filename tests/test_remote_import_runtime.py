@@ -442,3 +442,62 @@ async def test_repeated_cancellation_waits_for_thread_boundary_exit() -> None:
         await task
 
     assert finished.is_set()
+
+
+def test_item_diagnostic_surfaces_only_project_errors() -> None:
+    from l2shock.remote.importer import RemoteArtifactImportError
+    from l2shock.ui.remote_import_runtime import _item_diagnostic
+
+    assert _item_diagnostic(
+        RemoteArtifactImportError("Remote output checkpoint conflicts")
+    ) == ("RemoteArtifactImportError: Remote output checkpoint conflicts")
+    assert _item_diagnostic(RuntimeError("password=do-not-show")) == (
+        "Unexpected RuntimeError"
+    )
+    assert _item_diagnostic(RemoteArtifactImportError("")) == (
+        "Unexpected RemoteArtifactImportError"
+    )
+    assert len(_item_diagnostic(RemoteArtifactImportError("x" * 1_000))) < 400
+
+
+@pytest.mark.asyncio
+async def test_runtime_item_diagnostics_are_typed_and_secret_safe() -> None:
+    from l2shock.remote.hf_repository import HuggingFacePartialArtifactError
+
+    reset_state_for_tests()
+    calls = {"count": 0}
+
+    class Repository:
+        def current_revision(self) -> str:
+            return "b" * 40
+
+        def download_artifact(self, key, *, revision=None):
+            del key, revision
+            calls["count"] += 1
+
+            if calls["count"] == 1:
+                raise HuggingFacePartialArtifactError(
+                    "Hugging Face contains an incomplete artifact/manifest pair"
+                )
+
+            raise RuntimeError("token=do-not-show")
+
+    runtime = RemoteImportRuntime(repository=Repository())
+
+    result = await runtime.start(
+        requested_start_utc=_hour(12),
+        requested_end_utc=_hour(13),
+        bases=("BTC",),
+        lower_depth_fraction=Decimal("0"),
+        upper_depth_fraction=Decimal("0.01"),
+    )
+
+    assert result.failed_count == 4
+    assert result.items[0].diagnostic == (
+        "HuggingFacePartialArtifactError: "
+        "Hugging Face contains an incomplete artifact/manifest pair"
+    )
+    assert all(
+        item.diagnostic == "Unexpected RuntimeError" for item in result.items[1:]
+    )
+    assert all("do-not-show" not in (item.diagnostic or "") for item in result.items)
