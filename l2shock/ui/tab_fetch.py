@@ -940,6 +940,11 @@ def build_fetch_tab(
         nonlocal calendar_refresh_pending
         nonlocal latest_calendar_snapshot
 
+        # Admission barrier: an untracked worker must not open a database
+        # session while shutdown is disposing (or has disposed) the engine.
+        if state.shutdown_started:
+            return
+
         if calendar_refresh_running:
             calendar_refresh_pending = True
             return

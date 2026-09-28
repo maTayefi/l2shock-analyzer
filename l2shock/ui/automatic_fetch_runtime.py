@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable, Mapping
+import os
+import shutil
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -358,6 +360,53 @@ def _write_retry_cursor_sync(
         session.execute(statement)
 
 
+async def _to_thread_joined[T](
+    function: Callable[..., T],
+    /,
+    *args: object,
+    task_name: str,
+    **kwargs: object,
+) -> T:
+    """Run one synchronous worker and keep ownership until its thread exits.
+
+    ``asyncio.to_thread`` cannot interrupt a running thread. A plain await
+    lets task cancellation finish the owner while the worker still holds a
+    database session or moves files, after which shutdown would dispose the
+    engine underneath it. Every cancellation is absorbed until the worker
+    returns; the first cancellation is then re-raised.
+    """
+
+    worker = asyncio.create_task(
+        asyncio.to_thread(function, *args, **kwargs),
+        name=task_name,
+    )
+
+    cancelled: asyncio.CancelledError | None = None
+
+    while not worker.done():
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError as exc:
+            # A second cancellation can interrupt a shielded wait too.
+            if cancelled is None:
+                cancelled = exc
+        except Exception:
+            # Inspect the worker's actual outcome below.
+            break
+
+    if cancelled is not None:
+        if not worker.cancelled() and worker.exception() is not None:
+            log.warning(
+                "Worker %s failed while its owner was being cancelled: %s",
+                task_name,
+                type(worker.exception()).__name__,
+            )
+
+        raise cancelled
+
+    return worker.result()
+
+
 async def _write_retry_cursor_durably(
     *,
     newest_eligible_hour_utc: datetime,
@@ -365,33 +414,12 @@ async def _write_retry_cursor_durably(
 ) -> None:
     """Persist retry rotation before propagating owner-task cancellation."""
 
-    task = asyncio.create_task(
-        asyncio.to_thread(
-            _write_retry_cursor_sync,
-            newest_eligible_hour_utc=newest_eligible_hour_utc,
-            attempted_hour_utc=attempted_hour_utc,
-        ),
-        name="l2shock-automatic-fetch-retry-cursor",
+    await _to_thread_joined(
+        _write_retry_cursor_sync,
+        newest_eligible_hour_utc=newest_eligible_hour_utc,
+        attempted_hour_utc=attempted_hour_utc,
+        task_name="l2shock-automatic-fetch-retry-cursor",
     )
-
-    cancelled: asyncio.CancelledError | None = None
-
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError as exc:
-            # A second cancellation can interrupt a shielded wait too.
-            # Keep ownership until the synchronous database task has exited.
-            if cancelled is None:
-                cancelled = exc
-        except Exception:
-            # Inspect and propagate the worker's actual failure below.
-            break
-
-    task.result()
-
-    if cancelled is not None:
-        raise cancelled
 
 
 def _clear_retry_cursor_sync() -> None:
@@ -525,16 +553,97 @@ def _source_row_counts_as_complete(
         return False
 
 
+def _corrupt_canonical_archive_path(
+    path_text: str,
+    *,
+    canonical_path: Path,
+    expected_digest: str,
+    expected_size: object,
+) -> Path | None:
+    """Return the canonical file path only when its bytes are proven corrupt.
+
+    ``None`` means intact, absent, non-canonical, a link, or uninspectable.
+    Structurally unreadable files remain the downloader's responsibility.
+    """
+
+    stored_path = Path(path_text).expanduser()
+
+    try:
+        if stored_path.is_symlink():
+            return None
+
+        resolved_path = stored_path.resolve()
+
+        if resolved_path != canonical_path:
+            return None
+
+        if not resolved_path.is_file():
+            return None
+
+        actual_digest, actual_size = sha256_file(resolved_path)
+    except (
+        DownloadIntegrityError,
+        OSError,
+    ):
+        return None
+
+    if actual_size == expected_size and actual_digest == expected_digest:
+        return None
+
+    return resolved_path
+
+
+def _restore_quarantined_archive(
+    quarantined: Path,
+    canonical_path: Path,
+) -> bool:
+    """Undo one quarantine move after its database transaction failed."""
+
+    try:
+        if os.path.lexists(canonical_path):
+            return False
+
+        canonical_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            os.replace(quarantined, canonical_path)
+        except OSError:
+            shutil.move(str(quarantined), str(canonical_path))
+    except OSError:
+        log.exception(
+            "Could not restore quarantined archive %s after a failed "
+            "database commit.",
+            quarantined.name,
+        )
+        return False
+
+    sidecar = quarantined.with_suffix(quarantined.suffix + ".quarantine.json")
+
+    try:
+        sidecar.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    return True
+
+
 def _prepare_corrupt_local_sources_for_reacquisition_sync(
     hour_utc: datetime,
+    *,
+    stop_probe: Callable[[], bool] | None = None,
 ) -> int:
     """Quarantine corrupt canonical raw files for one automatic-fetch hour.
 
-    Durable source content identity is never rebound. The source row is moved
-    to ``error`` while retaining its existing SHA-256, allowing the ordinary
-    coordinator to reacquire the canonical archive. The subsequent
-    ``record_artifact`` call succeeds only if the downloaded bytes match the
-    durable immutable digest.
+    Durable source content identity is never rebound.
+
+    - downloaded/processing rows move to ``error`` while retaining their
+      SHA-256, so the ordinary coordinator reacquires the exact archive;
+    - processed rows keep their status and analytical ownership; only the
+      raw attachment is withdrawn, exactly like explicit pruning.
+
+    Each quarantine is committed together with its source-row change. A
+    failed commit restores the moved file, so the filesystem and database
+    never disagree about a claimed canonical archive.
     """
 
     target_hour = require_utc_hour(
@@ -544,138 +653,145 @@ def _prepare_corrupt_local_sources_for_reacquisition_sync(
     settings = get_settings()
     raw_root = settings.storage.raw_path
     quarantine_root = settings.storage.quarantine_path
-    repaired_count = 0
+    eligible_statuses = ("downloaded", "processing", "processed")
 
+    # Phase 1: snapshot candidates in a short read-only transaction. Hashing
+    # happens later without holding a database connection.
     with session_scope() as session:
-        rows = session.scalars(
-            select(SourceHour)
+        rows = session.execute(
+            select(
+                SourceHour.provider,
+                SourceHour.venue,
+                SourceHour.instrument,
+                SourceHour.data_kind,
+                SourceHour.local_path,
+                SourceHour.file_size_bytes,
+                SourceHour.content_sha256,
+            )
             .where(SourceHour.provider == "cryptohftdata")
             .where(SourceHour.hour_utc == target_hour)
-            .where(
-                SourceHour.status.in_(
-                    (
-                        "downloaded",
-                        "processing",
-                        "processed",
-                    )
-                )
-            )
+            .where(SourceHour.status.in_(eligible_statuses))
         ).all()
 
-        repository = AcquisitionRepository(session)
+    candidates: list[tuple[SourceFileSpec, str, str, Path]] = []
 
-        for row in rows:
-            expected_digest = _canonical_sha256_or_none(
-                row.content_sha256,
+    for (
+        provider,
+        venue,
+        instrument,
+        data_kind,
+        local_path,
+        file_size_bytes,
+        content_sha256,
+    ) in rows:
+        if stop_probe is not None and stop_probe():
+            return 0
+
+        expected_digest = _canonical_sha256_or_none(content_sha256)
+        path_text = str(local_path or "").strip()
+
+        if expected_digest is None or not path_text:
+            continue
+
+        try:
+            spec = SourceFileSpec(
+                provider=str(provider),
+                venue=str(venue),
+                symbol=str(instrument),
+                data_kind=SourceDataKind(str(data_kind)),
+                hour_utc=target_hour,
             )
+        except TypeError, ValueError:
+            continue
 
-            if expected_digest is None:
-                continue
+        canonical_path = spec.local_path(raw_root)
 
-            try:
-                spec = SourceFileSpec(
-                    provider=str(row.provider),
-                    venue=str(row.venue),
-                    symbol=str(row.instrument),
-                    data_kind=SourceDataKind(str(row.data_kind)),
-                    hour_utc=target_hour,
-                )
-            except TypeError, ValueError:
-                continue
+        if (
+            _corrupt_canonical_archive_path(
+                path_text,
+                canonical_path=canonical_path,
+                expected_digest=expected_digest,
+                expected_size=file_size_bytes,
+            )
+            is None
+        ):
+            continue
 
-            path_text = str(row.local_path or "").strip()
+        candidates.append((spec, path_text, expected_digest, canonical_path))
 
-            if not path_text:
-                continue
+    repaired_count = 0
 
-            stored_path = Path(path_text).expanduser()
+    # Phase 2: one serialized transaction per corrupt source.
+    for spec, path_text, expected_digest, canonical_path in candidates:
+        if stop_probe is not None and stop_probe():
+            break
 
-            try:
-                if stored_path.is_symlink():
-                    continue
-
-                resolved_path = stored_path.resolve()
-                canonical_path = spec.local_path(raw_root)
-
-                if resolved_path != canonical_path:
-                    continue
-
-                if not resolved_path.is_file():
-                    continue
-
-                actual_digest, actual_size = sha256_file(
-                    resolved_path,
-                )
-            except (
-                DownloadIntegrityError,
-                OSError,
-            ):
-                # Structurally unreadable files remain incomplete. The
-                # downloader owns its existing-file validation/quarantine path.
-                continue
-
-            if actual_size == row.file_size_bytes and actual_digest == expected_digest:
-                continue
-
-            # Serialize the final recheck, quarantine, and durable status
-            # mutation with other application transactions for this source.
+        with session_scope() as session:
             acquire_source_hour_transaction_lock(
                 session,
                 spec,
             )
-            session.refresh(row)
+            repository = AcquisitionRepository(session)
+            row = repository.get_source_hour(spec)
 
-            current_digest = _canonical_sha256_or_none(
-                row.content_sha256,
-            )
-            current_path_text = str(row.local_path or "").strip()
-
-            if current_digest != expected_digest or current_path_text != path_text:
-                continue
-
-            try:
-                current_path = Path(current_path_text).expanduser()
-
-                if current_path.is_symlink():
-                    continue
-
-                current_resolved = current_path.resolve()
-
-                if current_resolved != canonical_path:
-                    continue
-
-                if not current_resolved.is_file():
-                    continue
-
-                confirmed_digest, confirmed_size = sha256_file(
-                    current_resolved,
-                )
-            except (
-                DownloadIntegrityError,
-                OSError,
-            ):
+            if row is None or str(row.status) not in eligible_statuses:
                 continue
 
             if (
-                confirmed_size == row.file_size_bytes
-                and confirmed_digest == expected_digest
+                _canonical_sha256_or_none(row.content_sha256) != expected_digest
+                or str(row.local_path or "").strip() != path_text
             ):
                 continue
 
-            quarantined = quarantine_file(
-                current_resolved,
-                quarantine_root,
-                spec=spec,
-                reason="automatic_fetch_content_mismatch",
+            confirmed_path = _corrupt_canonical_archive_path(
+                path_text,
+                canonical_path=canonical_path,
+                expected_digest=expected_digest,
+                expected_size=row.file_size_bytes,
             )
 
-            repository.record_error(
-                spec,
-                message=(
-                    "Automatic Fetch quarantined a local raw archive whose "
-                    "bytes differed from its durable immutable SHA-256"
-                ),
-            )
+            if confirmed_path is None:
+                continue
+
+            if str(row.status) == "processed":
+                row.local_path = None
+                session.flush()
+            else:
+                repository.record_error(
+                    spec,
+                    message=(
+                        "Automatic Fetch quarantined a local raw archive whose "
+                        "bytes differed from its durable immutable SHA-256"
+                    ),
+                )
+
+            try:
+                quarantined = quarantine_file(
+                    confirmed_path,
+                    quarantine_root,
+                    spec=spec,
+                    reason="automatic_fetch_content_mismatch",
+                )
+            except Exception:
+                if os.path.lexists(confirmed_path):
+                    # Nothing moved; rolling back keeps both sides consistent.
+                    raise
+
+                # The file moved but its sidecar failed. The row must follow
+                # the filesystem, so commit the pending source-row change.
+                session.commit()
+                repaired_count += 1
+                log.exception(
+                    "Automatic Fetch quarantined %s without a diagnostic sidecar.",
+                    spec.remote_path,
+                )
+                continue
+
+            try:
+                session.commit()
+            except BaseException:
+                _restore_quarantined_archive(quarantined, confirmed_path)
+                raise
 
             repaired_count += 1
 
@@ -691,6 +807,8 @@ def _prepare_corrupt_local_sources_for_reacquisition_sync(
 def _complete_source_hours_sync(
     start_utc: datetime,
     end_utc: datetime,
+    *,
+    stop_probe: Callable[[], bool] | None = None,
 ) -> frozenset[datetime]:
     """Return acquisition-complete source hours in ``[start, end)``.
 
@@ -766,6 +884,11 @@ def _complete_source_hours_sync(
         digest,
         quality_json,
     ) in rows:
+        # Hashing the whole catch-up window can take minutes. A partial result
+        # is safe: the caller re-checks its stop event before using it.
+        if stop_probe is not None and stop_probe():
+            break
+
         hour = require_utc_hour(
             "stored source hour",
             hour_utc,
@@ -1020,12 +1143,28 @@ class AutomaticFetchRuntime:
         settings = get_settings()
         poll_seconds = settings.cryptohft.release_poll_interval_minutes * 60
 
+        # Worker threads poll this between files. Reading the asyncio.Event
+        # flag from a thread is a plain attribute read; only the event-loop
+        # thread ever sets it.
+        stop_probe = stop_event.is_set
+
         try:
             if persist_enabled:
-                await asyncio.to_thread(
-                    _write_enabled_setting_sync,
-                    True,
-                )
+                try:
+                    await _to_thread_joined(
+                        _write_enabled_setting_sync,
+                        True,
+                        task_name="l2shock-automatic-fetch-enable-setting",
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._last_error = (
+                        "Automatic fetch could not persist its enabled state: "
+                        f"Unexpected {type(exc).__name__}"
+                    )
+                    log.exception("Could not persist automatic-fetch enabled state.")
+                    return
 
             while not stop_event.is_set():
                 self._last_poll_at = now_utc()
@@ -1042,16 +1181,25 @@ class AutomaticFetchRuntime:
                 )
 
                 try:
-                    complete_hours = await asyncio.to_thread(
+                    complete_hours = await _to_thread_joined(
                         _complete_source_hours_sync,
                         catch_up_start,
                         newest_eligible_hour + timedelta(hours=1),
+                        stop_probe=stop_probe,
+                        task_name="l2shock-automatic-fetch-completeness",
                     )
 
-                    retry_cursor = await asyncio.to_thread(
+                    if stop_event.is_set():
+                        break
+
+                    retry_cursor = await _to_thread_joined(
                         _read_retry_cursor_sync,
                         newest_eligible_hour,
+                        task_name="l2shock-automatic-fetch-read-cursor",
                     )
+
+                    if stop_event.is_set():
+                        break
 
                     target_hour = select_automatic_fetch_target_hour(
                         self._last_poll_at,
@@ -1068,8 +1216,9 @@ class AutomaticFetchRuntime:
                         self._last_error = None
 
                         if retry_cursor is not None:
-                            await asyncio.to_thread(
+                            await _to_thread_joined(
                                 _clear_retry_cursor_sync,
+                                task_name="l2shock-automatic-fetch-clear-cursor",
                             )
 
                     elif state.active_operation_name:
@@ -1083,9 +1232,11 @@ class AutomaticFetchRuntime:
                         state.active_operation_started_at = now_utc()
 
                         try:
-                            quarantined_count = await asyncio.to_thread(
+                            quarantined_count = await _to_thread_joined(
                                 _prepare_corrupt_local_sources_for_reacquisition_sync,
                                 target_hour,
+                                stop_probe=stop_probe,
+                                task_name="l2shock-automatic-fetch-quarantine",
                             )
 
                             if quarantined_count:
@@ -1095,33 +1246,15 @@ class AutomaticFetchRuntime:
                                     quarantined_count,
                                 )
 
-                            coordinator = create_production_manual_fetch_coordinator(
-                                operation_lock=state.operation_lock,
-                            )
-                            self._coordinator = coordinator
-
-                            try:
-                                result = await coordinator.run(
-                                    requested_start_utc=target_hour,
-                                    requested_end_utc=(
-                                        target_hour + timedelta(hours=1)
-                                    ),
-                                    run_kind=FetchRunKind.AUTOMATIC,
+                            # A Stop requested while planning had no
+                            # coordinator to forward to. Honour it here
+                            # instead of starting a fresh acquisition.
+                            if not stop_event.is_set():
+                                await self._run_coordinator_attempt(
+                                    state=state,
+                                    target_hour=target_hour,
+                                    newest_eligible_hour=newest_eligible_hour,
                                 )
-                            finally:
-                                # Advance fairness after every real coordinator
-                                # attempt, including a normal missing/error
-                                # result. On the next poll, the selector tries
-                                # the next older incomplete hour. When a newer
-                                # source hour becomes release-eligible, cursor
-                                # ownership resets automatically.
-                                await _write_retry_cursor_durably(
-                                    newest_eligible_hour_utc=newest_eligible_hour,
-                                    attempted_hour_utc=target_hour,
-                                )
-
-                            self._last_result = result
-                            self._last_error = None
 
                         finally:
                             self._coordinator = None
@@ -1168,6 +1301,52 @@ class AutomaticFetchRuntime:
 
             if self._task is current_task:
                 self._task = None
+
+    async def _run_coordinator_attempt(
+        self,
+        *,
+        state: Any,
+        target_hour: datetime,
+        newest_eligible_hour: datetime,
+    ) -> None:
+        """Run one coordinator attempt and advance fairness only if it ran."""
+
+        coordinator = create_production_manual_fetch_coordinator(
+            operation_lock=state.operation_lock,
+        )
+        self._coordinator = coordinator
+        attempted = True
+
+        try:
+            result = await coordinator.run(
+                requested_start_utc=target_hour,
+                requested_end_utc=target_hour + timedelta(hours=1),
+                run_kind=FetchRunKind.AUTOMATIC,
+            )
+        except FetchOperationBusyError:
+            # The coordinator refused before attempting the hour. Rotating
+            # past it would skip an hour that was never tried.
+            attempted = False
+            raise
+        finally:
+            self._coordinator = None
+
+            if attempted:
+                # Advance fairness after every real attempt, including a
+                # missing/error result. A cursor failure must not mask the
+                # attempt's own outcome.
+                try:
+                    await _write_retry_cursor_durably(
+                        newest_eligible_hour_utc=newest_eligible_hour,
+                        attempted_hour_utc=target_hour,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("Could not persist the automatic-fetch retry cursor.")
+
+        self._last_result = result
+        self._last_error = None
 
 
 _runtime: AutomaticFetchRuntime | None = None

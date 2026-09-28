@@ -57,6 +57,7 @@ from huggingface_hub import (
 from huggingface_hub.utils import (
     EntryNotFoundError,
     HfHubHTTPError,
+    LocalEntryNotFoundError,
     RepositoryNotFoundError,
 )
 from pydantic import SecretStr
@@ -494,6 +495,14 @@ class HuggingFaceDatasetRepository:
                 revision=revision,
                 token=self._token,
             )
+        except LocalEntryNotFoundError as exc:
+            # Subclass of EntryNotFoundError raised when the Hub could not be
+            # reached and the file is not cached. That is a transport failure,
+            # not proof of absence; treating it as absent would misplan the
+            # remote chain frontier and report imports as MISSING.
+            raise HuggingFaceRepositoryError(
+                "Could not reach the Hugging Face dataset to download a file"
+            ) from exc
         except EntryNotFoundError:
             return None
         except RepositoryNotFoundError as exc:

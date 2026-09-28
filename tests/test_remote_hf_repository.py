@@ -768,3 +768,33 @@ def test_publication_rejects_conflicting_lone_manifest(tmp_path: Path) -> None:
         repository.publish_artifact(artifact)
 
     assert api.create_commit_calls == []
+
+
+def test_offline_download_is_an_error_not_absence() -> None:
+    import pytest
+    from huggingface_hub.utils import LocalEntryNotFoundError
+
+    from l2shock.remote.hf_repository import (
+        HuggingFaceDatasetRepository,
+        HuggingFaceRepositoryError,
+    )
+
+    class _Api:
+        def repo_info(self, **_kwargs):
+            raise AssertionError("unused")
+
+        def create_commit(self, **_kwargs):
+            raise AssertionError("unused")
+
+    def offline_download(**_kwargs):
+        raise LocalEntryNotFoundError("Hub unreachable and file not cached")
+
+    repository = HuggingFaceDatasetRepository(
+        repo_id="owner/dataset",
+        token="secret-token",
+        api=_Api(),
+        download_function=offline_download,
+    )
+
+    with pytest.raises(HuggingFaceRepositoryError, match="Could not reach"):
+        repository._download_optional("x.parquet", revision="0" * 40)

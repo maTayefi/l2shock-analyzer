@@ -583,3 +583,156 @@ async def test_retry_cursor_write_waits_through_repeated_cancellation(
         await asyncio.wait_for(task, timeout=2.0)
 
     assert exited.is_set()
+
+
+@pytest.mark.asyncio
+async def test_stop_during_planning_never_starts_coordinator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import l2shock.ui.automatic_fetch_runtime as runtime_module
+
+    reset_state_for_tests()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_complete(_start, _end, *, stop_probe=None):
+        entered.set()
+        release.wait(timeout=5.0)
+        return frozenset()
+
+    def forbidden_coordinator(**_kwargs):
+        raise AssertionError("Coordinator must not start after Stop")
+
+    settings = SimpleNamespace(
+        cryptohft=SimpleNamespace(
+            release_poll_interval_minutes=5,
+            expected_release_delay_minutes=15,
+            automatic_fetch_catch_up_hours=4,
+        )
+    )
+    monkeypatch.setattr(runtime_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        runtime_module, "_complete_source_hours_sync", blocking_complete
+    )
+    monkeypatch.setattr(
+        runtime_module, "_read_retry_cursor_sync", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_prepare_corrupt_local_sources_for_reacquisition_sync",
+        lambda *_a, **_k: 0,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "create_production_manual_fetch_coordinator",
+        forbidden_coordinator,
+    )
+
+    runtime = AutomaticFetchRuntime()
+    task = runtime.start(persist=False)
+
+    assert await asyncio.to_thread(entered.wait, 2.0)
+    assert runtime.request_stop() is True
+    release.set()
+
+    await asyncio.wait_for(task, timeout=3.0)
+
+    assert runtime.is_running is False
+    assert get_state().active_operation_name == ""
+
+
+@pytest.mark.asyncio
+async def test_force_cancel_does_not_report_stopped_while_worker_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import l2shock.ui.automatic_fetch_runtime as runtime_module
+
+    reset_state_for_tests()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def uncooperative_complete(_start, _end, *, stop_probe=None):
+        entered.set()
+        release.wait(timeout=5.0)
+        return frozenset()
+
+    settings = SimpleNamespace(
+        cryptohft=SimpleNamespace(
+            release_poll_interval_minutes=5,
+            expected_release_delay_minutes=15,
+            automatic_fetch_catch_up_hours=4,
+        )
+    )
+    monkeypatch.setattr(runtime_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        runtime_module, "_complete_source_hours_sync", uncooperative_complete
+    )
+
+    runtime = AutomaticFetchRuntime()
+    task = runtime.start(persist=False)
+
+    assert await asyncio.to_thread(entered.wait, 2.0)
+
+    try:
+        stopped = await runtime.force_cancel_and_wait(timeout_seconds=0.2)
+        assert stopped is False
+        assert not task.done()
+    finally:
+        release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=3.0)
+
+
+@pytest.mark.asyncio
+async def test_enabled_setting_failure_is_reported_not_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import l2shock.ui.automatic_fetch_runtime as runtime_module
+
+    reset_state_for_tests()
+
+    def failing_write(_enabled: bool) -> None:
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(runtime_module, "_write_enabled_setting_sync", failing_write)
+
+    runtime = AutomaticFetchRuntime()
+    task = runtime.start(persist=True)
+    await asyncio.wait_for(task, timeout=3.0)
+
+    assert runtime.is_running is False
+    assert "enabled state" in (runtime._last_error or "")
+
+
+def test_corrupt_archive_detection_helper(tmp_path: Path) -> None:
+    import hashlib
+
+    from l2shock.ui.automatic_fetch_runtime import _corrupt_canonical_archive_path
+
+    path = tmp_path / "BTCUSDT_orderbook.parquet"
+    path.write_bytes(b"x" * 10)
+    good = hashlib.sha256(b"x" * 10).hexdigest()
+
+    assert (
+        _corrupt_canonical_archive_path(
+            str(path),
+            canonical_path=path.resolve(),
+            expected_digest=good,
+            expected_size=10,
+        )
+        is None
+    )
+    assert (
+        _corrupt_canonical_archive_path(
+            str(path),
+            canonical_path=path.resolve(),
+            expected_digest="a" * 64,
+            expected_size=10,
+        )
+        == path.resolve()
+    )

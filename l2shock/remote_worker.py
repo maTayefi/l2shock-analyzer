@@ -715,6 +715,17 @@ def _catch_up_target_from_observations(
         # its venue-specific snapshot contract.
         for observation in reversed(values):
             if observation.l2_exists:
+                if price_required and not observation.price_exists:
+                    # Real-trade price is independent of L2 validity, and
+                    # process_remote_hour accepts a price-only repair here.
+                    log.info(
+                        "Selected blocked L2 hour=%s for independent price "
+                        "repair; venue=%s",
+                        observation.hour_utc.isoformat(),
+                        normalized_venue,
+                    )
+                    return observation.hour_utc
+
                 continue
 
             log.info(
@@ -771,6 +782,16 @@ def _catch_up_target_from_observations(
                 "A newer usable checkpoint was observed after the selected "
                 "frontier; catch-up observations are inconsistent"
             )
+
+        if price_required and not candidate.price_exists:
+            log.info(
+                "Selected blocked L2 hour=%s for independent price repair; "
+                "frontier=%s venue=%s",
+                candidate_hour.isoformat(),
+                frontier.hour_utc.isoformat(),
+                normalized_venue,
+            )
+            return candidate_hour
 
         log.warning(
             "Advancing past immutable unusable L2 artifact: hour=%s "

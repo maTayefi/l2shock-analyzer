@@ -327,7 +327,7 @@ def test_blocked_artifact_is_skipped_after_usable_frontier() -> None:
                 1,
                 l2_exists=True,
                 checkpoint_exists=False,
-                price_exists=False,
+                price_exists=True,
             ),
             _observation(
                 0,
@@ -338,7 +338,6 @@ def test_blocked_artifact_is_skipped_after_usable_frontier() -> None:
         ),
         price_required=True,
     )
-
     assert selected == _hour(2)
 
 
@@ -1053,3 +1052,73 @@ async def test_predecessor_artifact_exists_distinguishes_absent_predecessor() ->
     source = inspect.getsource(worker_module.process_remote_hour)
     assert "predecessor_artifact_present" in source
     assert "refusing" in source
+
+
+def test_planner_repairs_price_on_blocked_hour_after_frontier() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from l2shock.remote_worker import (
+        _catch_up_target_from_observations,
+        _RemoteCatchUpObservation,
+    )
+
+    latest = datetime(2026, 9, 14, 12, tzinfo=timezone.utc)
+    observations = (
+        _RemoteCatchUpObservation(
+            hour_utc=latest,
+            l2_exists=False,
+            output_checkpoint_exists=False,
+            price_exists=False,
+        ),
+        _RemoteCatchUpObservation(
+            hour_utc=latest - timedelta(hours=1),
+            l2_exists=True,
+            output_checkpoint_exists=False,
+            price_exists=False,
+        ),
+        _RemoteCatchUpObservation(
+            hour_utc=latest - timedelta(hours=2),
+            l2_exists=True,
+            output_checkpoint_exists=True,
+            price_exists=True,
+        ),
+    )
+
+    assert _catch_up_target_from_observations(
+        venue="binance_futures",
+        latest_eligible_hour_utc=latest,
+        observations=observations,
+        price_required=True,
+    ) == latest - timedelta(hours=1)
+
+
+def test_planner_repairs_price_on_blocked_hour_without_frontier() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from l2shock.remote_worker import (
+        _catch_up_target_from_observations,
+        _RemoteCatchUpObservation,
+    )
+
+    latest = datetime(2026, 9, 14, 12, tzinfo=timezone.utc)
+    observations = (
+        _RemoteCatchUpObservation(
+            hour_utc=latest,
+            l2_exists=True,
+            output_checkpoint_exists=False,
+            price_exists=True,
+        ),
+        _RemoteCatchUpObservation(
+            hour_utc=latest - timedelta(hours=1),
+            l2_exists=True,
+            output_checkpoint_exists=False,
+            price_exists=False,
+        ),
+    )
+
+    assert _catch_up_target_from_observations(
+        venue="binance_futures",
+        latest_eligible_hour_utc=latest,
+        observations=observations,
+        price_required=True,
+    ) == latest - timedelta(hours=1)
