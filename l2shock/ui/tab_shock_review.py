@@ -727,7 +727,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
         preset_status.text = "Loading enabled L2 presets…"
 
         try:
-            loaded = await asyncio.to_thread(load_enabled_analysis_presets)
+            loaded = await run_db_worker_thread(load_enabled_analysis_presets)
 
             # Read the base *after* the load: the user may have changed it
             # while the database query was running.

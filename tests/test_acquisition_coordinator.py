@@ -1200,3 +1200,62 @@ async def test_admission_failure_fails_only_that_source(
     assert len(failed_items) == 1
     assert failed_items[0].diagnostic == "Unexpected RuntimeError"
     assert "dsn" not in str(result.details)
+
+
+@pytest.mark.asyncio
+async def test_missing_write_is_joined_through_cancellation() -> None:
+    import contextlib
+
+    from l2shock.acquisition.coordinator import RemoteFileNotFoundError
+
+    class SlowMissingPersistence(FakePersistence):
+        def __init__(self) -> None:
+            super().__init__()
+            self.missing_entered = asyncio.Event()
+            self.missing_release = asyncio.Event()
+            self.missing_finished = False
+
+        async def record_missing(self, spec, *, message) -> None:
+            del spec, message
+            self.missing_entered.set()
+            await self.missing_release.wait()
+            self.missing_finished = True
+
+    persistence = SlowMissingPersistence()
+
+    async def handler(spec, _cancel_event):
+        raise RemoteFileNotFoundError(f"missing {spec.remote_path}")
+
+    coordinator = ManualFetchCoordinator(
+        operation_lock=asyncio.Lock(),
+        persistence=persistence,
+        downloader_factory=_factory(FakeDownloader(handler)),
+    )
+
+    task = asyncio.create_task(
+        coordinator.run(
+            requested_start_utc=_utc(12),
+            requested_end_utc=_utc(13),
+        )
+    )
+
+    await asyncio.wait_for(persistence.missing_entered.wait(), timeout=2.0)
+
+    try:
+        task.cancel()
+        for _ in range(10):
+            await asyncio.sleep(0)
+        task.cancel()
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+        # Joined: the coordinator must not finish while the write is pending.
+        assert not task.done()
+        assert persistence.missing_finished is False
+    finally:
+        persistence.missing_release.set()
+
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert persistence.missing_finished is True

@@ -589,9 +589,12 @@ class ManualFetchCoordinator:
                         )
 
                         if not already_processed:
-                            await self._persistence.record_missing(
-                                spec,
-                                message=diagnostic,
+                            await self._join_persistence(
+                                self._persistence.record_missing(
+                                    spec,
+                                    message=diagnostic,
+                                ),
+                                name=f"persist-fetch-missing-{spec.symbol}",
                             )
 
                         item = FetchItemResult(
@@ -619,9 +622,12 @@ class ManualFetchCoordinator:
                         diagnostic = _safe_unexpected_error(exc)
 
                         if not already_processed:
-                            await self._persistence.record_error(
-                                spec,
-                                message=diagnostic,
+                            await self._join_persistence(
+                                self._persistence.record_error(
+                                    spec,
+                                    message=diagnostic,
+                                ),
+                                name=f"persist-fetch-error-{spec.symbol}",
                             )
 
                         item = FetchItemResult(
@@ -658,9 +664,12 @@ class ManualFetchCoordinator:
                         diagnostic = _safe_unexpected_error(exc)
 
                         if not already_processed:
-                            await self._persistence.record_error(
-                                spec,
-                                message=diagnostic,
+                            await self._join_persistence(
+                                self._persistence.record_error(
+                                    spec,
+                                    message=diagnostic,
+                                ),
+                                name=f"persist-fetch-error-{spec.symbol}",
                             )
 
                         item = FetchItemResult(
