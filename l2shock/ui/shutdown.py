@@ -54,6 +54,34 @@ _ANALYSIS_GRACE_SECONDS: Final[float] = 30.0
 _OTHER_TASK_TIMEOUT_SECONDS: Final[float] = 10.0
 
 
+_OPERATION_LOCK_WAIT_SECONDS: float = 30.0
+
+
+async def _wait_for_operation_lock_release(
+    *,
+    timeout_seconds: float,
+) -> bool:
+    """Wait (bounded) for an untracked operation-lock owner to finish.
+
+    Settings maintenance and preset mutations own the process operation lock
+    through a shielded worker thread without a runtime handle. Shutdown must
+    not dispose the engine while such a worker may still use a session.
+    """
+    import asyncio
+
+    lock = get_state().operation_lock
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.0, float(timeout_seconds))
+
+    while lock.locked():
+        if loop.time() >= deadline:
+            return False
+
+        await asyncio.sleep(0.05)
+
+    return True
+
+
 async def shutdown_runtime(
     *,
     request_server_stop: bool,
@@ -65,6 +93,7 @@ async def shutdown_runtime(
     processing_force_cancel_seconds: float = (_PROCESSING_FORCE_CANCEL_SECONDS),
     analysis_grace_seconds: float = _ANALYSIS_GRACE_SECONDS,
     other_task_timeout_seconds: float = _OTHER_TASK_TIMEOUT_SECONDS,
+    operation_lock_wait_seconds: float = _OPERATION_LOCK_WAIT_SECONDS,
 ) -> None:
     """Perform idempotent bounded application shutdown."""
     state = get_state()
@@ -204,6 +233,27 @@ async def shutdown_runtime(
                     "Shock-Start worker did not exit within %.3f seconds; "
                     "database engine disposal is blocked.",
                     analysis_grace_seconds,
+                )
+
+        if all_operation_owners_stopped and state.operation_lock.locked():
+            owner = state.active_operation_name or "unknown"
+            log.info(
+                "Waiting for operation-lock owner %r to finish before "
+                "engine disposal.",
+                owner,
+            )
+
+            lock_released = await _wait_for_operation_lock_release(
+                timeout_seconds=operation_lock_wait_seconds,
+            )
+
+            if not lock_released:
+                all_operation_owners_stopped = False
+                log.error(
+                    "Operation-lock owner %r did not finish within %.3f "
+                    "seconds; database engine disposal is blocked.",
+                    owner,
+                    operation_lock_wait_seconds,
                 )
 
         pending = await cancel_and_wait_for_tracked_tasks(

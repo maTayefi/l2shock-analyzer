@@ -7,15 +7,59 @@ Settings tab used before; only the placement changed.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Coroutine
+from typing import Any
 
 from nicegui import ui
 
-from l2shock.ui.components import create_tracked_task, persistent_notify
+from l2shock.ui.components import persistent_notify
 from l2shock.ui.shutdown import shutdown_runtime
 from l2shock.ui.state import get_state
 
 log = logging.getLogger(__name__)
+
+
+# Strong references for shutdown tasks. They are deliberately NOT created via
+# create_tracked_task: that helper refuses new tasks once shutdown_started is
+# true, which is exactly the state left behind by a failed shutdown attempt.
+_SHUTDOWN_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _start_shutdown_task(
+    coroutine: Coroutine[Any, Any, Any],
+) -> asyncio.Task[Any] | None:
+    """Start the shutdown coroutine even after the admission barrier is up."""
+    try:
+        client = ui.context.client
+    except Exception:
+        client = None
+
+    async def _runner() -> None:
+        if client is None:
+            await coroutine
+            return
+
+        with client:
+            await coroutine
+
+    runner = _runner()
+
+    try:
+        task = asyncio.create_task(
+            runner,
+            name="l2shock-application-shutdown",
+        )
+    except RuntimeError:
+        runner.close()
+        coroutine.close()
+        log.exception("Could not create the application shutdown task.")
+        return None
+
+    _SHUTDOWN_TASKS.add(task)
+    task.add_done_callback(_SHUTDOWN_TASKS.discard)
+    return task
 
 
 def build_shutdown_header_button() -> None:
@@ -117,10 +161,7 @@ def build_shutdown_header_button() -> None:
             notification_type="warning",
         )
 
-        task = create_tracked_task(
-            _run_shutdown(),
-            name="l2shock-application-shutdown",
-        )
+        task = _start_shutdown_task(_run_shutdown())
 
         if task is None:
             shutdown_in_progress = False
