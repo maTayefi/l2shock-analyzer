@@ -375,6 +375,9 @@ tests/test_processing_checkpoint_store.py
 tests/test_processing_integrity.py
 tests/test_processing_l2_metadata.py
 tests/test_timeutils.py
+tests/test_bootstrap_creation_race.py
+tests/test_filesystem_paths.py
+```
 ```
 
 ## Focus areas
@@ -534,7 +537,10 @@ l2shock/price/block_codec.py
 l2shock/price/hourly.py
 l2shock/processing/checkpoint_store.py
 l2shock/processing/integrity.py
+l2shock/processing/__init__.py
+l2shock/processing/errors.py
 l2shock/processing/l2_coordinator.py
+l2shock/processing/models.py
 l2shock/processing/price_coordinator.py
 ```
 
@@ -567,6 +573,8 @@ tests/test_replay_validation_cli.py
 tests/test_trade_ohlc.py
 tests/test_trade_ohlc_block_codec.py
 tests/test_venue_sequence_adapter.py
+tests/test_checkpoint_chain_contract.py
+tests/test_bybit_contract_diagnostics.py
 ```
 
 ## Focus areas
@@ -654,6 +662,7 @@ tests/test_shock_performance_equivalence.py
 tests/test_shock_review.py
 tests/test_shock_runtime.py
 tests/test_timeframe_aggregation.py
+tests/test_analysis_multi_market.py
 ```
 
 ## Focus areas
@@ -884,6 +893,12 @@ tests/test_checkpoint_reference_locks_postgresql.py
 tests/test_remote_workflow_contract.py
 tests/test_bybit_orderbook_replay.py
 tests/test_processing_post_stream_integrity.py
+tests/test_processing_worker_repeated_cancellation.py
+tests/test_compile_all_python.py
+tests/test_readme_contract.py
+tests/test_project_cores_contract.py
+tests/test_project_cores_inventory.py
+tests/test_ai_preparation_scripts.py
 ```
 
 ## Focus areas
