@@ -514,6 +514,12 @@ def build_settings_tab() -> None:
         if not isinstance(allow_during_mutation, bool):
             raise TypeError("allow_during_mutation must be bool")
 
+        # Admission barrier. A mutation that started before shutdown still
+        # owns its own refresh through allow_during_mutation; a fresh refresh
+        # must not open a database session during engine disposal.
+        if state.shutdown_started and not allow_during_mutation:
+            return
+
         if preset_refresh_running:
             return
 
@@ -1208,6 +1214,11 @@ def build_settings_tab() -> None:
 
     async def _run_diagnostics() -> None:
         nonlocal latest_report
+
+        # Admission barrier: this untracked worker opens a database session
+        # and must not start while shutdown is disposing the engine.
+        if state.shutdown_started:
+            return
 
         if run_diagnostics_button.enabled is False:
             return

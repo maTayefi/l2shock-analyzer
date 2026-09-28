@@ -717,7 +717,9 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
     async def _reload_presets(_event: Any = None) -> None:
         nonlocal preset_loading, enabled_preset_hashes, presets_base
 
-        if preset_loading or runtime.snapshot().is_running:
+        # Admission barrier: an untracked database worker must not start
+        # while shutdown is disposing the engine.
+        if state.shutdown_started or preset_loading or runtime.snapshot().is_running:
             return
 
         preset_loading = True
@@ -1088,6 +1090,10 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
         nonlocal bounded_base_option, bounded_annotations, bounded_warnings
 
         current_model = model
+
+        if state.shutdown_started:
+            status.text = "Application shutdown has started; viewports are blocked."
+            return
 
         if current_model is None or not _review_is_current(current_model):
             status.text = "Complete a Shock-Start review before opening a viewport."

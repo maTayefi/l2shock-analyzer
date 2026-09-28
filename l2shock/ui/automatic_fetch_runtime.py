@@ -980,7 +980,10 @@ class AutomaticFetchRuntime:
     async def restore_persisted_state(self) -> bool:
         """Start the loop when persisted configuration says enabled."""
 
-        enabled = await asyncio.to_thread(_read_enabled_setting_sync)
+        enabled = await _to_thread_joined(
+            _read_enabled_setting_sync,
+            task_name="l2shock-automatic-fetch-read-enabled",
+        )
 
         if not enabled:
             self._enabled = False
@@ -1055,9 +1058,10 @@ class AutomaticFetchRuntime:
 
         if persist:
             try:
-                await asyncio.to_thread(
+                await _to_thread_joined(
                     _write_enabled_setting_sync,
                     False,
+                    task_name="l2shock-automatic-fetch-disable-setting",
                 )
             except Exception:
                 log.exception("Could not persist automatic-fetch disabled state.")

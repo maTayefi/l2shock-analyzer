@@ -736,3 +736,85 @@ def test_corrupt_archive_detection_helper(tmp_path: Path) -> None:
         )
         == path.resolve()
     )
+
+
+@pytest.mark.asyncio
+async def test_stop_persist_write_is_joined_through_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import l2shock.ui.automatic_fetch_runtime as runtime_module
+
+    reset_state_for_tests()
+    entered = threading.Event()
+    release = threading.Event()
+    exited = threading.Event()
+
+    def blocking_write(enabled: bool) -> None:
+        assert enabled is False
+        entered.set()
+        try:
+            release.wait(timeout=5.0)
+        finally:
+            exited.set()
+
+    monkeypatch.setattr(runtime_module, "_write_enabled_setting_sync", blocking_write)
+
+    runtime = AutomaticFetchRuntime()
+    task = asyncio.create_task(runtime.stop_and_wait(grace_seconds=0.1, persist=True))
+
+    assert await asyncio.to_thread(entered.wait, 2.0)
+
+    try:
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert not exited.is_set()
+    finally:
+        release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert exited.is_set()
+
+
+def test_untracked_database_workers_respect_shutdown_barrier() -> None:
+    import l2shock.ui.tab_fetch as fetch_module
+    import l2shock.ui.tab_settings as settings_module
+    import l2shock.ui.tab_shock_review as review_module
+
+    fetch_source = Path(fetch_module.__file__).read_text(encoding="utf-8")
+    settings_source = Path(settings_module.__file__).read_text(encoding="utf-8")
+    review_source = Path(review_module.__file__).read_text(encoding="utf-8")
+
+    def body_after(source: str, header: str, length: int = 900) -> str:
+        start = source.index(header)
+        return source[start : start + length]
+
+    assert "if state.shutdown_started:" in body_after(
+        fetch_source, "async def _refresh_availability_calendar"
+    )
+    assert "if state.shutdown_started:" in body_after(
+        settings_source, "async def _run_diagnostics"
+    )
+    assert "if state.shutdown_started and not allow_during_mutation:" in body_after(
+        settings_source, "async def _refresh_managed_presets"
+    )
+    assert "state.shutdown_started or preset_loading" in body_after(
+        review_source, "async def _reload_presets"
+    )
+    assert "if state.shutdown_started:" in body_after(
+        review_source, "async def _show_bounded_view", 1_400
+    )
+
+
+def test_automatic_fetch_has_no_unjoined_worker_threads() -> None:
+    import l2shock.ui.automatic_fetch_runtime as runtime_module
+
+    source = Path(runtime_module.__file__).read_text(encoding="utf-8")
+
+    # The only asyncio.to_thread call left is the one inside the joining helper.
+    assert source.count("asyncio.to_thread(") == 1
+    assert "asyncio.to_thread(function, *args, **kwargs)" in source
