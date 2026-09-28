@@ -224,3 +224,49 @@ def test_fetch_start_without_event_loop_rolls_back_admission() -> None:
     assert get_state().active_operation_name == ""
     assert get_state().active_operation_started_at is None
     assert runtime.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_force_cancel_propagates_caller_cancellation() -> None:
+    reset_state_for_tests()
+
+    class StubbornCoordinator(FakeCoordinator):
+        async def run(
+            self,
+            *,
+            requested_start_utc: datetime,
+            requested_end_utc: datetime,
+        ) -> ManualFetchResult:
+            del requested_start_utc, requested_end_utc
+            self.active_operation_id = uuid4()
+            self.entered.set()
+
+            while not self.release.is_set():
+                try:
+                    await self.release.wait()
+                except asyncio.CancelledError:
+                    continue
+
+            self.active_operation_id = None
+            return _result()
+
+    runtime = ManualFetchRuntime()
+    coordinator = StubbornCoordinator()
+    runtime.attach_coordinator(coordinator)  # type: ignore[arg-type]
+
+    task = runtime.start(
+        requested_start_utc=_utc(12),
+        requested_end_utc=_utc(13),
+    )
+    await coordinator.entered.wait()
+
+    waiter = asyncio.create_task(runtime.force_cancel_and_wait(timeout_seconds=5.0))
+    await asyncio.sleep(0.05)
+    waiter.cancel()
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+    finally:
+        coordinator.release.set()
+        await asyncio.wait_for(task, timeout=2.0)

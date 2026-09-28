@@ -268,6 +268,48 @@ class ManualFetchCoordinator:
                 spec.remote_path,
             )
 
+    async def _join_persistence[T](
+        self,
+        awaitable: Awaitable[T],
+        *,
+        name: str,
+    ) -> T:
+        """Await one persistence write and keep ownership until it settles.
+
+        The production adapter commits inside a worker thread. A plain await
+        lets task cancellation abandon that thread mid-transaction. Repeated
+        cancellations are absorbed until the write settles; the first one is
+        then re-raised.
+        """
+        task = asyncio.ensure_future(awaitable)
+
+        if isinstance(task, asyncio.Task):
+            task.set_name(name)
+
+        cancelled: asyncio.CancelledError | None = None
+
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                if cancelled is None:
+                    cancelled = exc
+            except Exception:
+                break
+
+        if cancelled is not None:
+            if not task.cancelled() and task.exception() is not None:
+                log.warning(
+                    "Persistence write %s failed while its owner was being "
+                    "cancelled: %s",
+                    name,
+                    type(task.exception()).__name__,
+                )
+
+            raise cancelled
+
+        return task.result()
+
     async def run(
         self,
         *,
@@ -435,8 +477,12 @@ class ManualFetchCoordinator:
                         name=f"persist-fetch-admission-{spec.symbol}",
                     )
 
-                    # Shielding alone is insufficient: a second cancellation
-                    # can interrupt the waiter while its DB thread continues.
+                    # Cancellation handling - shield the admission task.
+                    # A non-cancellation exception (e.g. a database error
+                    # inside mark_downloading) must be caught here so it
+                    # does not escape to the run-level handler and abort
+                    # every remaining file in the plan.
+                    admission_exception: BaseException | None = None
                     while not admission_task.done():
                         try:
                             await asyncio.shield(admission_task)
@@ -445,6 +491,59 @@ class ManualFetchCoordinator:
                                 native_cancellation = exc
                             cancel_event.set()
                             stopped = True
+                        except Exception as exc:
+                            admission_exception = exc
+                            break
+
+                    # If the task finished with a non-cancellation error
+                    # while we were not inside the shield (task completed
+                    # before the loop body ran), retrieve it here.
+                    if admission_exception is None and not admission_task.cancelled():
+                        try:
+                            admission_task.result()
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            admission_exception = exc
+
+                    if admission_exception is not None:
+                        if native_cancellation is not None:
+                            # Nothing was admitted; stop without another write.
+                            break
+
+                        # The admission transaction rolled back, so the row is
+                        # unchanged. Fail only this source: one bad row must not
+                        # cancel every later file in the plan.
+                        diagnostic = _safe_unexpected_error(admission_exception)
+
+                        log.exception(
+                            "Could not admit source %s for download.",
+                            spec.remote_path,
+                        )
+
+                        items.append(
+                            FetchItemResult(
+                                spec=spec,
+                                disposition=FetchItemDisposition.ERROR,
+                                diagnostic=diagnostic,
+                            )
+                        )
+                        failed += 1
+
+                        await self._emit(
+                            self._progress(
+                                operation_id=operation_id,
+                                phase=FetchProgressPhase.FILE_ERROR,
+                                message=(
+                                    f"Fetch failed for {spec.remote_path}: "
+                                    f"{diagnostic}"
+                                ),
+                                files_requested=files_requested,
+                                items=items,
+                                current_spec=spec,
+                            )
+                        )
+                        continue
 
                     already_processed = bool(admission_task.result())
 
@@ -591,7 +690,70 @@ class ManualFetchCoordinator:
                             )
                         )
                     else:
-                        await self._persistence.record_artifact(artifact)
+                        try:
+                            await self._join_persistence(
+                                self._persistence.record_artifact(artifact),
+                                name=f"persist-fetch-artifact-{spec.symbol}",
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            # For example DownloadConflictError (the provider now
+                            # serves bytes that differ from the durable immutable
+                            # SHA-256) or a transient database failure. Close this
+                            # source and continue with the rest of the plan.
+                            diagnostic = _safe_unexpected_error(exc)
+
+                            log.warning(
+                                "Could not record fetched source %s: %s",
+                                spec.remote_path,
+                                diagnostic,
+                            )
+
+                            if not already_processed:
+                                try:
+                                    await self._join_persistence(
+                                        self._persistence.record_error(
+                                            spec,
+                                            message=diagnostic,
+                                        ),
+                                        name=(
+                                            "persist-fetch-artifact-error-"
+                                            f"{spec.symbol}"
+                                        ),
+                                    )
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception:
+                                    log.exception(
+                                        "Could not persist the artifact failure "
+                                        "for %s.",
+                                        spec.remote_path,
+                                    )
+
+                            items.append(
+                                FetchItemResult(
+                                    spec=spec,
+                                    disposition=FetchItemDisposition.ERROR,
+                                    diagnostic=diagnostic,
+                                )
+                            )
+                            failed += 1
+
+                            await self._emit(
+                                self._progress(
+                                    operation_id=operation_id,
+                                    phase=FetchProgressPhase.FILE_ERROR,
+                                    message=(
+                                        f"Fetch failed for {spec.remote_path}: "
+                                        f"{diagnostic}"
+                                    ),
+                                    files_requested=files_requested,
+                                    items=items,
+                                    current_spec=spec,
+                                )
+                            )
+                            continue
 
                         if artifact.disposition is DownloadDisposition.DOWNLOADED:
                             disposition = FetchItemDisposition.DOWNLOADED

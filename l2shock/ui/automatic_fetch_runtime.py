@@ -631,6 +631,7 @@ def _prepare_corrupt_local_sources_for_reacquisition_sync(
     hour_utc: datetime,
     *,
     stop_probe: Callable[[], bool] | None = None,
+    failed_sources: list[str] | None = None,
 ) -> int:
     """Quarantine corrupt canonical raw files for one automatic-fetch hour.
 
@@ -774,8 +775,22 @@ def _prepare_corrupt_local_sources_for_reacquisition_sync(
                 )
             except Exception:
                 if os.path.lexists(confirmed_path):
-                    # Nothing moved; rolling back keeps both sides consistent.
-                    raise
+                    # Nothing moved. Roll back this source's pending row change
+                    # (and its transaction-scoped advisory lock) so both sides
+                    # stay consistent, then continue with the other candidates
+                    # instead of aborting the whole hour.
+                    session.rollback()
+
+                    log.exception(
+                        "Automatic Fetch could not quarantine corrupt local "
+                        "source %s; it will be retried on a later rotation.",
+                        spec.remote_path,
+                    )
+
+                    if failed_sources is not None:
+                        failed_sources.append(spec.remote_path)
+
+                    continue
 
                 # The file moved but its sidecar failed. The row must follow
                 # the filesystem, so commit the pending source-row change.
@@ -1006,6 +1021,17 @@ class AutomaticFetchRuntime:
 
         if self.is_running:
             assert self._task is not None
+
+            stop_event = self._stop_event
+
+            if stop_event is None or stop_event.is_set():
+                # Returning the winding-down task would make Start look
+                # accepted while the loop exits and nothing is persisted.
+                raise FetchOperationBusyError(
+                    "Automatic Fetch is still stopping; start it again after "
+                    "the current step finishes"
+                )
+
             return self._task
 
         if state.active_operation_name:
@@ -1056,6 +1082,12 @@ class AutomaticFetchRuntime:
 
         self._enabled = False
 
+        # Signal the loop before the durable disable write. _run re-checks
+        # this event after its own enable write, so whichever upsert commits
+        # last, the final persisted value is "disabled".
+        if task is not None and not task.done():
+            self.request_stop()
+
         if persist:
             try:
                 await _to_thread_joined(
@@ -1068,8 +1100,6 @@ class AutomaticFetchRuntime:
 
         if task is None or task.done():
             return True
-
-        self.request_stop()
 
         try:
             await asyncio.wait_for(
@@ -1108,7 +1138,12 @@ class AutomaticFetchRuntime:
         except TimeoutError:
             return False
         except asyncio.CancelledError:
-            return True
+            # Our own task.cancel() surfaces here once the task finishes. Any
+            # other CancelledError belongs to the caller and must propagate
+            # instead of reporting a false "stopped".
+            if task.cancelled():
+                return True
+            raise
         except Exception:
             return True
 
@@ -1169,6 +1204,22 @@ class AutomaticFetchRuntime:
                     )
                     log.exception("Could not persist automatic-fetch enabled state.")
                     return
+
+                if stop_event.is_set():
+                    # Stop raced with this enable write; its disable write may
+                    # have committed first. Restore the user's final intent.
+                    try:
+                        await _to_thread_joined(
+                            _write_enabled_setting_sync,
+                            False,
+                            task_name="l2shock-automatic-fetch-disable-after-race",
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        log.exception(
+                            "Could not re-persist automatic-fetch disabled state."
+                        )
 
             while not stop_event.is_set():
                 self._last_poll_at = now_utc()
@@ -1236,10 +1287,12 @@ class AutomaticFetchRuntime:
                         state.active_operation_started_at = now_utc()
 
                         try:
+                            quarantine_failures: list[str] = []
                             quarantined_count = await _to_thread_joined(
                                 _prepare_corrupt_local_sources_for_reacquisition_sync,
                                 target_hour,
                                 stop_probe=stop_probe,
+                                failed_sources=quarantine_failures,
                                 task_name="l2shock-automatic-fetch-quarantine",
                             )
 
@@ -1253,7 +1306,16 @@ class AutomaticFetchRuntime:
                             # A Stop requested while planning had no
                             # coordinator to forward to. Honour it here
                             # instead of starting a fresh acquisition.
-                            if not stop_event.is_set():
+                            if quarantine_failures and not stop_event.is_set():
+                                # The corrupt bytes are still in place. The
+                                # downloader would reuse them and conflict, so
+                                # skip this hour but advance fairness rotation.
+                                await self._skip_unrepairable_hour(
+                                    target_hour=target_hour,
+                                    newest_eligible_hour=newest_eligible_hour,
+                                    failed_sources=tuple(quarantine_failures),
+                                )
+                            elif not stop_event.is_set():
                                 await self._run_coordinator_attempt(
                                     state=state,
                                     target_hour=target_hour,
@@ -1305,6 +1367,37 @@ class AutomaticFetchRuntime:
 
             if self._task is current_task:
                 self._task = None
+
+    async def _skip_unrepairable_hour(
+        self,
+        *,
+        target_hour: datetime,
+        newest_eligible_hour: datetime,
+        failed_sources: tuple[str, ...],
+    ) -> None:
+        """Rotate past an hour whose corrupt archive could not be withdrawn."""
+
+        self._last_error = (
+            f"Automatic Fetch could not quarantine {len(failed_sources)} corrupt "
+            f"local archive(s) for {_canonical_hour_text(target_hour)}; the hour "
+            "was skipped and will be retried on a later rotation."
+        )
+
+        log.warning(
+            "Automatic Fetch skipped %s; quarantine failed for: %s",
+            _canonical_hour_text(target_hour),
+            ", ".join(failed_sources),
+        )
+
+        try:
+            await _write_retry_cursor_durably(
+                newest_eligible_hour_utc=newest_eligible_hour,
+                attempted_hour_utc=target_hour,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Could not persist the automatic-fetch retry cursor.")
 
     async def _run_coordinator_attempt(
         self,

@@ -594,3 +594,69 @@ async def test_shutdown_retry_task_starts_after_admission_barrier() -> None:
     assert task is not None
     await task
     assert ran == [True]
+
+
+@pytest.mark.asyncio
+async def test_untracked_db_worker_outlives_cancelled_caller_until_joined() -> None:
+    import asyncio
+    import threading
+
+    import pytest
+
+    from l2shock.ui.components import (
+        run_db_worker_thread,
+        wait_for_untracked_db_workers,
+    )
+    from l2shock.ui.state import get_state, reset_state_for_tests
+
+    reset_state_for_tests()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_read() -> str:
+        entered.set()
+        if not release.wait(timeout=5.0):
+            raise TimeoutError("test did not release the reader")
+        return "rows"
+
+    caller = asyncio.create_task(run_db_worker_thread(blocking_read))
+    assert await asyncio.to_thread(entered.wait, 2.0)
+
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+
+    try:
+        assert len(get_state().untracked_db_workers) == 1
+        assert await wait_for_untracked_db_workers(timeout_seconds=0.05) == 1
+    finally:
+        release.set()
+
+    assert await wait_for_untracked_db_workers(timeout_seconds=5.0) == 0
+
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    assert get_state().untracked_db_workers == set()
+
+
+@pytest.mark.asyncio
+async def test_untracked_db_worker_is_refused_after_shutdown_barrier() -> None:
+    import pytest
+
+    from l2shock.ui.components import run_db_worker_thread
+    from l2shock.ui.state import get_state, reset_state_for_tests
+
+    reset_state_for_tests()
+    get_state().shutdown_started = True
+    called = False
+
+    def read() -> None:
+        nonlocal called
+        called = True
+
+    with pytest.raises(RuntimeError, match="shutdown"):
+        await run_db_worker_thread(read)
+
+    assert called is False
+    assert await run_db_worker_thread(lambda: 7, admit_during_shutdown=True) == 7

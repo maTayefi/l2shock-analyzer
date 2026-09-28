@@ -278,3 +278,49 @@ def test_download_artifact_attempt_rules(
             disposition=DownloadDisposition.DOWNLOADED,
             attempts=0,
         )
+
+
+def test_failed_cross_filesystem_quarantine_leaves_no_duplicate(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import shutil
+    from datetime import datetime, timezone
+
+    import pytest
+
+    import l2shock.acquisition.validation as validation_module
+    from l2shock.acquisition import SourceFileSpec
+
+    spec = SourceFileSpec(
+        venue="binance_futures",
+        symbol="BTCUSDT",
+        data_kind="orderbook",
+        hour_utc=datetime(2026, 9, 2, 12, tzinfo=timezone.utc),
+    )
+    source = tmp_path / "raw" / "BTCUSDT_orderbook.parquet"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"corrupt-bytes")
+    quarantine_root = tmp_path / "quarantine"
+    original_copy2 = shutil.copy2
+
+    def failing_replace(*_args, **_kwargs):
+        raise OSError("simulated cross-device replace")
+
+    def copy_then_fail(src, dst):
+        original_copy2(src, dst)
+        raise PermissionError("simulated locked source")
+
+    monkeypatch.setattr(validation_module.os, "replace", failing_replace)
+    monkeypatch.setattr(validation_module.shutil, "move", copy_then_fail)
+
+    with pytest.raises(validation_module.QuarantineError):
+        validation_module.quarantine_file(
+            source,
+            quarantine_root,
+            spec=spec,
+            reason="test_locked_source",
+        )
+
+    assert source.read_bytes() == b"corrupt-bytes"
+    assert list(quarantine_root.rglob("*.parquet")) == []

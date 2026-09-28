@@ -35,7 +35,10 @@ from l2shock.db.engine import reset_engine
 from l2shock.ui.automatic_fetch_runtime import (
     peek_automatic_fetch_runtime,
 )
-from l2shock.ui.components import cancel_and_wait_for_tracked_tasks
+from l2shock.ui.components import (
+    cancel_and_wait_for_tracked_tasks,
+    wait_for_untracked_db_workers,
+)
 from l2shock.ui.fetch_runtime import peek_manual_fetch_runtime
 from l2shock.ui.processing_runtime import peek_manual_processing_runtime
 from l2shock.ui.remote_import_runtime import peek_remote_import_runtime
@@ -265,6 +268,20 @@ async def shutdown_runtime(
                 "%d tracked task(s) remained pending at shutdown.",
                 pending,
             )
+
+        # Cancelling a tracked UI task does not stop its worker thread.
+        # Join registered reader threads before the engine is disposed.
+        pending_db_workers = await wait_for_untracked_db_workers(
+            timeout_seconds=other_task_timeout_seconds,
+        )
+
+        if pending_db_workers:
+            log.error(
+                "%d untracked database worker thread(s) remained active at "
+                "shutdown.",
+                pending_db_workers,
+            )
+            pending += pending_db_workers
 
         if not all_operation_owners_stopped or pending:
             log.critical(

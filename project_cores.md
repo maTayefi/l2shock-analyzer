@@ -177,6 +177,7 @@ tests/test_automatic_fetch_retry_cursor_cancellation.py
 tests/test_automatic_fetch_runtime.py
 tests/test_availability_calendar.py
 tests/test_availability_filesystem.py
+tests/test_batch2_contracts.py
 tests/test_bootstrap_creation_race.py
 tests/test_bybit_contract_diagnostics.py
 tests/test_bybit_orderbook_replay.py
@@ -378,7 +379,7 @@ tests/test_timeutils.py
 tests/test_bootstrap_creation_race.py
 tests/test_filesystem_paths.py
 ```
-```
+
 
 ## Focus areas
 

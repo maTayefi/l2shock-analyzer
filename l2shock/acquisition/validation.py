@@ -285,6 +285,16 @@ def quarantine_file(
             # directories are on different filesystems.
             shutil.move(str(source), str(destination))
     except Exception as exc:
+        # The cross-filesystem fallback copies first and then unlinks. If the
+        # unlink failed (a locked source on Windows), a full sidecar-less copy
+        # now exists. The source is still authoritative, so remove the copy
+        # rather than growing quarantine storage on every retry.
+        if os.path.lexists(source) and os.path.lexists(destination):
+            try:
+                destination.unlink()
+            except OSError:
+                pass
+
         raise QuarantineError(
             f"Could not quarantine local archive {source.name!r}"
         ) from exc

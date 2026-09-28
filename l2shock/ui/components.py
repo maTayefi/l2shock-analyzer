@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 from nicegui import context as nicegui_context
@@ -190,6 +190,84 @@ async def cancel_and_wait_for_tracked_tasks(
     return len(pending)
 
 
+async def run_db_worker_thread[T](
+    function: Callable[..., T],
+    /,
+    *args: Any,
+    admit_during_shutdown: bool = False,
+    **kwargs: Any,
+) -> T:
+    """Run one short synchronous database reader that shutdown can see.
+
+    UI readers (availability calendar, preset lists, diagnostics, price
+    context) run outside every operation runtime and never hold the
+    operation lock. A plain ``asyncio.to_thread`` lets a cancelled caller
+    finish while its thread still uses a pooled session; shutdown would then
+    dispose the engine underneath it, and a late ``session_scope()`` would
+    silently build a new engine.
+
+    The worker future stays registered in RuntimeState until the thread
+    exits; ``wait_for_untracked_db_workers`` joins it before engine disposal.
+    Cancellation of the UI caller itself remains immediate.
+    """
+    state = get_state()
+
+    if state.shutdown_started and not admit_during_shutdown:
+        raise RuntimeError(
+            "Application shutdown has started; database reads are blocked"
+        )
+
+    registry = state.untracked_db_workers
+    worker = asyncio.ensure_future(
+        asyncio.to_thread(function, *args, **kwargs),
+    )
+    registry.add(worker)
+
+    def _forget(done: asyncio.Future[Any]) -> None:
+        registry.discard(done)
+
+        # Mark a failure as retrieved when the caller was cancelled and never
+        # awaited the result, so asyncio does not report a lost exception.
+        if not done.cancelled():
+            done.exception()
+
+    worker.add_done_callback(_forget)
+
+    return await asyncio.shield(worker)
+
+
+async def wait_for_untracked_db_workers(
+    *,
+    timeout_seconds: float = 10.0,
+) -> int:
+    """Join registered UI database threads; return how many still run."""
+    state = get_state()
+    timeout = max(0.0, float(timeout_seconds))
+
+    workers = {
+        worker for worker in list(state.untracked_db_workers) if not worker.done()
+    }
+
+    if not workers:
+        return 0
+
+    _done, pending = await asyncio.wait(
+        workers,
+        timeout=timeout,
+        return_when=asyncio.ALL_COMPLETED,
+    )
+
+    if pending:
+        log.error(
+            "%d untracked database worker thread(s) did not finish within "
+            "%.3f seconds.",
+            len(pending),
+            timeout,
+        )
+
+    return len(pending)
+
+
 def section_header(title: str) -> Any:
     return ui.label(title).classes(
         "text-base font-semibold text-slate-800 dark:text-slate-100"
@@ -200,5 +278,7 @@ __all__ = [
     "cancel_and_wait_for_tracked_tasks",
     "create_tracked_task",
     "persistent_notify",
+    "run_db_worker_thread",
     "section_header",
+    "wait_for_untracked_db_workers",
 ]

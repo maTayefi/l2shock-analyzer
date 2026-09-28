@@ -1118,3 +1118,85 @@ async def test_cancellation_in_downloading_progress_closes_source() -> None:
     assert persistence.errors[0][0] == persistence.downloading[0]
     assert persistence.completions[0]["status"] is FetchRunStatus.STOPPED
     assert not operation_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_record_artifact_conflict_fails_only_that_source(
+    tmp_path: Path,
+) -> None:
+    from l2shock.acquisition import DownloadConflictError
+
+    class ConflictPersistence(FakePersistence):
+        async def record_artifact(self, artifact: DownloadArtifact) -> None:
+            if (artifact.spec.symbol, artifact.spec.data_kind.value) == (
+                "BTCUSDT",
+                "orderbook",
+            ):
+                raise DownloadConflictError("durable digest conflict")
+            await super().record_artifact(artifact)
+
+    persistence = ConflictPersistence()
+
+    async def handler(spec, _cancel_event):
+        return _artifact(tmp_path, spec, disposition=DownloadDisposition.DOWNLOADED)
+
+    downloader = FakeDownloader(handler)
+    coordinator = ManualFetchCoordinator(
+        operation_lock=asyncio.Lock(),
+        persistence=persistence,
+        downloader_factory=_factory(downloader),
+    )
+
+    result = await coordinator.run(
+        requested_start_utc=_utc(12),
+        requested_end_utc=_utc(13),
+    )
+
+    assert len(downloader.calls) == 4
+    assert result.status == "partial_ok"
+    assert result.files_downloaded == 3
+    assert result.files_failed == 1
+    assert result.details["fatal_error"] is None
+    assert len(persistence.errors) == 1
+    assert persistence.errors[0][0].symbol == "BTCUSDT"
+    assert persistence.completions[0]["status"] is FetchRunStatus.PARTIAL_OK
+
+
+@pytest.mark.asyncio
+async def test_admission_failure_fails_only_that_source(
+    tmp_path: Path,
+) -> None:
+    class AdmissionFailurePersistence(FakePersistence):
+        async def mark_downloading(self, spec: SourceFileSpec) -> bool:
+            if (spec.symbol, spec.data_kind.value) == ("ETHUSDT", "orderbook"):
+                raise RuntimeError("implementation detail with a dsn")
+            self.downloading.append(spec)
+            return False
+
+    persistence = AdmissionFailurePersistence()
+
+    async def handler(spec, _cancel_event):
+        return _artifact(tmp_path, spec, disposition=DownloadDisposition.DOWNLOADED)
+
+    downloader = FakeDownloader(handler)
+    coordinator = ManualFetchCoordinator(
+        operation_lock=asyncio.Lock(),
+        persistence=persistence,
+        downloader_factory=_factory(downloader),
+    )
+
+    result = await coordinator.run(
+        requested_start_utc=_utc(12),
+        requested_end_utc=_utc(13),
+    )
+
+    assert len(downloader.calls) == 3
+    assert result.status == "partial_ok"
+    assert result.files_failed == 1
+    assert persistence.errors == []
+    failed_items = [
+        item for item in result.items if item.disposition is FetchItemDisposition.ERROR
+    ]
+    assert len(failed_items) == 1
+    assert failed_items[0].diagnostic == "Unexpected RuntimeError"
+    assert "dsn" not in str(result.details)

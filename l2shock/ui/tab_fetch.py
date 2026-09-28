@@ -34,6 +34,7 @@ from l2shock.ui.availability_calendar import (
 from l2shock.ui.components import (
     create_tracked_task,
     persistent_notify,
+    run_db_worker_thread,
     section_header,
 )
 from l2shock.ui.fetch_runtime import get_manual_fetch_runtime
@@ -958,7 +959,12 @@ def build_fetch_tab(
                 calendar_refresh_pending = False
                 selected_date = parse_local_calendar_date(calendar_date_input.value)
 
-                snapshot = await asyncio.to_thread(
+                # Re-check on every pass: the date-changed and pending-refresh
+                # branches loop back here after an await.
+                if state.shutdown_started:
+                    break
+
+                snapshot = await run_db_worker_thread(
                     load_availability_calendar_snapshot,
                     selected_local_date=selected_date,
                     timezone_name=settings.app.timezone,
@@ -1064,7 +1070,10 @@ def build_fetch_tab(
     )
     automatic_stop_button.on(
         "click",
-        _stop_automatic_fetch,
+        lambda _event=None: create_tracked_task(
+            _stop_automatic_fetch(),
+            name="l2shock-automatic-fetch-stop",
+        ),
     )
     previous_calendar_date_button.on_click(lambda: _move_calendar_date(-1))
     next_calendar_date_button.on_click(lambda: _move_calendar_date(1))

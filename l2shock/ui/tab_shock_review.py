@@ -42,7 +42,7 @@ from l2shock.ui.chart_interactions import (
     AnalysisChartController,
     capture_shock_time_viewport,
 )
-from l2shock.ui.components import create_tracked_task
+from l2shock.ui.components import create_tracked_task, run_db_worker_thread
 from l2shock.ui.echarts import (
     EChartPublicationError,
     empty_echart_option,
@@ -1012,7 +1012,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
             )
 
         try:
-            price_regions = await asyncio.to_thread(
+            price_regions = await run_db_worker_thread(
                 load_shock_price_warning_regions,
                 base=dataset.request.base,
                 view_start_utc=view_start,
@@ -1160,7 +1160,7 @@ def build_shock_review_section() -> Callable[[AnalysisRangeHandoff], Awaitable[b
             )
 
             try:
-                price_candles = await asyncio.to_thread(
+                price_candles = await run_db_worker_thread(
                     load_shock_price_context,
                     base=(
                         current_model.review.evidence_result.candidate_scan.dataset.request.base

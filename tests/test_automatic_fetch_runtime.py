@@ -818,3 +818,139 @@ def test_automatic_fetch_has_no_unjoined_worker_threads() -> None:
     # The only asyncio.to_thread call left is the one inside the joining helper.
     assert source.count("asyncio.to_thread(") == 1
     assert "asyncio.to_thread(function, *args, **kwargs)" in source
+
+
+@pytest.mark.asyncio
+async def test_unrepairable_quarantine_skips_hour_and_advances_cursor(
+    monkeypatch,
+) -> None:
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+
+    import l2shock.ui.automatic_fetch_runtime as runtime_module
+    from l2shock.ui.state import get_state, reset_state_for_tests
+
+    reset_state_for_tests()
+    settings = SimpleNamespace(
+        cryptohft=SimpleNamespace(
+            release_poll_interval_minutes=60,
+            expected_release_delay_minutes=15,
+            automatic_fetch_catch_up_hours=3,
+        )
+    )
+    monkeypatch.setattr(runtime_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        runtime_module, "_complete_source_hours_sync", lambda *a, **k: frozenset()
+    )
+    monkeypatch.setattr(runtime_module, "_read_retry_cursor_sync", lambda *a, **k: None)
+
+    def failing_prepare(hour_utc, *, stop_probe=None, failed_sources=None):
+        assert failed_sources is not None
+        failed_sources.append("binance_futures/x/BTCUSDT_orderbook.parquet")
+        return 0
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_prepare_corrupt_local_sources_for_reacquisition_sync",
+        failing_prepare,
+    )
+
+    cursor_writes: list[dict[str, object]] = []
+    written = threading.Event()
+
+    def record_cursor(**kwargs):
+        cursor_writes.append(kwargs)
+        written.set()
+
+    monkeypatch.setattr(runtime_module, "_write_retry_cursor_sync", record_cursor)
+
+    def forbidden_coordinator(**_kwargs):
+        raise AssertionError("coordinator must not run for an unrepairable hour")
+
+    monkeypatch.setattr(
+        runtime_module,
+        "create_production_manual_fetch_coordinator",
+        forbidden_coordinator,
+    )
+
+    runtime = runtime_module.AutomaticFetchRuntime()
+    runtime.start(persist=False)
+
+    try:
+        assert await asyncio.to_thread(written.wait, 5.0)
+    finally:
+        assert await runtime.stop_and_wait(grace_seconds=5.0, persist=False)
+
+    assert len(cursor_writes) == 1
+    assert (
+        cursor_writes[0]["attempted_hour_utc"]
+        == cursor_writes[0]["newest_eligible_hour_utc"]
+    )
+    assert "could not quarantine" in (runtime.snapshot().last_error or "")
+    assert get_state().active_operation_name == ""
+
+
+@pytest.mark.asyncio
+async def test_stop_during_start_persists_disabled_and_refuses_restart(
+    monkeypatch,
+) -> None:
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+
+    import l2shock.ui.automatic_fetch_runtime as runtime_module
+    from l2shock.acquisition import FetchOperationBusyError
+    from l2shock.ui.state import reset_state_for_tests
+
+    reset_state_for_tests()
+    settings = SimpleNamespace(
+        cryptohft=SimpleNamespace(
+            release_poll_interval_minutes=60,
+            expected_release_delay_minutes=15,
+            automatic_fetch_catch_up_hours=3,
+        )
+    )
+    monkeypatch.setattr(runtime_module, "get_settings", lambda: settings)
+
+    def forbidden_scan(*_args, **_kwargs):
+        raise AssertionError("the polling loop must not run after Stop")
+
+    monkeypatch.setattr(runtime_module, "_complete_source_hours_sync", forbidden_scan)
+
+    writes: list[bool] = []
+    enable_entered = threading.Event()
+    release_enable = threading.Event()
+
+    def fake_write(enabled: bool) -> None:
+        if enabled:
+            enable_entered.set()
+            if not release_enable.wait(timeout=5.0):
+                raise TimeoutError("test did not release the enable write")
+        writes.append(enabled)
+
+    monkeypatch.setattr(runtime_module, "_write_enabled_setting_sync", fake_write)
+
+    runtime = runtime_module.AutomaticFetchRuntime()
+    runtime.start(persist=True)
+    assert await asyncio.to_thread(enable_entered.wait, 2.0)
+
+    stop_task = asyncio.create_task(
+        runtime.stop_and_wait(grace_seconds=5.0, persist=True)
+    )
+
+    try:
+        for _ in range(200):
+            if writes:
+                break
+            await asyncio.sleep(0.01)
+
+        assert writes == [False]
+
+        with pytest.raises(FetchOperationBusyError, match="still stopping"):
+            runtime.start(persist=True)
+    finally:
+        release_enable.set()
+
+    assert await asyncio.wait_for(stop_task, timeout=5.0) is True
+    assert writes == [False, True, False]

@@ -44,6 +44,8 @@ from l2shock.ui.components import (
 )
 from l2shock.ui.state import get_state
 
+from l2shock.ui.components import run_db_worker_thread
+
 log = logging.getLogger(__name__)
 
 
@@ -531,8 +533,9 @@ def build_settings_tab() -> None:
         preset_status.set_text("Loading persisted data presets...")
 
         try:
-            loaded = await asyncio.to_thread(
+            loaded = await run_db_worker_thread(
                 list_managed_presets,
+                admit_during_shutdown=allow_during_mutation,
             )
             managed_presets = loaded
 
@@ -895,7 +898,7 @@ def build_settings_tab() -> None:
         _set_maintenance_controls_enabled(False)
 
         try:
-            preview = await asyncio.to_thread(
+            preview = await run_db_worker_thread(
                 build_maintenance_preview,
                 action,
             )
@@ -1228,7 +1231,7 @@ def build_settings_tab() -> None:
         diagnostics_status.set_text("Building production diagnostics report...")
 
         try:
-            report = await asyncio.to_thread(
+            report = await run_db_worker_thread(
                 production_diagnostics_report,
             )
             latest_report = report

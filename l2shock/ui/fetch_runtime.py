@@ -294,7 +294,12 @@ class ManualFetchRuntime:
         except TimeoutError:
             return False
         except asyncio.CancelledError:
-            return True
+            # Our own task.cancel() surfaces here once the task finishes. Any
+            # other CancelledError belongs to the caller and must propagate
+            # instead of reporting a false "stopped".
+            if task.cancelled():
+                return True
+            raise
         except Exception:
             return True
 

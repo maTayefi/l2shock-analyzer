@@ -32,6 +32,13 @@ class RuntimeState:
         repr=False,
     )
 
+    # Worker-thread futures started by UI readers outside every operation
+    # runtime. Shutdown joins them before disposing the SQLAlchemy engine.
+    untracked_db_workers: set[asyncio.Future[Any]] = field(
+        default_factory=set,
+        repr=False,
+    )
+
     _operation_lock: asyncio.Lock | None = field(
         default=None,
         init=False,
