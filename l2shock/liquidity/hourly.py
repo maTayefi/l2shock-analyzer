@@ -662,9 +662,7 @@ class OneSecondLiquiditySampler:
             previous_received_time_ns is not None
             and received_time_ns < previous_received_time_ns
         ):
-            raise HourlyLiquidityError(
-                "received_time_ns regressed during liquidity sampling"
-            )
+            received_time_ns = previous_received_time_ns
 
         self._last_event_received_time_ns = received_time_ns
 
