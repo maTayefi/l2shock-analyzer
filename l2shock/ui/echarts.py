@@ -281,6 +281,26 @@ def _javascript_option_expression(
     """
 
 
+def validate_echart_option(
+    option: dict[str, Any],
+) -> None:
+    """Validate a complete publication shape without changing a widget.
+
+    Use the same isolation, render-identity attachment, and strict JSON
+    serialization path as set_echart_options(). The temporary identity
+    belongs only to this disposable isolated copy.
+
+    This proves Python-side publication validity. It does not execute
+    JavaScript, verify formatter syntax, or acknowledge a browser render.
+    """
+    if not isinstance(option, dict):
+        raise TypeError("option must be a dictionary")
+
+    safe = coerce_echart_option(option)
+    _attach_render_identity(safe)
+    _javascript_option_expression(safe)
+
+
 def set_echart_options(
     chart: Any,
     option: dict[str, Any],
@@ -293,8 +313,19 @@ def set_echart_options(
     """
     if chart is None:
         raise EChartPublicationError("ECharts widget is unavailable")
+
+    runner = getattr(chart, "run_chart_method", None)
+    if not callable(runner):
+        raise EChartPublicationError("ECharts widget has no run_chart_method()")
+
     safe = coerce_echart_option(option)
     publication = _attach_render_identity(safe)
+
+    # Complete strict serialization before changing stored options or
+    # publication ownership. Invalid JSON must not damage the previous
+    # acknowledged chart merely because publication was attempted.
+    js_option = _javascript_option_expression(safe)
+
     try:
         chart._props["options"] = safe
         chart.update()
@@ -302,10 +333,6 @@ def set_echart_options(
         raise EChartPublicationError(
             "NiceGUI did not accept the complete ECharts option"
         ) from exc
-
-    runner = getattr(chart, "run_chart_method", None)
-    if not callable(runner):
-        raise EChartPublicationError("ECharts widget has no run_chart_method()")
 
     setattr(chart, "_l2shock_render_token", publication.render_token)
     setattr(chart, "_l2shock_acknowledged_render_token", "")
@@ -318,7 +345,6 @@ def set_echart_options(
     # argument as a JavaScript expression. Without it, ECharts receives the
     # option *text* as a string and its instance is corrupted, after which
     # every getOption() throws in the browser and Python only sees timeouts.
-    js_option = _javascript_option_expression(safe)
     # Real widgets: a browser script applies the option inside try/catch,
     # retries once after instance.clear(), and records its outcome so the
     # live-state probe can report the exact ECharts error.

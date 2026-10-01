@@ -35,16 +35,17 @@ def test_test_inventory_matches_repository() -> None:
     assert _first_block_after("# Global test inventory") == _python_files("tests")
 
 
-def test_core4_is_shock_start_and_every_listed_path_exists() -> None:
+def test_core4_is_analysis_and_every_listed_path_exists() -> None:
     start = CORES.index("\n# Core 4 ")
     end = CORES.index("\n# Core 5 ")
     section = CORES[start:end]
 
-    assert "Shock-Start" in section
+    assert "detector-free Analysis" in section
+    assert "Shock-Start" not in section
     assert "liquidity_movement" not in section
     assert "LM detection" not in CORES.split("# Global production-module inventory")[0]
 
     for block in re.findall(r"```text\n(.*?)\n```", section, flags=re.DOTALL):
         for line in block.splitlines():
             if line.strip():
-                assert (ROOT / line.strip()).exists(), line
+                assert (ROOT / line.strip()).is_file(), line

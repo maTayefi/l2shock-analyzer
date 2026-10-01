@@ -111,18 +111,18 @@ def test_health_snapshot_reports_foundation_status(
     assert implemented["remote_hf_range_import_runtime"] is True
     assert implemented["timeframe_aggregation"] is True
     assert implemented["verified_l2_only_loading"] is True
-    assert implemented["shock_start_detection"] is True
-    assert implemented["shock_channel_evidence"] is True
-    assert implemented["shock_b_area_review"] is True
-    assert implemented["shock_top_n_overlay"] is True
+    assert implemented["streaming_analysis_loading"] is True
+    assert implemented["selectable_l2_panels"] is True
+    assert implemented["independent_panel_y_zoom"] is True
     assert implemented["analysis_runtime"] is True
     assert implemented["analysis_ui"] is True
     assert implemented["analysis_chart_workspace"] is True
     assert implemented["chart_render_acknowledgement"] is True
     assert implemented["chart_viewport_preservation"] is True
     assert implemented["custom_gapped_crosshair"] is True
-    assert implemented["table_to_chart_navigation"] is True
     assert implemented["chart_export"] is True
+    assert implemented["displayed_bar_json_export"] is True
+    assert implemented["displayed_bar_csv_export"] is True
 
     for retired in (
         "price_filter_policy",

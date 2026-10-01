@@ -609,10 +609,21 @@ class AnalysisConfig(StrictConfigModel):
     )
     @classmethod
     def _positive_analysis_ints(cls, value: Any, info) -> int:
-        return _strict_positive_int(
+        result = _strict_positive_int(
             value,
             field_name=f"analysis.{info.field_name}",
         )
+
+        # Analysis loading accepts outage thresholds of at most one day.
+        # Reject larger values here instead of failing every Start Analysis.
+        limit = (
+            86_400 if info.field_name == "l2_long_invalid_warning_seconds" else 1_440
+        )
+
+        if result > limit:
+            raise ValueError(f"analysis.{info.field_name} must be <= {limit}")
+
+        return result
 
 
 class Settings(BaseSettings):

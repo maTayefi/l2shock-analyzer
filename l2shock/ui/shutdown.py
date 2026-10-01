@@ -1,26 +1,30 @@
 # l2shock/ui/shutdown.py
 """Coordinated application shutdown.
 
-Shutdown sequence:
+Shutdown ownership:
 
-1. raise the process admission barrier;
-2. stop automatic fetch (cooperative, then bounded force-cancel);
-3. request cooperative manual-fetch cancellation;
-4. force-cancel manual fetch only if its grace period expires;
-5. request cooperative remote-import cancellation;
-6. force-cancel remote import only if its grace period expires;
-7. request cooperative processing cancellation;
-8. force-cancel processing only if its grace period expires;
-9. request cooperative Shock-Start review stop and wait a bounded time;
-   the synchronous detector has no cancellation hook, so there is no
-   forced step: a worker outliving the grace period blocks engine disposal;
-10. cancel and await remaining unrelated tracked tasks;
-11. dispose SQLAlchemy connection pools;
-12. optionally request NiceGUI server shutdown.
+- raise the process admission barrier before admitting any new work;
+- stop automatic fetch;
+- stop manual fetch, remote import, and manual processing through their
+  existing cooperative and bounded fallback paths;
+- request cooperative detector-free Analysis loading stop;
+- wait for operation-lock owners, tracked tasks, and registered database
+  readers before disposing the SQLAlchemy engine;
+- publish shutdown completion only after background-work ownership has
+  been safely resolved;
+- optionally request NiceGUI server shutdown.
 
-Cancelling an owning asyncio task never assumes that asyncio can terminate a
-worker thread. If any owner cannot prove its worker stopped, the engine is not
-disposed and shutdown is not published as complete.
+An Analysis loader runs in a synchronous worker thread. Cancelling its
+owning asyncio task does not terminate that thread. The runtime retains
+ownership until the worker exits.
+
+If any owner cannot prove its worker stopped, the engine is not disposed
+and shutdown is not published as complete. The admission barrier remains
+raised, and the global header control can report the failure and allow a
+shutdown retry.
+
+The implementation below is authoritative for the detailed ordering and
+timeout behavior of each retained runtime.
 """
 
 from __future__ import annotations
@@ -42,7 +46,7 @@ from l2shock.ui.components import (
 from l2shock.ui.fetch_runtime import peek_manual_fetch_runtime
 from l2shock.ui.processing_runtime import peek_manual_processing_runtime
 from l2shock.ui.remote_import_runtime import peek_remote_import_runtime
-from l2shock.ui.shock_runtime import peek_manual_shock_runtime
+from l2shock.ui.l2_view_runtime import peek_l2_view_runtime
 from l2shock.ui.state import get_state
 
 log = logging.getLogger(__name__)
@@ -218,22 +222,20 @@ async def shutdown_runtime(
                         "cancellation timeout."
                     )
 
-        shock_runtime = peek_manual_shock_runtime()
+        analysis_runtime = peek_l2_view_runtime()
 
-        if shock_runtime is not None and shock_runtime.snapshot().is_running:
-            log.info("Requesting cooperative Shock-Start review stop.")
-
-            shock_stopped = await shock_runtime.stop_and_wait(
+        if analysis_runtime is not None and analysis_runtime.snapshot().is_running:
+            log.info("Requesting cooperative Analysis load stop.")
+            analysis_stopped = await analysis_runtime.stop_and_wait(
                 grace_seconds=analysis_grace_seconds,
             )
-
-            if not shock_stopped:
-                # The synchronous detector has no cancellation callback.
-                # In particular, do not mark this owner stopped or dispose
-                # the SQLAlchemy engine while its worker may still run.
+            if not analysis_stopped:
+                # A task cancellation cannot terminate a Python worker
+                # thread. Keep engine disposal blocked until worker exit
+                # has been proved.
                 all_operation_owners_stopped = False
                 log.error(
-                    "Shock-Start worker did not exit within %.3f seconds; "
+                    "Analysis worker did not exit within %.3f seconds; "
                     "database engine disposal is blocked.",
                     analysis_grace_seconds,
                 )

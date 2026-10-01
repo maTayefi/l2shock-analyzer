@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 import l2shock.analysis as analysis_package
-import l2shock.analysis.shock_dataset as shock_dataset
+import l2shock.analysis.l2_view_stream as l2_view_stream
 import l2shock.config as config_module
 from l2shock.analysis.l2_seconds import decode_l2_hour_to_seconds
 
@@ -85,8 +85,8 @@ def test_no_python_file_imports_a_deleted_lm_module() -> None:
     assert offenders == []
 
 
-def test_shock_loader_uses_the_moved_l2_decoder() -> None:
-    assert shock_dataset.decode_l2_hour_to_seconds is decode_l2_hour_to_seconds
+def test_analysis_loader_uses_the_shared_l2_decoder() -> None:
+    assert l2_view_stream.decode_l2_hour_to_seconds is decode_l2_hour_to_seconds
     assert analysis_package.decode_l2_hour_to_seconds is decode_l2_hour_to_seconds
 
 

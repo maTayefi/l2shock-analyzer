@@ -24,7 +24,7 @@ def _isolate_background_runtimes(
     )
     monkeypatch.setattr(
         shutdown_module,
-        "peek_manual_shock_runtime",
+        "peek_l2_view_runtime",
         lambda: None,
     )
     yield
@@ -70,8 +70,8 @@ class FakeRuntime:
         return self._forced_result
 
 
-class FakeShockRuntime:
-    """Mirrors ManualShockRuntime: snapshot() plus stop_and_wait only."""
+class FakeAnalysisRuntime:
+    """Mirrors L2ViewRuntime: snapshot() plus cooperative stop_and_wait."""
 
     def __init__(
         self,
@@ -92,7 +92,7 @@ class FakeShockRuntime:
         *,
         grace_seconds: float,
     ) -> bool:
-        self._events.append(f"shock:cooperative:{grace_seconds}")
+        self._events.append(f"analysis:cooperative:{grace_seconds}")
 
         if self._cooperative_result:
             self._running = False
@@ -130,7 +130,7 @@ def _patch_owners(
     *,
     fetch=None,
     processing=None,
-    shock=None,
+    analysis=None,
 ) -> None:
     monkeypatch.setattr(
         shutdown_module,
@@ -144,8 +144,8 @@ def _patch_owners(
     )
     monkeypatch.setattr(
         shutdown_module,
-        "peek_manual_shock_runtime",
-        lambda: shock,
+        "peek_l2_view_runtime",
+        lambda: analysis,
     )
 
 
@@ -330,7 +330,7 @@ async def test_shutdown_skips_idle_runtimes(
         monkeypatch,
         fetch=fetch_runtime,
         processing=processing_runtime,
-        shock=FakeShockRuntime(events, running=False),
+        analysis=FakeAnalysisRuntime(events, running=False),
     )
     _patch_tail(monkeypatch, events)
 
@@ -346,7 +346,7 @@ async def test_shutdown_skips_idle_runtimes(
 
 
 @pytest.mark.asyncio
-async def test_shutdown_orders_fetch_processing_shock_tasks_engine(
+async def test_shutdown_orders_fetch_processing_analysis_tasks_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reset_state_for_tests()
@@ -356,7 +356,7 @@ async def test_shutdown_orders_fetch_processing_shock_tasks_engine(
         monkeypatch,
         fetch=FakeRuntime(events, name="fetch"),
         processing=FakeRuntime(events, name="processing"),
-        shock=FakeShockRuntime(events),
+        analysis=FakeAnalysisRuntime(events),
     )
     _patch_tail(monkeypatch, events)
 
@@ -371,25 +371,23 @@ async def test_shutdown_orders_fetch_processing_shock_tasks_engine(
     assert events == [
         "fetch:cooperative:2.0",
         "processing:cooperative:5.0",
-        "shock:cooperative:7.0",
+        "analysis:cooperative:7.0",
         "tasks:4.0",
         "engine",
     ]
 
 
 @pytest.mark.asyncio
-async def test_shock_worker_outliving_grace_blocks_engine_disposal(
+async def test_analysis_worker_outliving_grace_blocks_engine_disposal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reset_state_for_tests()
     events: list[str] = []
-
     _patch_owners(
         monkeypatch,
-        shock=FakeShockRuntime(events, cooperative_result=False),
+        analysis=FakeAnalysisRuntime(events, cooperative_result=False),
     )
     _patch_tail(monkeypatch, events)
-
     with pytest.raises(
         RuntimeError,
         match="background work remained active",
@@ -399,12 +397,15 @@ async def test_shock_worker_outliving_grace_blocks_engine_disposal(
             analysis_grace_seconds=7.0,
             other_task_timeout_seconds=4.0,
         )
-
-    # There is no forced step for the non-interruptible shock detector.
+    # The shutdown sequence still cancels unrelated tracked tasks even
+    # when a synchronous worker refuses to exit, but it correctly blocks
+    # the SQLAlchemy engine disposal and refuses to publish completion.
     assert events == [
-        "shock:cooperative:7.0",
+        "analysis:cooperative:7.0",
         "tasks:4.0",
     ]
+    assert "engine" not in events
+    assert get_state().shutdown_started is True
     assert get_state().shutdown_complete is False
 
 

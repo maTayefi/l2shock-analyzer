@@ -1,19 +1,12 @@
 # tests/test_readme_contract.py
-"""README contract must agree with the code it documents (Batch 39)."""
+"""README contracts for the retained detector-free Analysis architecture."""
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
-from l2shock.analysis.shock_review import (
-    SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION,
-    SHOCK_REVIEW_ORDER_VERSION,
-    SHOCK_REVIEW_ORDER_VERSION_V3,
-)
-
 ROOT = Path(__file__).resolve().parents[1]
-README = (ROOT / "README.md").read_text(encoding="utf-8")
 
 _RETIRED_HEADINGS = (
     "Price-filter semantics",
@@ -25,58 +18,6 @@ _RETIRED_HEADINGS = (
     "Ranking populations",
     "Primary LM evidence",
     "Secondary LM evidence",
-)
-
-
-def test_readme_states_both_order_defaults_exactly() -> None:
-    assert f"UI default        {SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION}" in README
-    assert f"backend default   {SHOCK_REVIEW_ORDER_VERSION}" in README
-    assert (
-        f"`{SHOCK_REVIEW_ORDER_VERSION_V3}` (`SHOCK_REVIEW_ORDER_VERSION_V3`)" in README
-    )
-    assert "A weighted or percentile score is a future order version" not in README
-
-
-def test_readme_annotation_switch_labels_match_the_ui() -> None:
-    tab = (ROOT / "l2shock/ui/tab_shock_review.py").read_text(encoding="utf-8")
-
-    for label in ("Show B/C lines and rank labels", "Show B-area bands"):
-        assert f'"{label}"' in tab
-        assert f'"{label}"' in README
-
-
-def test_readme_describes_header_shutdown_and_shock_stop() -> None:
-    assert "global header Shutdown button" in README
-    assert "-> stop Shock-Start review" in README
-    assert "-> stop Manual Analysis" not in README
-    assert "l2shock/ui/shutdown.py" in README
-    assert (ROOT / "l2shock/ui/shutdown_control.py").exists()
-
-
-def test_readme_intro_and_runtime_no_longer_describe_lm() -> None:
-    assert "multi-scale Liquidity Movements" not in README
-    assert "Liquidity Movement detection, and population ranking" not in README
-    assert "retrospectively locating Shock-Start B areas" in README
-
-
-def test_readme_has_no_retired_lm_sections() -> None:
-    for heading in _RETIRED_HEADINGS:
-        pattern = rf"^## {re.escape(heading)}\s*$"
-        assert not re.search(pattern, README, flags=re.MULTILINE), heading
-
-
-def test_readme_keeps_the_shock_start_contract() -> None:
-    assert "### Shock-Start semantic contract (humans and AI models)" in README
-    assert "### Shock-Start review chart publication" in README
-
-
-_EXCLUSION_SENTENCE = (
-    "Not part of Shock-Start (do not reintroduce silently): LM retracement\n"
-    "confirmation, context bars, terminal_offline, Top-N height/sharpness union,\n"
-    "price-filter eligibility, Bollinger/CWT/EMD/EVT/ML detectors."
-)
-
-_BATCH41_RETIRED_SUBSECTIONS = (
     "LM analysis execution and deterministic result identity",
     "Application-owned analysis runtime",
     "Functional Analysis controls and result table",
@@ -87,50 +28,104 @@ _BATCH41_RETIRED_SUBSECTIONS = (
     "Multi-timeframe behavior",
     "Highlight behavior",
     "Verified aligned analysis datasets",
-    "Analysis identity and exports",
+    "Verified Shock-Start L2 dataset",
+    "Application-owned Shock-Start runtime",
+    "Shock-Start identity and exports",
+    "Shock-Start semantic contract (humans and AI models)",
+    "Shock-Start review chart publication",
 )
 
 
-def test_readme_has_no_lm_wording_outside_the_exclusion_list() -> None:
-    # The one intentional mention lists what must NOT be reintroduced.
-    assert README.count(_EXCLUSION_SENTENCE) == 1
-    rest = README.replace(_EXCLUSION_SENTENCE, "")
-
-    assert re.search(r"\bLM\b", rest) is None
-    assert re.search(r"Liquidity[ -]Movement", rest, re.IGNORECASE) is None
-    assert re.search(r"price[ -]filter", rest, re.IGNORECASE) is None
+def _readme() -> str:
+    return (ROOT / "README.md").read_text(encoding="utf-8")
 
 
-def test_readme_retired_lm_subsections_are_gone() -> None:
-    for heading in _BATCH41_RETIRED_SUBSECTIONS:
+def _flat() -> str:
+    return " ".join(_readme().split())
+
+
+def test_readme_has_no_retired_detector_sections() -> None:
+    text = _readme()
+
+    for heading in _RETIRED_HEADINGS:
         pattern = rf"^#{{2,4}} {re.escape(heading)}\s*$"
-        assert not re.search(pattern, README, flags=re.MULTILINE), heading
+        assert not re.search(pattern, text, flags=re.MULTILINE), heading
 
 
-def test_readme_documents_shock_dataset_runtime_and_identity() -> None:
-    assert "### Verified Shock-Start L2 dataset" in README
-    assert "### Application-owned Shock-Start runtime" in README
-    assert "### Shock-Start identity and exports" in README
-    assert "manual_shock_review" in README
-    assert "observations, detecting\nretrospectively" not in README
+def test_readme_describes_detector_free_analysis_not_review() -> None:
+    text = _readme()
+    introduction = text.split("## Project identity", 1)[0]
+
+    assert "detector-free Analysis" in introduction
+    assert "exactly five synchronized panels" in introduction
+    assert "retrospectively locating Shock-Start B areas" not in text
+    assert "Shock-Start is the sole Analysis workflow" not in text
+    assert "manual_shock_review" not in text
+    assert "SHOCK_REVIEW_ORDER_VERSION" not in text
+    assert "SHOCK_CHART_COLORS" not in text
+
+    assert "### Detector-free Analysis semantic contract" in text
+    assert "### Analysis chart publication and interaction ownership" in text
+    assert "### Analysis identity and exports" in text
 
 
-def test_readme_documents_implemented_warning_regions_and_local_time() -> None:
-    from pathlib import Path
+def test_readme_has_no_retired_detector_controls() -> None:
+    text = _readme()
 
-    readme = Path(__file__).resolve().parents[1] / "README.md"
-    flat = " ".join(readme.read_text(encoding="utf-8").split())
+    for label in (
+        "Show B/C lines and rank labels",
+        "Show B-area bands",
+        "within_tier_percentile_mean_v3",
+        "total_structure_first_v2",
+    ):
+        assert label not in text, label
+
+
+def test_readme_keeps_header_shutdown_and_analysis_runtime() -> None:
+    text = _readme()
+
+    assert "global header Shutdown button" in text
+    assert "l2shock/ui/shutdown.py" in text
+    assert "l2shock/ui/l2_view_runtime.py" in text
+    assert "manual_analysis_load" in text
+    assert (ROOT / "l2shock/ui/shutdown_control.py").is_file()
+
+    assert "-> stop Shock-Start review" not in text
+
+
+def test_readme_keeps_warning_toggle_and_utc_ownership() -> None:
+    flat = _flat()
 
     for marker in (
-        "Persistent red data-outage warning regions are drawn",
-        "analysis.l2_long_invalid_warning_seconds (default 60)",
-        "analysis.price_long_invalid_warning_minutes (default 3)",
         '"Show data-quality warnings" switch',
-        'legend entry "Data-outage warning"',
-        "Only presentation is localized",
+        "analysis.l2_long_invalid_warning_seconds",
+        "analysis.price_long_invalid_warning_minutes",
+        "A run exactly equal to the threshold is not flagged",
+        "UTC remains authoritative",
+        "Shift+wheel",
         "chart coordinates stay UTC",
     ):
         assert marker in flat, marker
 
-    assert "A persistent red warning region is required when" not in flat
-    assert flat.count("```") % 2 == 0
+
+def test_readme_keeps_retired_lm_functionality_absent() -> None:
+    text = _readme()
+
+    assert "multi-scale Liquidity Movements" not in text
+    assert "Liquidity Movement detection, and population ranking" not in text
+    assert re.search(r"\bLM\b", text) is None
+    assert re.search(r"Liquidity[ -]Movement", text, re.IGNORECASE) is None
+    assert re.search(r"price[ -]filter", text, re.IGNORECASE) is None
+
+
+def test_readme_does_not_promise_browser_rollback() -> None:
+    flat = _flat()
+
+    assert "automatic restoration of the prior browser option is not guaranteed" in flat
+    assert (
+        "successful Python publication request is not browser acknowledgement" in flat
+    )
+
+
+def test_readme_markdown_fences_are_balanced() -> None:
+    assert _readme().count("```") % 2 == 0

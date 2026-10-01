@@ -208,30 +208,52 @@ def test_single_market_processing_persists_target_and_checkpoint(
     assert stored is not None
     assert stored.encoded.content_sha256 == result.analytical_content_sha256
 
-    # Exercise the new production shock path against the actual persisted,
+    # Exercise the active Analysis loader against the actual persisted,
     # codec-verified L2 row. No price hour is written by this test.
-    from l2shock.analysis.shock_dataset import ShockDatasetRequest
-    from l2shock.analysis.shock_execution import run_verified_shock_scan
+    from l2shock.analysis.l2_view_stream import (
+        L2ViewLoadOptions,
+        L2ViewRequest,
+        stream_l2_view,
+    )
+    from l2shock.db.price_repository import PriceAnalyticalRepository
 
-    shock_scan = run_verified_shock_scan(
-        database_session,
-        ShockDatasetRequest(
+    @contextmanager
+    def open_analysis_repositories():
+        yield (
+            AnalyticalRepository(database_session),
+            PriceAnalyticalRepository(database_session),
+        )
+
+    projection = stream_l2_view(
+        L2ViewRequest(
             base="BTC",
             preset_hash=preset.preset_hash,
             requested_start_utc=_hour(),
             requested_end_utc=_hour(),
         ),
+        L2ViewLoadOptions(
+            timeframe_seconds=1,
+            max_bars=1,
+        ),
+        open_repositories=open_analysis_repositories,
     )
 
-    assert len(shock_scan.dataset.seconds) == 1
-    assert shock_scan.dataset.seconds[0].timestamp_utc == _hour()
-    assert shock_scan.dataset.component_hours[0].content_sha256 == (
-        stored.encoded.content_sha256
-    )
-    assert len(shock_scan.scan_id) == 64
-    # One second cannot contain an A-B-C leg. That is expected; this
-    # assertion tests the real verified loader/execution boundary.
-    assert shock_scan.hypotheses == ()
+    assert projection.request.preset_hash == preset.preset_hash
+    assert projection.start_utc == _hour()
+    assert projection.request.slot_count == 1
+    assert projection.timeframe_seconds == 1
+    assert len(projection.bars) == 1
+    assert projection.bars[0].start_utc == _hour()
+    assert projection.bars[0].source_seconds == 1
+    assert projection.bars[0].valid_l2 is True
+    assert projection.bars[0].bid is not None
+    assert projection.bars[0].ask is not None
+    assert projection.bars[0].price is None
+    assert projection.usable_l2_seconds == 1
+    assert projection.unusable_l2_seconds == 0
+    assert projection.partial_market_seconds == 0
+    assert projection.price_status == "missing"
+    assert len(projection.input_id) == 64
 
     row = AcquisitionRepository(database_session).get_source_hour(_spec())
 

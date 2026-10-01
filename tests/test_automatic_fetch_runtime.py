@@ -783,11 +783,11 @@ async def test_stop_persist_write_is_joined_through_cancellation(
 def test_untracked_database_workers_respect_shutdown_barrier() -> None:
     import l2shock.ui.tab_fetch as fetch_module
     import l2shock.ui.tab_settings as settings_module
-    import l2shock.ui.tab_shock_review as review_module
+    import l2shock.ui.tab_l2_view as analysis_module
 
     fetch_source = Path(fetch_module.__file__).read_text(encoding="utf-8")
     settings_source = Path(settings_module.__file__).read_text(encoding="utf-8")
-    review_source = Path(review_module.__file__).read_text(encoding="utf-8")
+    analysis_source = Path(analysis_module.__file__).read_text(encoding="utf-8")
 
     def body_after(source: str, header: str, length: int = 900) -> str:
         start = source.index(header)
@@ -802,11 +802,11 @@ def test_untracked_database_workers_respect_shutdown_barrier() -> None:
     assert "if state.shutdown_started and not allow_during_mutation:" in body_after(
         settings_source, "async def _refresh_managed_presets"
     )
-    assert "state.shutdown_started or preset_loading" in body_after(
-        review_source, "async def _reload_presets"
+    assert "state.shutdown_started" in body_after(
+        analysis_source, "async def _reload_presets"
     )
-    assert "if state.shutdown_started:" in body_after(
-        review_source, "async def _show_bounded_view", 1_400
+    assert "state.shutdown_started" in body_after(
+        analysis_source, "async def _start", 1_400
     )
 
 

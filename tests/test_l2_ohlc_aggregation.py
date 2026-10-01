@@ -253,3 +253,16 @@ def test_running_l2_ohlc_preserves_one_valid_zero_second() -> None:
         low=Decimal("0"),
         close=Decimal("0"),
     )
+
+
+def test_aggregated_l2_bar_keeps_l2_ohlc_fields() -> None:
+    from dataclasses import fields
+
+    names = {field.name for field in fields(AggregatedL2Bar)}
+
+    assert {
+        "bid_ohlc",
+        "ask_ohlc",
+        "total_ohlc",
+        "delta_ohlc",
+    } <= names

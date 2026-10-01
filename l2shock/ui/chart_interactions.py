@@ -31,10 +31,12 @@ from l2shock.ui.chart_navigation import (
 )
 from l2shock.ui.echarts import (
     EChartPublication,
+    EChartPublicationError,
     acknowledged_render_token,
     confirm_echart_render_identity,
     read_echart_live_state,
     set_echart_options,
+    validate_echart_option,
 )
 
 log = logging.getLogger(__name__)
@@ -838,13 +840,40 @@ async def install_analysis_gapped_crosshair(
                 instances: {{}},
                 owners: {{}},
                 raf: {{}},
-                generation: 0,
+                generations: {{}},
             }};
 
         const state = window.__l2shockAnalysisCrosshair;
-        state.generation = Number(state.generation || 0) + 1;
-        const generation = state.generation;
         const key = String(chartId);
+
+        // A different chart must not invalidate this chart's callbacks.
+        // Initialize the map as well when an older browser registry exists.
+        state.generations = state.generations || {{}};
+        state.generations[key] =
+            Number(state.generations[key] || 0) + 1;
+        const generation = state.generations[key];
+
+        // A replacement installation owns its own animation frame.
+        // Cancel the previous installation's pending frame before reusing
+        // the chart's registry slot.
+        const previousFrame = Number(state.raf[key] || 0);
+
+        if (previousFrame) {{
+            try {{
+                cancelAnimationFrame(previousFrame);
+            }} catch (error) {{}}
+        }}
+
+        state.raf[key] = 0;
+        let latestPointer = null;
+
+        function ownsInstallation(instance) {{
+            return (
+                generation === state.generations[key]
+                && state.owners[key] === expectedToken
+                && ownsToken(instance)
+            );
+        }}
 
         function unwrapDom(raw) {{
             if (!raw) return null;
@@ -1018,7 +1047,9 @@ async def install_analysis_gapped_crosshair(
         }}
 
         function removeGraphics(instance) {{
-            if (!instance) return;
+            // An obsolete installation must not remove graphics belonging
+            // to a replacement installation on this same chart.
+            if (!instance || !ownsInstallation(instance)) return;
 
             const removals = [];
 
@@ -1076,12 +1107,9 @@ async def install_analysis_gapped_crosshair(
         }}
 
         function draw(instance, pointer) {{
-            if (
-                generation !== state.generation
-                || state.owners[key] !== expectedToken
-                || !ownsToken(instance)
-            ) {{
-                removeGraphics(instance);
+            if (!ownsInstallation(instance)) {{
+                // Stale callbacks are inert. The replacement installation
+                // owns both drawing and removal of these graphic IDs.
                 return;
             }}
 
@@ -1128,6 +1156,10 @@ async def install_analysis_gapped_crosshair(
             if (price) {{
                 if (hoveredPanel === 0) {{
                     graphics.push(
+                        {{
+                            id: "l2shock_crosshair_v_0",
+                            $action: "remove",
+                        }},
                         line(
                             "l2shock_crosshair_price_v_top",
                             x,
@@ -1201,17 +1233,32 @@ async def install_analysis_gapped_crosshair(
         }}
 
         function schedule(instance, pointer) {{
+            if (!ownsInstallation(instance)) return;
+
+            // Coalesce events into one frame, but draw the most recent
+            // pointer rather than the first event in that frame.
+            latestPointer = pointer;
+
             if (Number(state.raf[key] || 0)) return;
 
-            state.raf[key] = requestAnimationFrame(function() {{
+            const frameId = requestAnimationFrame(function() {{
+                if (
+                    !ownsInstallation(instance)
+                    || Number(state.raf[key] || 0) !== frameId
+                ) {{
+                    return;
+                }}
+
                 state.raf[key] = 0;
-                draw(instance, pointer);
+                draw(instance, latestPointer);
             }});
+
+            state.raf[key] = frameId;
         }}
 
         function install(attempt) {{
             if (
-                generation !== state.generation
+                generation !== state.generations[key]
                 || state.owners[key] !== expectedToken
             ) {{
                 return;
@@ -1264,6 +1311,8 @@ async def install_analysis_gapped_crosshair(
                 }};
 
                 const globaloutHandler = function() {{
+                    if (!ownsInstallation(instance)) return;
+
                     const pending = Number(state.raf[key] || 0);
 
                     if (pending) {{
@@ -1273,6 +1322,7 @@ async def install_analysis_gapped_crosshair(
                     }}
 
                     state.raf[key] = 0;
+                    latestPointer = null;
                     removeGraphics(instance);
                 }};
 
@@ -1923,11 +1973,9 @@ class AnalysisChartController:
             )
         if not isinstance(option, dict):
             raise TypeError("option must be a dictionary")
-        self._request_generation += 1
-        request_generation = self._request_generation
-        # No chart generation owns export/navigation while a replacement is
-        # still being acknowledged and post-processed.
-        self._commit = None
+
+        # Reject invalid caller inputs before changing request generation
+        # or invalidating a previously committed chart.
         if (
             sum(
                 (
@@ -1939,8 +1987,49 @@ class AnalysisChartController:
             > 1
         ):
             raise AnalysisChartInteractionError(
-                "A publication can request only one viewport " "restoration mode"
+                "A publication can request only one viewport restoration mode"
             )
+
+        if temporal_viewport is not None and not isinstance(
+            temporal_viewport,
+            AnalysisChartTemporalViewport,
+        ):
+            raise TypeError("temporal_viewport must be AnalysisChartTemporalViewport")
+
+        if shock_time_viewport is not None and not isinstance(
+            shock_time_viewport,
+            AnalysisChartTemporalViewport,
+        ):
+            raise TypeError("shock_time_viewport must be AnalysisChartTemporalViewport")
+
+        metadata = _chart_metadata(option)
+        raw_count = metadata.get("visible_bar_count")
+
+        if (
+            isinstance(raw_count, bool)
+            or not isinstance(raw_count, int)
+            or raw_count < 0
+        ):
+            raise AnalysisChartInteractionError(
+                "Chart metadata has invalid visible_bar_count"
+            )
+
+        # Validate the publication boundary before withdrawing ownership
+        # from a previously acknowledged chart. Widget-level preflight
+        # alone is too late: this controller otherwise clears its commit
+        # before set_echart_options() rejects invalid JSON.
+        if not callable(getattr(self._chart, "run_chart_method", None)):
+            raise EChartPublicationError("ECharts widget has no run_chart_method()")
+
+        validate_echart_option(option)
+
+        self._request_generation += 1
+        request_generation = self._request_generation
+
+        # No chart generation owns export/navigation while a replacement is
+        # still being acknowledged and post-processed.
+        self._commit = None
+
         viewport = (
             await capture_analysis_chart_viewport(self._chart)
             if preserve_viewport
@@ -1964,17 +2053,6 @@ class AnalysisChartController:
         if not acknowledged:
             raise AnalysisChartInteractionError(
                 "Browser did not acknowledge the chart publication: " + reason
-            )
-        metadata = _chart_metadata(option)
-        raw_count = metadata.get("visible_bar_count")
-
-        if (
-            isinstance(raw_count, bool)
-            or not isinstance(raw_count, int)
-            or raw_count < 0
-        ):
-            raise AnalysisChartInteractionError(
-                "Chart metadata has invalid visible_bar_count"
             )
 
         commit = AnalysisChartCommit(
@@ -2022,6 +2100,9 @@ class AnalysisChartController:
             )
 
         if request_generation != self._request_generation:
+            return None
+
+        if acknowledged_render_token(self._chart) != publication.render_token:
             return None
 
         self._commit = commit

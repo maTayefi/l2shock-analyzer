@@ -1,10 +1,14 @@
 # L2 Liquidity Shock Analyzer
 
 Local historical order-book research application for reconstructing
-CryptoHFTData L2 feeds, deriving compact liquidity observations,
-retrospectively locating Shock-Start B areas in verified one-second Total L2,
-and displaying bounded Bid / Ask / Total / Delta viewports with optional
-Binance perpetual price context.
+CryptoHFTData L2 feeds, deriving compact liquidity observations, and
+displaying verified historical data through a detector-free Analysis
+workflow.
+
+Analysis loads and renders exactly five synchronized panels: optional
+Binance perpetual Price, Bid Liquidity, Ask Liquidity, selectable L2 Panel A,
+and selectable L2 Panel B. It does not detect shocks, generate hypotheses,
+rank areas, or draw candidate A/B/C annotations.
 
 ## Project identity
 
@@ -19,7 +23,9 @@ Directory: C:\l2_liquidity_shock_analyzer
 ## Supported initial scope
 
 - Base assets: BTC and ETH.
-- Mandatory price source: Binance USD-M USDT perpetual trades.
+- Approved price source: Binance USD-M USDT perpetual trades.
+- Price availability is optional for Analysis; missing or failed price
+  loading must not prevent valid L2 data from being rendered.
 - Raw source archive: CryptoHFTData hourly Parquet files.
 - Database: PostgreSQL.
 - UI: NiceGUI and Apache ECharts.
@@ -41,18 +47,101 @@ per-venue and per-instrument L2 reconstruction
     v
 sequence and checkpoint validation
     v
-last valid reconstructed state at or before each 1-second bucket end
+one-second reconstructed-state sampling and depth-band liquidity
     v
-depth-band Bid Liquidity and Ask Liquidity
+independent compact component-market PostgreSQL blocks
     v
-eligible-market aggregation
+verified bounded-chunk Analysis loading
     v
-compact versioned hourly PostgreSQL blocks
+exact-second expected-market composition
     v
-on-demand timeframe aggregation
+UTC-aligned viewing bars
     v
-Shock-Start detection, B-area review, and visualization
+Price / Bid / Ask / selectable Panel A / selectable Panel B
 ```
+
+Invalid one-second samples remain explicit. They are not populated from a
+formerly valid numerical sample.
+
+Aggregate presets resolve independently persisted component-market rows at
+Analysis load time. They do not create separately persisted aggregate L2
+rows or merge raw events, replay frontiers, snapshots, or checkpoints.
+
+Binance real-trade price is independently constructed and stored. Analysis
+loads it as optional context; it is not an input to L2 reconstruction or
+liquidity calculation.
+
+## Detector-free Analysis workflow
+
+Analysis loads verified historical data and renders it. It performs no shock
+detection, candidate generation, evidence scoring, ranking, or A/B/C
+annotation.
+
+The panel order is fixed:
+
+```text
+0: Binance perpetual Price, optional
+1: Bid Liquidity
+2: Ask Liquidity
+3: selectable L2 Panel A
+4: selectable L2 Panel B
+```
+
+Panel A defaults to Signed Imbalance %. Panel B defaults to Order-Book Delta.
+
+The selectable metric registry contains exactly these eleven metrics.
+In the formulas below, B and A mean Bid and Ask liquidity, not detector
+anchors. T = B + A and D = B - A.
+
+| Metric | Formula |
+|---|---|
+| Order-Book Delta | B - A |
+| Total Liquidity | B + A |
+| Signed Imbalance % | 100 * (B - A) / (B + A) |
+| Bid Share % | 100 * B / (B + A) |
+| Ask Share % | 100 * A / (B + A) |
+| Bid/Ask Shares % (two lines) | Bid Share % and Ask Share % at bar close |
+| Total Change | T[n] - T[n-1], using bar closes |
+| Total Change % | 100 * (T[n] - T[n-1]) / T[n-1] |
+| Delta Change | D[n] - D[n-1], using bar closes |
+| Imbalance Change (pp) | Signed Imbalance %[n] - Signed Imbalance %[n-1] |
+| Relative Side Change % | 100 * (B[n]/B[n-1] - A[n]/A[n-1]) |
+
+State-metric candles are reduced from same-second values. Total and Delta
+extrema are not constructed by combining independent Bid and Ask extrema.
+Percentage candles are reduced from valid one-second ratios, not calculated
+from separate OHLC extrema.
+
+Undefined denominators produce null values, not zero. Change metrics require
+adjacent usable viewing bars; the first bar and a bar following an unusable
+bar have no change value.
+
+No price-matched liquidity-flow mode or misleading snapshot-flow substitute
+is offered. These metrics use existing preset-owned depth, not a new
+Quantower level-count selection or Bookmap mid-price-relative depth rule.
+
+Panel and warning-selector changes rebuild the currently displayed
+projection without a database reread or another Start Analysis operation.
+Timeframe and viewing-bar-budget changes may use cached coarsening or admit
+a cancellable reload when finer data is required.
+
+The Maximum viewing bars control is applied on blur or Enter, not on every
+intermediate value change while editing.
+
+Normal wheel interaction controls synchronized X zoom. Shift+wheel controls
+independent Y zoom in the hovered panel. Changing a metric resets only that
+panel's Y zoom; changing the effective viewing timeframe resets all Y zooms.
+Timeframe changes preserve the captured UTC left edge and visible duration
+where the new range permits, clipping to the new bounds when necessary.
+
+Start Analysis validates the request and loads data in a background worker.
+Stop Analysis is cooperative and does not clear the previously displayed
+chart. A stopped or failed load does not publish a partial projection.
+
+PNG and SVG export chart images. JSON and CSV export the full displayed-bar
+dataset, not only the current browser zoom window. Exported data remains
+UTC-owned; screen presentation uses the configured timezone.
+
 ## Default remote preprocessing profile
 
 The preferred production workflow is remote preprocessing through:
@@ -1190,8 +1279,15 @@ INVALID:
 A missing or invalid component market is never forward-filled and never
 replaced with zero.
 
-A degraded aggregate keeps the exact sum of the markets that did contribute.
-It also records:
+The retained aggregation foundation can represent a degraded aggregate
+diagnostically as the exact sum of the markets that contributed.
+
+That diagnostic representation is not the active Analysis plotting
+policy. Detector-free Analysis treats a partial-market second as
+unusable and does not plot its smaller sum. A viewing bar containing
+such a second is null in every L2 channel.
+
+The aggregate coverage records:
 
 ```text
 expected_market_count
@@ -1233,13 +1329,21 @@ Verified Analysis loading derives its component hashes, loads each component
 through the ordinary codec and provenance verification boundary, and sums
 exact Bid and Ask Liquidity only after all components are verified.
 
-For the complete effective Analysis range, every expected market must
-contribute valid Bid and Ask Liquidity at every second. Missing Bybit, Binance,
+n Analysis second is usable only when every expected market contributes
+valid Bid and Ask Liquidity at that exact UTC second. Missing Bybit, Binance,
 or OKX data is never represented as zero and is never forward-filled.
+
+If only some expected markets contribute, Analysis records a partial-market
+second and renders it as an unusable gap, not as a smaller aggregate sum.
+If no market contributes, the second is also unusable.
+
+A viewing bar containing any unusable L2 second is null in every L2 channel.
+Coverage gaps do not abort the complete Analysis request; independently
+usable bars elsewhere in the requested range remain available.
 
 The three-market aggregate therefore reduces dependence on one venue's local
 liquidity behavior without hiding missing-market coverage or allowing the set
-of contributors to change silently during one analysis.
+of displayed contributors to change silently.
 
 ### Strict aggregate analysis loading
 
@@ -1257,13 +1361,16 @@ effective Analysis range.
 A missing or invalid expected market is never represented as zero, never
 forward-filled, and never silently omitted from the aggregate.
 
-If fewer than all expected markets contribute at any second, verified Analysis
-loading fails with a market-coverage error. The user must process the missing
-component data or narrow the requested range.
+If fewer than all expected markets contribute at a second, the detector-free
+Analysis loader marks that second unusable. Partial-market seconds are
+counted separately for diagnostics and are never plotted as partial sums.
+
+The strict viewing-bar policy nulls all L2 channels in any bar containing an
+unusable second. The rest of the requested range can still be rendered.
 
 This prevents changes such as Binance-only liquidity followed by Binance+OKX
-liquidity from producing artificial Bid, Ask, Total, Delta, or Imbalance steps
-that could be misclassified as Shock-Start B areas.
+liquidity from producing artificial Bid, Ask, Total, Delta, or Imbalance steps.
+It does not require rejecting otherwise usable data elsewhere in the range.
 
 Aggregate coverage provenance records:
 
@@ -1354,13 +1461,11 @@ A semantic change includes any change to:
 - bucket sampling;
 - data-quality interpretation;
 - gap and invalid-second handling;
-- structural scales, pivot radii, forward horizon, or acceleration ratio;
-- turning or acceleration start rules;
-- B-area partitioning or representative choice;
-- channel evidence offsets and thresholds;
-- review measurements or inspection-order keys;
-- percentile calculation;
-- where B, C, or B-area bands are plotted.
+- expected-market composition and partial-market handling;
+- mathematical metric formulas and undefined-denominator policy;
+- which observations contribute to viewing-bar OHLC;
+- change-metric predecessor ownership;
+- outage measurement ranges and threshold comparisons.
 
 Semantic changes must never be made silently.
 
@@ -1368,10 +1473,13 @@ Non-semantic changes include implementation, performance, UI, logging,
 refactoring, cancellation, error handling, testing, and storage optimization
 only when analytical output remains mathematically equivalent.
 
+Persisted-data semantic changes require the appropriate algorithm, preset,
+schema, or codec version change. Display-only settings remain outside
+persisted data-preset identity, but changing their mathematics or gap policy
+still requires explicit semantic review.
 
-Shock-Start semantic versions are recorded in the Shock-Start semantic
-contract section below. Changing any rule there requires a new algorithm,
-schema, or order version.
+Detector-specific scales, hypotheses, evidence, ranking, and A/B/C annotations
+are retired functionality, not extension points in the Analysis workflow.
 
 ### Raw archive and PostgreSQL boundary
 
@@ -2654,15 +2762,20 @@ separately:
 ### Fixed-duration timeframe aggregation
 
 The stored one-second series is the authoritative analytical base.
-Shock-Start detection, channel evidence, and review measurements always run on
-verified one-second L2. Viewing timeframes are presentation only.
+The detector-free Analysis workflow loads verified observations and reduces
+them into viewing bars. It performs no detection, hypothesis generation,
+channel evidence scoring, ranking, or candidate annotation.
 
-#### Shock-Start viewing bars
+Viewing timeframe changes do not rewrite persisted one-second data or alter
+the semantic data-preset identity.
 
-The bounded Shock-Start viewport builds its own viewing bars in
-`l2shock/ui/shock_view_bars.py`. It does not call the snapping or aggregation
-functions of `l2shock/analysis/timeframes.py` or
-`l2shock/analysis/aggregation.py`.
+#### Detector-free Analysis viewing bars
+
+The active viewing pipeline is implemented in:
+
+```text
+l2shock/analysis/l2_view_stream.py
+```
 
 Supported viewing timeframes are:
 
@@ -2675,34 +2788,126 @@ Auto
 5m
 15m
 1h
+4h
+1d
 ```
 
-Viewing bars are aligned to UTC multiples of the viewing timeframe. The first
-and last bar of a viewport may cover only part of their interval.
+Viewing bars are aligned to UTC multiples of the selected fixed duration.
+The first and last bars may contain only the portion of their interval
+owned by the requested range.
 
-Auto selects the finest supported viewing timeframe whose bar count fits the
-user's "Maximum viewing bars" input (1-5000). An explicit viewing timeframe
-that does not fit is rejected; it is never silently coarsened. The bar budget
-never trims one-second source seconds from the viewport.
+Auto selects the finest supported viewing timeframe whose bar count fits
+Maximum viewing bars. The supported bar budget is 1-5000, with a default
+of 1200.
 
-The viewing-bar builder requires contiguous one-second input. Invalid seconds
-stay explicit; they are never dropped or zero-filled. If any second inside a
-viewing bar is invalid, all four L2 channels (Bid, Ask, Total, Delta) of that
-bar are null.
+An explicit timeframe that does not fit the budget is rejected. It is
+never silently coarsened. The bar budget changes viewing granularity;
+it never truncates the requested source interval.
 
-B-area bands and A/B/C anchors keep exact one-second UTC coordinates. They are
-not snapped to viewing-bar boundaries.
+A viewing bar containing any unusable L2 second is null in every L2
+channel. Missing, invalid, and partial-market seconds are never dropped,
+zero-filled, or forward-filled to construct a usable bar.
 
-Any invalid or missing one-second L2 observation creates an explicit hard
-discontinuity. Shock-Start detection and viewing bars must not bridge that
-discontinuity merely because an aggregate endpoint is numerically available.
+Bid and Ask candles are reduced from their usable one-second values.
+Total and Delta candles are reduced from same-second Total and Delta:
+
+```text
+Total(t) = Bid(t) + Ask(t)
+Delta(t) = Bid(t) - Ask(t)
+```
+
+Their extrema must not be constructed by adding or subtracting independent
+Bid and Ask OHLC extrema that occurred at different seconds.
+
+Percentage candles are reduced from one-second percentage values.
+Undefined denominators remain null; they are not converted to zero.
+A bar without the required defined percentage values must not acquire
+a fabricated percentage candle through cached coarsening.
+
+Change metrics compare adjacent usable viewing-bar closes at the selected
+viewing timeframe. The first bar and a bar following an unusable bar have
+no change value.
+
+Only valid real-trade price seconds contribute to Price OHLC. Missing
+price seconds remain coverage facts, and a price bar with no contributing
+real trades is null. Price unavailability never makes otherwise usable
+L2 bars unavailable.
+
+Compatible coarser views can be built from the retained projection without
+a database reread. A finer uncached view requires a cancellable background
+reload. Cached coarsening must preserve the same source interval, strict
+L2 gap policy, percentage undefined-value policy, and quality counts.
+
+Panel and warning changes operate on the currently displayed projection.
+They do not validate unrelated loading controls or admit another load.
+
+#### Duration and streaming-budget controls
+
+Max scan duration is an editable limit measured in owned one-second slots:
+
+```text
+default: 86,400 seconds
+minimum configurable limit: 3,600 seconds
+maximum configurable limit: 63,072,000 seconds
+```
+
+The minimum applies to the configurable limit, not to the length of every
+Analysis request. A short request, including one owned second, remains
+valid when it fits that limit.
+
+The user's closed endpoints each own their containing UTC second:
+
+```text
+closed inputs:
+    [12:00:07.5, 12:00:09.1]
+
+effective half-open slot range:
+    [12:00:07, 12:00:10)
+```
+
+Both endpoint seconds count toward the duration limit. The upper ceiling
+is 730 days of owned seconds; it is not calendar-year arithmetic.
+
+Streaming memory budget is separately editable:
+
+```text
+default: 512 MiB
+minimum: 64 MiB
+maximum: 16,384 MiB
+```
+
+The budget selects bounded hour-chunk sizes. It is a chunk-size heuristic,
+not a guaranteed total-process RAM ceiling. Decoding, Python objects,
+repository results, the retained projection, chart options, and browser
+serialization also require memory.
+
+A long requested duration does not imply retaining every one-second
+observation for the complete range. Verified hour chunks are decoded,
+composed, and folded into bounded viewing bars.
+
+Long ranges can still require substantial reading, decoding, and
+verification time. The UI warns for ranges above 183 days and for a
+streaming budget above 6 GiB; those warnings do not automatically reject
+an otherwise valid request.
+
+The daily viewing-bar budget remains a separate constraint. Increasing
+Max scan duration does not make a range fit a smaller Maximum viewing bars
+setting.
 
 #### Retained aggregation foundation
 
-`l2shock/analysis/timeframes.py` and `l2shock/analysis/aggregation.py` remain
-as tested foundation. `aggregation.py` also owns the `L2Second` type used by
-the verified Shock-Start dataset path. Their snapping and multi-timeframe
-aggregation functions are not wired into the Shock-Start UI.
+These modules remain tested foundation:
+
+```text
+l2shock/analysis/timeframes.py
+l2shock/analysis/aggregation.py
+```
+
+`aggregation.py` also owns the `L2Second` type used by verified decoding
+and market composition.
+
+The foundation's snapping and endpoint-state aggregation functions are
+not substitutes for the active streaming viewing-bar policy.
 
 The foundation supports these fixed-duration timeframes:
 
@@ -2729,12 +2934,12 @@ The foundation supports these fixed-duration timeframes:
 1w
 ```
 
-Calendar month timeframes (`1M`, `3M`, `6M`) are deferred until a separate
+Calendar month timeframes (`1M`, `3M`, `6M`) remain deferred until a separate
 calendar-aware ownership contract is implemented. A month must never be
 silently represented as a fixed number of seconds.
 
-For a closed continuous-time range `[m, n]` and timeframe `T`, the foundation's
-bar-aligned loading range is:
+For a closed continuous-time range `[m, n]` and timeframe `T`, the
+foundation's bar-aligned loading range is:
 
 ```text
 snapped_start = floor(m, T)
@@ -2743,11 +2948,11 @@ snapped_end   = floor(n, T) + T
 effective range = [snapped_start, snapped_end)
 ```
 
-Its automatic timeframe selection picks the finest supported timeframe whose
-snapped bar count fits a caller-supplied bar budget.
+Its automatic timeframe selection picks the finest supported timeframe
+whose snapped bar count fits the caller's budget.
 
-In the foundation, L2 liquidity is a reconstructed state metric and a larger
-L2 bar owns the final one-second L2 state in its interval:
+In the foundation, a larger L2 state bar owns its final one-second
+endpoint state:
 
 ```text
 all seconds valid and endpoint valid:
@@ -2760,8 +2965,11 @@ endpoint invalid or missing:
     INVALID
 ```
 
-Real traded price uses standard OHLC aggregation over valid one-second trade
-candles:
+That retained endpoint policy differs intentionally from the active
+Analysis viewing policy, which nulls all L2 channels in a viewing bar
+containing any unusable second.
+
+The foundation's real-trade price aggregation uses:
 
 ```text
 Open:
@@ -2780,7 +2988,7 @@ trade_count:
     sum of valid one-second trade counts
 ```
 
-Price aggregate quality is:
+Its price aggregate quality is:
 
 ```text
 all seconds contain valid real-trade candles:
@@ -2793,23 +3001,24 @@ no second contains a valid real-trade candle:
     INVALID
 ```
 
-Invalid and missing lower-level price observations remain explicit coverage
-facts. They are not forward-filled. Any such observation creates a hard
-discontinuity for that price bar even when a larger degraded OHLC bar can be
-constructed from other real trades in that interval. Price discontinuities
-never split, move, or block a Shock-Start L2 scan.
+Invalid and missing lower-level price observations remain explicit
+coverage facts. They are not forward-filled. The foundation records a
+hard discontinuity even when real trades elsewhere in that interval
+permit a degraded OHLC bar.
 
-Fixed-duration bucket alignment is UTC internally. User-visible timestamps are
-converted to the configured display timezone without changing bucket identity.
+Fixed-duration bucket alignment remains UTC internally. Display timezone
+conversion does not change bucket identity.
 
+### Verified detector-free Analysis loading
 
-### Verified Shock-Start L2 dataset
+`l2shock/analysis/l2_view_stream.py` loads compact component L2 rows through
+the verified `AnalyticalRepository` read boundary with `verify_codec=True`.
 
-`l2shock/analysis/shock_dataset.py` loads compact L2 rows only through the
-verified `AnalyticalRepository` read path (`verify_codec=True`). It never reads
-price rows.
+Verified loading checks the stored preset content against its hash and
+resolves aggregate presets into their deterministic single-market
+component preset identities.
 
-Every loaded row is checked for:
+The normal repository verification boundary checks:
 
 ```text
 row identity
@@ -2821,26 +3030,40 @@ quality-summary consistency
 typed source provenance
 ```
 
-The user's closed range is snapped to whole seconds: each endpoint owns its
-containing one-second slot, and the loaded range is half-open. Shock-Start
-scans own at most 86,400 slots: the UI and the diagnostic CLI both reject
-endpoints 24 hours or more apart.
+A missing persisted component hour contributes explicit unavailable
+coverage. Missing observations are never zero-filled or forward-filled.
 
-A missing persisted component hour becomes explicit INVALID seconds. It is
-never zero-filled and never forward-filled.
-
-Single-market presets use their component rows directly. Aggregate presets
-resolve their component preset hashes, then per second:
+Single-market presets use their verified component directly.
+Multi-market presets compose observations at the same exact UTC second:
 
 ```text
-every expected market VALID      -> exact Bid and Ask sums, VALID
-no expected market VALID         -> INVALID second (hard break)
-some but not all markets VALID   -> the scan is rejected with a
-                                    market-coverage error
+every expected market contributes valid Bid and Ask:
+    exact component sums; usable L2 second
+
+some, but not all, expected markets contribute:
+    partial-market second; unusable for viewing
+
+no expected market contributes:
+    unusable L2 second
 ```
 
-Price availability, trade counts, chart timeframe, and viewing bars are never
-inputs to this dataset.
+Partial-market coverage does not reject the complete Analysis request.
+It contributes to diagnostics and null viewing bars; usable bars elsewhere
+in the requested range remain available.
+
+The loader does not merge raw events, snapshots, replay frontiers, or
+checkpoints across markets. Aggregate presets own no separately persisted
+aggregate L2 rows.
+
+Optional Binance price is loaded through its independent verified price
+repository. Missing price does not block L2. A price-loading failure is
+reported separately rather than interpreted as proof that every affected
+second contained no trades.
+
+Repository sessions are scoped to bounded reads rather than retained for
+the whole Analysis operation. Cancellation is checked during loading,
+and a stopped or failed load does not publish a partial replacement
+projection.
 
 
 ### Price source identity
@@ -3206,87 +3429,104 @@ INVALID
 Invalid observations are never converted into valid observations by
 forward-fill.
 
-A valid reconstructed book may retain its last state through a quiet bucket,
-but only while initialization and sequence continuity remain proven.
+A valid reconstructed book may retain its last state through a quiet
+bucket, but only while initialization, sequence continuity, and book
+structure remain proven.
 
-A Shock-Start hypothesis:
+The active Analysis viewing policy requires usable L2 at every owned
+second inside a viewing bar. Invalid, missing, or partial-market seconds
+make all L2 channels of that viewing bar null. Usable bars elsewhere in
+the request remain available.
 
-- cannot place A, B, or C on an invalid second;
-- cannot cross an invalid or missing second;
-- is never produced from partial aggregate-market coverage; the verified
-  loader rejects such a scan instead.
-
-Invalid seconds do not block detection in other valid runs of the same scan.
-
-Persistent red data-outage warning regions are drawn as background bands on
-the bounded Shock-Start viewport:
+Persistent red data-outage warning regions are measured over the
+effective requested one-second range:
 
 ```text
-L2      invalid, missing, or partial-market coverage for more than
-        analysis.l2_long_invalid_warning_seconds (default 60) consecutive
-        seconds; measured over the whole loaded scan, then clipped to the
-        viewport; drawn on all five panels
-price   no valid Binance trade candle for more than
-        analysis.price_long_invalid_warning_minutes (default 3) consecutive
-        minutes; measured over the viewport widened by the threshold on each
-        side, then clipped; drawn on the Price panel only
+L2:
+    invalid, missing, or partial-market coverage for strictly more than
+    analysis.l2_long_invalid_warning_seconds consecutive seconds
+    default: 60 seconds
+    drawn on all five panels
+
+Price:
+    absence of a valid Binance real-trade candle for strictly more than
+    analysis.price_long_invalid_warning_minutes consecutive minutes
+    default: 3 minutes
+    drawn on the Price panel only
 ```
 
-A run exactly equal to the threshold is not flagged. Invalid and missing
-seconds merge into one run. The "Show data-quality warnings" switch (on by
-default) hides or shows the regions without reloading data or rerunning the
-review. Regions are presentation only: they never change detection, review
-identity, ordering, or status messages. If a region cannot be computed, the
-chart still opens without it.
+Outage tracking continues across hour and chunk boundaries. The active
+streaming loader does not use the retired bounded viewport's
+threshold-padded price-warning query.
 
-### Application-owned Shock-Start runtime
+A run exactly equal to the threshold is not flagged. Missing and invalid
+seconds join the same uninterrupted outage run. A usable observation
+ends that run.
 
-Verified L2 loading, compact-channel decoding, Shock-Start detection, channel
-evidence, and B-area review are synchronous analytical operations.
+The "Show data-quality warnings" switch is on by default. Changing it
+rebuilds presentation from the displayed projection without rereading
+the database.
 
-The application runs them in one worker thread owned by
-`l2shock/ui/shock_runtime.py` (operation name `manual_shock_review`) so the
-NiceGUI event loop remains responsive.
+Warning regions are presentation metadata. Their visibility does not
+change liquidity values, bar eligibility, source ownership, or stored
+data.
 
-Shock-Start review shares one process-wide operation admission boundary with:
+Each channel retains at most 5,000 warning regions. If the cap is reached,
+the UI reports truncation. Quality counts remain available; the chart
+must not imply that every outage was highlighted.
 
-```text
-Manual Fetch
-Manual Processing
-Remote HF Import
-Shock-Start review
-```
+Missing verified price observations can produce price-outage regions.
+A failed or corrupt price load is different: the loader reports that
+status and returns no price-outage regions for that load. It must not
+fabricate a no-trades conclusion from a transport or verification failure.
 
-Only one of those operations may run at a time.
+L2 can still be rendered when optional price loading fails. The UI
+reports that price outage highlighting is unavailable for that load.
+
+### Application-owned Analysis runtime
+
+Verified loading, compact-channel decoding, exact-second market composition,
+and viewing-bar reduction run in a synchronous worker thread owned by
+`l2shock/ui/l2_view_runtime.py`.
+
+The operation name is `manual_analysis_load`. The NiceGUI event loop remains
+available for progress updates and cooperative Stop requests.
+
+Analysis loading shares the process-wide operation admission boundary with
+Manual Fetch, Manual Processing, and Remote HF Import. Runtime admission
+rejects an existing operation name, an owned operation lock, or the shutdown
+barrier before admitting another load.
 
 Database sessions are created and closed inside the worker thread which uses
 them. ORM objects never cross the worker/event-loop boundary.
 
-Stop is cooperative at stage boundaries: between the scan, evidence, and review
-stages, and after the worker returns. It cannot interrupt a detector call that
-is already running. Cancelling an asyncio wrapper is never treated as if it
-forcibly terminated the Python worker thread.
+Stop is cooperative. Cancelling the owning asyncio task does not terminate
+the synchronous worker. The runtime retains operation ownership until the
+worker exits, including under repeated cancellation.
 
-A stopped, cancelled, or failed run never publishes a partial scan, evidence
-result, or review.
+A Stop or shutdown request observed before execution prevents the loader from
+being launched. Cancellation before the task's first execution has an explicit
+finalization owner so it cannot strand the admission reservation.
 
-Application shutdown starts from the global header Shutdown button (top right,
-outside the tabs, visible on every tab) after confirmation. The full sequence,
-which also stops automatic fetch and remote import, is authoritative in
-`l2shock/ui/shutdown.py`. In outline:
+A stopped, cancelled, or failed load does not publish a partial projection.
+The last successful runtime projection remains available. Runtime completion
+and browser chart publication are separate boundaries: successful loading
+does not by itself prove that a replacement chart was acknowledged.
 
-```text
-raise admission barrier
--> stop Manual Fetch
--> stop Manual Processing
--> stop Shock-Start review (cooperative, bounded wait; no forced step)
--> cancel unrelated tracked tasks
--> dispose SQLAlchemy engine
--> stop NiceGUI
-```
+Application shutdown starts from the confirmed global header Shutdown button.
+`l2shock/ui/shutdown.py` is authoritative for detailed ordering and timeout
+behavior.
 
-Completed reviews are process-local presentation/runtime objects. They are not
-PostgreSQL rows, raw source storage, or database backups.
+Shutdown raises admission barriers, stops the retained operation runtimes,
+and resolves operation-lock ownership, tracked tasks, and registered
+database readers before disposing the SQLAlchemy engine.
+
+If background-work ownership cannot be resolved safely, shutdown is not
+published as complete and the engine is not disposed. Admission remains
+blocked; the header reports the failure and permits a shutdown retry.
+
+Analysis projections and chart options are process-local objects. They are
+not PostgreSQL rows or database backups.
 
 
 ### Timezone contract
@@ -3304,14 +3544,21 @@ Asia/Tehran
 Ambiguous or nonexistent DST local times must be rejected rather than
 silently resolved.
 
-Charts keep UTC coordinates internally (axis data, B-area bands, warning
-regions, zoom capture and restore). Only presentation is localized: time-axis
-labels, the crosshair label, and the tooltip header use the configured
-timezone, and the tooltip header names it. Review-table timestamps, the
-Shock-Start, fetch, processing, and remote-import range inputs, the Automatic
-Fetch status, the maintenance preview expiry, and the diagnostics report time
-are shown in the configured timezone. UTC is kept for storage, identities, and
-exported files.
+Charts keep UTC coordinates internally: axis data, warning regions, and zoom
+capture and restoration; chart coordinates stay UTC. Only presentation is localized. Time-axis labels,
+the crosshair label, and the tooltip header use the configured timezone, and
+the tooltip header names it.
+
+Analysis, Fetch, Processing, and Remote Import range inputs, Automatic Fetch
+status, maintenance preview expiry, Settings timestamps, and diagnostics
+report time are shown in the configured timezone.
+
+UTC remains authoritative for storage, source-hour identity, analytical
+identity, and exported files. Local-time display never changes bucket
+ownership.
+
+Chart localization is owned by `l2shock/ui/display_timezone.py`. It must not
+depend on retired detector annotation modules.
 
 ### Preset identity
 
@@ -3639,25 +3886,38 @@ Range reads use half-open UTC bounds:
 This repository persists no raw L2 rows and does not promote acquisition or
 reconstruction status. Processing orchestration owns those later transitions.
 
-### Shock-Start identity and exports
+### Analysis identity and exports
 
-Every completed review carries three deterministic SHA-256 identities:
+The verified streaming loader owns the deterministic `input_id` of its
+loaded Analysis projection.
 
-```text
-input_id    base, preset hash, requested and snapped UTC range, and every
-            expected component hour with its content SHA-256 (null if absent)
-scan_id     input_id, detector version, acceleration ratio, and every
-            structural scale (name, minimum leg fraction, pivot radius,
-            forward-radius multiplier)
-review_id   the reviewed evidence result, the review schema, and the
-            inspection-order version
-```
+The identity is derived from the effective UTC source range, base,
+immutable preset and expected component identities, and the verified
+hourly content consumed by the loader. Missing component availability
+remains explicit.
 
-Price, chart timeframe, viewing bars, zoom, colours, row selection, and the
-annotation switches are never part of these identities.
+Use the current `l2shock/analysis/l2_view_stream.py` implementation as the
+authority for the complete canonical identity payload. Do not reconstruct
+that payload from an older detector proposal.
 
-JSON review-row exports use exact rational strings. JSON, PNG, and SVG exports
-are research artifacts and must never be presented as database backups.
+There is no detector `scan_id`, evidence identity, inspection-order
+version, or `review_id` in the active Analysis workflow.
+
+Panel selections, chart colors, timezone labels, browser zoom, and warning
+visibility are presentation state. Cached coarsening preserves the loaded
+projection's input identity.
+
+Each acknowledged browser publication separately owns a render token.
+An input identity identifies loaded data; a render token identifies one
+specific browser publication. They are not interchangeable.
+
+JSON and CSV export the full displayed-bar dataset, including the current
+viewing timeframe and selected panel metadata. They do not export only
+the current browser zoom window.
+
+PNG and SVG export the acknowledged chart presentation.
+
+Analysis exports are research artifacts, not PostgreSQL backups.
 
 
 ### Explicit non-goals
@@ -3678,229 +3938,108 @@ Version 1 does not include:
 
 ---
 
-### Shock-Start semantic contract (humans and AI models)
+### Detector-free Analysis semantic contract
 
-> Contract, not tutorial. A future maintainer or AI model must not change
-> any rule below silently. Every change to this section is `SEMANTIC` and
-> requires a new algorithm, schema, or order version.
+Analysis loads verified historical data, constructs viewing bars, and
+renders them. It does not generate hypotheses, detect start areas, score
+evidence, rank results, or produce candidate A/B/C annotations.
 
-Purpose: retrospectively (offline, post-scan) locate the start area B of an
-L2 shock: the one or few seconds after which order-book behaviour changed
-and led to an important Total-L2 extreme C. Results are hypotheses for
-visual review. They are not predictions, probabilities, or proof that a
-market order caused the change.
-
-Data and clock:
+The active analytical contracts are:
 
 ```text
-source of truth:   verified one-second L2 states from PostgreSQL
-Total(t)           = Bid(t) + Ask(t)      same second, never mixed seconds
-Delta(t)           = Bid(t) - Ask(t)      same second
-highs / lows       = taken from those one-second states; never add a Bid
-                     high and an Ask high that occurred at different seconds
-chart timeframe    = viewing only; changing it never changes A, B, C
-price              = optional passive context; never a detection condition;
-                     missing Binance trades never block or move a B area
-invalid / missing  = hard break; no hypothesis crosses one; never zero-filled
-aggregate presets  = every expected market must contribute for every second
+source clock:
+    verified one-second UTC ownership
+
+expected markets:
+    exact immutable component identities resolved from the preset
+
+usable multi-market second:
+    every expected component contributes valid Bid and Ask
+
+partial-market second:
+    explicit unusable coverage; never a smaller plotted aggregate
+
+viewing-bar L2 policy:
+    any unusable owned second nulls every L2 channel in that bar
+
+Total and Delta:
+    constructed from Bid and Ask of the same second
+
+percentage candles:
+    reduced from defined one-second ratios, never independent OHLC extrema
+
+undefined denominator:
+    null, never zero
+
+change metrics:
+    adjacent usable viewing-bar closes at the selected timeframe
+
+optional price:
+    independent verified real-trade context; never required for usable L2
+
+persistent storage:
+    unchanged authoritative component-market and trade-price blocks
 ```
 
-A, B, C on the master Total series:
+The selectable registry contains exactly eleven metrics. The current
+registry in `l2shock/analysis/l2_view_metrics.py` is authoritative.
 
-```text
-A  preceding context ending at B (opposing pivot, flat base, or slow trend)
-B  proposed start / change-of-behaviour second
-C  strongest Total extreme inside B's bounded forward horizon;
-   may be local or scan-global (permissive, not strict)
+Panel A defaults to Signed Imbalance %. Panel B defaults to Order-Book
+Delta. Bid/Ask Shares % is a two-line percentage composition metric,
+not a raw Bid/Ask ratio.
 
-turning start:       B is a local Total low leading up, or high leading down
-acceleration start:  Total need not turn; the B->C rate must be at least
-                     acceleration_ratio (default 2) x the A->B rate in the
-                     same direction
-directions:          both upward and downward legs are detected
-```
+No price-matched liquidity-flow mode or snapshot-flow substitute is
+offered.
 
-Structural scales (pivot structure, never chart timeframes):
+Changes to these mathematics, gap policies, endpoint ownership, market
+composition, or undefined-value rules require explicit semantic review.
+Presentation-only changes do not rewrite persisted analytical rows or
+preset identities.
 
-```text
-scale    minimum |C - B| / whole-scan Total range    default pivot radius
-major    0.20                                        60 s
-medium   0.10                                        30 s
-minor    0.05                                        10 s
-```
+### Analysis chart publication and interaction ownership
 
-```text
-forward horizon     = pivot radius x forward_radius_multiplier (default 4)
-thresholds          = ordered strictly high -> low; never re-sorted silently
-scale count         = 2 (major + medium) or 3; a tier appears only if it
-                      actually produced qualifying hypotheses
-range denominator   = Total max - min over every VALID second of the scan
-```
+Every complete publication owns the stored widget option and a hidden
+browser render-token series.
 
-B areas and channel evidence:
+Python-side validation must complete before withdrawing a previously
+acknowledged controller commit for invalid caller input. Strict JSON
+serialization must complete before mutating the widget's stored options
+or render ownership.
 
-```text
-B area         nearby scale hypotheses merged; width bounded by the smallest
-               member pivot radius measured from the first B; all member
-               hypotheses are retained
-representative one hypothesis per area; others stay available for review
-Bid, Ask       independent evidence; may move with or opposite to Total;
-               their B/C may be earlier or later within a bounded offset
-Delta          derived from Bid and Ask; reported, never an independent vote
-master clock   Total; B is never moved to the earliest confirming channel
-```
+A successful Python publication request is not browser acknowledgement.
+The controller commits a replacement only after browser identity and
+layout verification and a final ownership check.
 
-Inspection order. Two versions exist. Both keep every area, both are exact
-(no float sorting), and `review_id` includes the order version.
+The compact live-state probe returns bounded facts, not the complete
+browser `getOption()` payload.
 
-```text
-UI default        within_tier_percentile_mean_v3   (SHOCK_REVIEW_DEFAULT_UI_ORDER_VERSION)
-backend default   total_structure_first_v2         (review_shock_areas, diagnostic CLI)
-re-ordering       reorder_shock_review and the UI "Inspection order" selector
-                  reuse every stored measurement; they never reload L2 and
-                  never rerun detection or evidence
-```
+Complete replacement uses the existing explicit publication path.
+Do not introduce an additional competing complete-option writer or
+wrap `instance.setOption` to force resets on every interaction.
 
-`total_structure_first_v2` (`SHOCK_REVIEW_ORDER_VERSION`), lexicographic:
+Panel and warning changes rebuild the displayed projection without a
+database reread. Timeframe and bar-budget changes may use compatible
+cached coarsening or admit a cancellable reload.
 
-```text
-1. highest structural tier in the area
-2. Total B->C height / scan Total range            (larger first)
-3. B->C sharpness = (height / range) / sqrt(s)      (larger first; exact
-   squared rational)
-4. B->C adverse-move total / height                 (cleaner first)
-5. Bid/Ask support count                            (Delta excluded)
-6. lower pre-B Total MAD / range, then time order
-```
+Normal wheel interaction controls synchronized X zoom. Shift+wheel
+controls independent Y zoom in the hovered panel.
 
-Keys 3-6 act only on exact ties of key 2. Also reported, not ordered:
-adverse-move count, maximum B->C retracement / height, and B and C
-extremeness (direction-oriented position in the scan Total range; 1 means
-B at the scan's opposite extreme and C at the scan's leg-direction
-extreme).
+Changing a metric resets only that panel's Y zoom. Changing the effective
+viewing timeframe resets all Y zooms. Timeframe changes preserve the
+captured UTC left edge and visible duration where the new bounds permit.
 
-`within_tier_percentile_mean_v3` (`SHOCK_REVIEW_ORDER_VERSION_V3`):
+Crosshair callbacks and pending animation frames belong to one chart and
+one installation generation. Obsolete callbacks must not remove graphics
+or cancel frames belonging to a newer installation.
 
-```text
-1. highest structural tier in the area
-2. exact mean of five midpoint percentiles computed inside that tier
-   (higher first): B->C height fraction, B->C sharpness, cleanliness
-   (negated adverse-move total / height), C extremeness, Bid/Ask support
-3. the complete v2 key (keys 2-6, then time order) as tie-break
-```
+PNG/SVG export requires acknowledged chart ownership. JSON/CSV export
+requires the displayed projection and its acknowledged owner to agree.
 
-The v3 score orders areas for display. It is not a probability or a
-confidence. v3 excludes A->B sharpness, price, and Delta as an independent
-vote. Any other weighted score must be a new order version and must be
-justified with labelled examples.
-
-Presentation (non-semantic):
-
-```text
-Top N          first N inspection positions overlaid on the bounded viewport
-               (default 5, maximum = number of rank colours); outside-viewport
-               areas are skipped
-selected area  yellow band and dashed B on every panel, pink C on Total,
-               labelled with its rank
-other ranks    rank colour: dashed B labelled "#k", solid C labelled "#k C"
-               on Total, band at 12% opacity
-colours        only from SHOCK_CHART_COLORS; the legend reads the same mapping
-annotations    "Show B/C lines and rank labels" and "Show B-area bands" (both
-               on by default) remove markLine / markArea data from the shown
-               viewport only; it is re-published with the current zoom, with
-               no reload and no review rerun; the next viewport follows them
-order control  the UI "Inspection order" selector opens on v3 and re-sorts
-               the completed review in place
-warnings       "Show data-quality warnings" (on by default) shows red outage
-               background bands; legend entry "Data-outage warning"
-time labels    axis labels, crosshair, and tooltip header in the configured
-               timezone; chart coordinates stay UTC
-```
-
-Not part of Shock-Start (do not reintroduce silently): LM retracement
-confirmation, context bars, terminal_offline, Top-N height/sharpness union,
-price-filter eligibility, Bollinger/CWT/EMD/EVT/ML detectors.
-
-AI review rules:
-
-```text
-- Never make price, trade counts, or chart bars a detection input.
-- Never change the one-second clock, the Total master, or gap semantics.
-- Never convert exact Fraction/Decimal ordering values to float for sorting.
-- Treat any change to scales, radii, horizon, acceleration ratio, merge
-  width, evidence offsets, or the order keys as SEMANTIC with a version bump.
-- Performance work must reproduce identical hypotheses on the same input.
-```
-
-### Shock-Start review chart publication
-
-Shock-Start detection always uses verified one-second Total L2. The chart is
-presentation only. Row selection, bounded viewports, viewing bars, zoom, the
-color legend, and exports never change review identity, B-area ordering, scale
-thresholds, pivot radii, or stored data.
-
-Every complete chart publication carries one hidden render-token series and
-`l2shockPublication.render_token`. A publication is committed only after a
-compact browser probe confirms:
-
-```text
-the expected render-token series exists
-the expected category count exists
-the ECharts instance has a usable width and height
-no newer Python publication superseded it
-```
-
-The probe returns only small facts: token names, category count, layout size,
-the first dataZoom window, series count and names, and the apply record. It
-must never return the complete `getOption()` result. A full reply for a bounded
-viewport can exceed NiceGUI's approximately 1 MB browser-to-server message
-limit and is then dropped, which appears in Python only as a timeout.
-
-Browser application rules:
-
-```text
-run_chart_method arguments are JavaScript only when the method name starts
-with ":". Passing an option expression without ":" hands ECharts a string and
-corrupts the instance.
-
-The l2shock apply script is the only live ECharts writer for a publishing
-widget. NiceGUI's update_chart() merges whenever the series count is
-unchanged, so publishing widgets disable NiceGUI's update method. The stored
-options property is still kept so that a re-mounted component draws the
-current generation.
-
-Do not wrap or monkeypatch instance.setOption. Forcing a full replacement on
-every write resets dataZoom.
-```
-
-Every B-area row click opens that area through the bounded L2 viewport, the
-single publication path. It draws the B band and A/B/C anchors on every panel.
-Selecting "1 second" viewing bars gives true one-second inspection. Missing
-Binance price never blocks or moves a Shock-Start chart.
-
-If an exception is ever thrown inside an ECharts render cycle, its in-cycle
-flag stays set and ECharts then silently ignores every `setOption` and
-`dispatchAction`, including zoom. The apply script runs outside any ECharts
-cycle, so it:
-
-```text
-resets stale "__flagIn*" flags that are true
-applies the option with notMerge:true
-verifies that the token series is present
-resets, clears, and retries once when it is not
-reports failure immediately with the last uncaught browser error
-```
-
-The live-state probe only reads these flags and never modifies chart state.
-
-Shock-Start is the sole Analysis workflow. The availability calendar handoff
-fills the Shock-Start base, preset, and local start/end controls. A calendar
-window longer than the 24-hour Shock-Start limit keeps its newest 24 hours.
-The handoff never starts a review automatically.
-
-Shock-Start legend swatches are read from `SHOCK_CHART_COLORS`, the read-only
-view of the colors used by `build_shock_chart_options`. Colors must not be
-duplicated in UI text or legend code.
+A stopped or failed data load does not publish a partial projection.
+A browser publication failure is a separate boundary: after replacement
+begins, automatic restoration of the prior browser option is not
+guaranteed. Do not describe failed acknowledgement as proof that the old
+browser chart was restored.
 
 ## Development workflow
 
@@ -3917,7 +4056,7 @@ Implementation order:
 9. compact hourly storage;
 10. trade-price OHLC;
 11. timeframe aggregation;
-12. Shock-Start detection, channel evidence, and B-area review;
+12. verified bounded-chunk Analysis loading and viewing-bar construction;
 13. orchestration and caching;
 14. Fetch and Settings UI;
 15. Analysis UI;

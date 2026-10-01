@@ -1,13 +1,14 @@
 # l2shock/analysis/__init__.py
-"""Verified one-second L2 analysis primitives shared by Shock-Start.
+"""Dependency-light primitives for verified historical L2 analysis.
 
-Batch 36 removed Liquidity Movement detection, LM ranking, price filtering,
-LM execution, and the price-dependent aligned LM loader. Shock-Start modules
-(``shock_dataset``, ``shock_start``, ``shock_evidence``, ``shock_review``,
-``robust_stats``) are imported directly from their own modules.
+This package re-exports retained aggregation, exact-second decoding,
+multi-market composition, and fixed-duration timeframe primitives.
 
-This package initializer must never import a Shock-Start or UI module; it
-only re-exports small, dependency-light primitives.
+Detector-free streaming and metric computation live in
+``l2_view_stream`` and ``l2_view_metrics`` and are imported explicitly by
+their callers.
+
+This initializer must not import UI modules or retired detector modules.
 """
 
 from l2shock.analysis.aggregation import (

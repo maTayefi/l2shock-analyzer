@@ -7,7 +7,7 @@ The repository has seven primary cores:
 1. Database, persistence, identity, provenance, diagnostics, and maintenance.
 2. Acquisition, availability, retention, and operational lifecycle.
 3. Ingestion, venue adapters, replay, checkpoints, liquidity, and price.
-4. Shock-Start loading, detection, channel evidence, and B-area review.
+4. Verified detector-free Analysis loading and viewing mathematics.
 5. NiceGUI, charts, exports, controls, and user workflows.
 6. Cross-cutting contracts, concurrency, cancellation, and integration.
 7. Remote preprocessing, artifact transport, Hugging Face, workers, and imports.
@@ -58,16 +58,9 @@ l2shock/acquisition/validation.py
 l2shock/analysis/__init__.py
 l2shock/analysis/aggregation.py
 l2shock/analysis/l2_seconds.py
+l2shock/analysis/l2_view_metrics.py
+l2shock/analysis/l2_view_stream.py
 l2shock/analysis/multi_market.py
-l2shock/analysis/robust_stats.py
-l2shock/analysis/shock_dataset.py
-l2shock/analysis/shock_diagnostic.py
-l2shock/analysis/shock_diagnostic_cli.py
-l2shock/analysis/shock_evidence.py
-l2shock/analysis/shock_execution.py
-l2shock/analysis/shock_review.py
-l2shock/analysis/shock_start.py
-l2shock/analysis/shock_window.py
 l2shock/analysis/timeframes.py
 l2shock/config.py
 l2shock/db/__init__.py
@@ -130,27 +123,21 @@ l2shock/ui/availability_calendar.py
 l2shock/ui/chart_interactions.py
 l2shock/ui/chart_navigation.py
 l2shock/ui/components.py
+l2shock/ui/display_timezone.py
 l2shock/ui/echarts.py
 l2shock/ui/fetch_runtime.py
+l2shock/ui/l2_view_chart_options.py
+l2shock/ui/l2_view_presentation.py
+l2shock/ui/l2_view_runtime.py
+l2shock/ui/l2_view_warning_style.py
 l2shock/ui/processing_runtime.py
 l2shock/ui/remote_import_runtime.py
-l2shock/ui/shock_annotation_visibility.py
-l2shock/ui/shock_chart_options.py
-l2shock/ui/shock_dataset_view.py
-l2shock/ui/shock_inspection.py
-l2shock/ui/shock_legend.py
-l2shock/ui/shock_price_context.py
-l2shock/ui/shock_runtime.py
-l2shock/ui/shock_view_bars.py
-l2shock/ui/shock_view_chart_options.py
-l2shock/ui/shock_view_selection.py
-l2shock/ui/shock_warning_regions.py
 l2shock/ui/shutdown.py
 l2shock/ui/shutdown_control.py
 l2shock/ui/state.py
 l2shock/ui/tab_fetch.py
+l2shock/ui/tab_l2_view.py
 l2shock/ui/tab_settings.py
-l2shock/ui/tab_shock_review.py
 ```
 
 If a future export contains a production Python module absent from this
@@ -170,6 +157,7 @@ tests/test_acquisition_rate_limit.py
 tests/test_acquisition_repository_postgresql.py
 tests/test_acquisition_validation.py
 tests/test_ai_preparation_scripts.py
+tests/test_analysis_inputs_independence.py
 tests/test_analysis_multi_market.py
 tests/test_analytical_provenance.py
 tests/test_analytical_repository_postgresql.py
@@ -177,11 +165,12 @@ tests/test_automatic_fetch_retry_cursor_cancellation.py
 tests/test_automatic_fetch_runtime.py
 tests/test_availability_calendar.py
 tests/test_availability_filesystem.py
-tests/test_batch2_contracts.py
 tests/test_bootstrap_creation_race.py
 tests/test_bybit_contract_diagnostics.py
 tests/test_bybit_orderbook_replay.py
+tests/test_chart_crosshair_ownership.py
 tests/test_chart_interactions.py
+tests/test_chart_publication_preflight.py
 tests/test_checkpoint_chain_contract.py
 tests/test_checkpoint_codec.py
 tests/test_checkpoint_reference_lock_contract.py
@@ -191,14 +180,23 @@ tests/test_config.py
 tests/test_data_preset_identity.py
 tests/test_db_models.py
 tests/test_depth_liquidity.py
+tests/test_detector_backend_deleted.py
 tests/test_diagnostics.py
 tests/test_diagnostics_postgresql.py
 tests/test_echarts_live_state.py
 tests/test_echarts_publication.py
 tests/test_filesystem_paths.py
+tests/test_finalize_analysis_transition.py
+tests/test_header_shutdown_and_timezone.py
 tests/test_hourly_block_codec.py
 tests/test_hourly_liquidity.py
 tests/test_l2_ohlc_aggregation.py
+tests/test_l2_view_batch2.py
+tests/test_l2_view_batch3a.py
+tests/test_l2_view_batch3b.py
+tests/test_l2_view_batch3e.py
+tests/test_l2_view_request_ordering.py
+tests/test_l2_view_stream.py
 tests/test_lm_backend_deleted.py
 tests/test_maintenance_actions.py
 tests/test_maintenance_actions_postgresql.py
@@ -227,6 +225,8 @@ tests/test_project_cores_contract.py
 tests/test_project_cores_inventory.py
 tests/test_pruning_recovery.py
 tests/test_raw_retention.py
+tests/test_readme_analysis_doc02.py
+tests/test_readme_analysis_transition.py
 tests/test_readme_contract.py
 tests/test_remote_artifact_codec.py
 tests/test_remote_bybit_processing.py
@@ -243,39 +243,14 @@ tests/test_remote_worker.py
 tests/test_remote_workflow_contract.py
 tests/test_replay_diagnostics.py
 tests/test_replay_validation_cli.py
-tests/test_robust_stats.py
-tests/test_shock_analysis_handoff.py
-tests/test_shock_annotation_visibility_and_header_shutdown.py
-tests/test_shock_chart_options.py
-tests/test_shock_dataset.py
-tests/test_shock_dataset_view.py
-tests/test_shock_diagnostic_cli.py
-tests/test_shock_evidence.py
-tests/test_shock_legacy_path_removed.py
-tests/test_shock_legend.py
-tests/test_shock_lm_independence.py
-tests/test_shock_order_v3.py
-tests/test_shock_performance_equivalence.py
-tests/test_shock_price_context_ui.py
-tests/test_shock_review.py
-tests/test_shock_review_row_event.py
-tests/test_shock_runtime.py
-tests/test_shock_scale_controls.py
-tests/test_shock_start.py
-tests/test_shock_top_n_and_quality.py
-tests/test_shock_ui_localization.py
-tests/test_shock_view_bars.py
-tests/test_shock_view_chart_options.py
-tests/test_shock_view_selection.py
-tests/test_shock_warning_regions.py
 tests/test_tab_settings_lock_contract.py
-tests/test_tab_shock_review.py
 tests/test_timeframe_aggregation.py
 tests/test_timeutils.py
 tests/test_trade_ohlc.py
 tests/test_trade_ohlc_block_codec.py
 tests/test_ui_fetch_runtime.py
 tests/test_ui_foundation.py
+tests/test_ui_localization.py
 tests/test_ui_processing_runtime.py
 tests/test_ui_shutdown.py
 tests/test_venue_sequence_adapter.py
@@ -307,6 +282,7 @@ requirements.txt
 tools/diagnose_bybit_contract.py
 tools/inspect_venue_sequence_contract.py
 tools/validate_okx_replay.py
+tools/finalize_analysis_transition.py
 ```
 
 Root-level diagnostic, publishing, setup, and maintenance scripts may be used as
@@ -613,7 +589,7 @@ tests/test_bybit_contract_diagnostics.py
 
 ---
 
-# Core 4 — Shock-Start loading, detection, channel evidence, and B-area review
+# Core 4 — Verified detector-free Analysis loading and viewing mathematics
 
 ## Primary modules
 
@@ -621,27 +597,21 @@ tests/test_bybit_contract_diagnostics.py
 l2shock/analysis/__init__.py
 l2shock/analysis/aggregation.py
 l2shock/analysis/l2_seconds.py
+l2shock/analysis/l2_view_metrics.py
+l2shock/analysis/l2_view_stream.py
 l2shock/analysis/multi_market.py
-l2shock/analysis/robust_stats.py
-l2shock/analysis/shock_dataset.py
-l2shock/analysis/shock_diagnostic.py
-l2shock/analysis/shock_diagnostic_cli.py
-l2shock/analysis/shock_evidence.py
-l2shock/analysis/shock_execution.py
-l2shock/analysis/shock_review.py
-l2shock/analysis/shock_start.py
-l2shock/analysis/shock_window.py
 l2shock/analysis/timeframes.py
-l2shock/ui/shock_runtime.py
 ```
 
 ## Important dependencies
 
 ```text
 l2shock/db/analytical_repository.py
+l2shock/db/price_repository.py
 l2shock/db/engine.py
 l2shock/presets/identity.py
 l2shock/liquidity/block_codec.py
+l2shock/price/block_codec.py
 l2shock/ingest/sampling.py
 l2shock/timeutils.py
 l2shock/config.py
@@ -650,53 +620,40 @@ l2shock/config.py
 ## Primary tests
 
 ```text
-tests/test_l2_ohlc_aggregation.py
-tests/test_lm_backend_deleted.py
-tests/test_multi_market_aggregation.py
-tests/test_robust_stats.py
-tests/test_shock_dataset.py
-tests/test_shock_diagnostic_cli.py
-tests/test_shock_evidence.py
-tests/test_shock_lm_independence.py
-tests/test_shock_order_v3.py
-tests/test_shock_performance_equivalence.py
-tests/test_shock_review.py
-tests/test_shock_runtime.py
-tests/test_timeframe_aggregation.py
 tests/test_analysis_multi_market.py
+tests/test_l2_ohlc_aggregation.py
+tests/test_l2_view_stream.py
+tests/test_l2_view_batch2.py
+tests/test_l2_view_batch3a.py
+tests/test_l2_view_batch3e.py
+tests/test_lm_backend_deleted.py
+tests/test_detector_backend_deleted.py
+tests/test_multi_market_aggregation.py
+tests/test_timeframe_aggregation.py
+tests/test_processing_l2_coordinator_postgresql.py
 ```
 
 ## Focus areas
 
-1. One-second clock: Total and Delta use Bid and Ask of the same second only.
-2. Invalid or missing seconds are hard breaks; nothing is zero-filled or crossed.
-3. Aggregate presets: every expected market contributes to every second.
-4. Whole-scan Total range denominator over VALID seconds only.
-5. Scale thresholds strictly ordered high to low; never re-sorted silently.
-6. Pivot radius and forward-horizon boundary off-by-one errors.
-7. Turning versus acceleration starts and the acceleration ratio.
-8. C as the strongest extreme inside the bounded forward horizon.
-9. B-area partition anchored at the first B, never transitive chaining.
-10. Deterministic representative choice and retention of every member.
-11. Channel offset search, uninterrupted coverage, and the channel threshold.
-12. Delta reported as derived evidence, never an independent vote.
-13. Exact integer scaling (Batches 35 and 37) equal to Fraction semantics.
-14. Pre-B median and MAD exactness for odd and even window lengths.
-15. B->C sharpness, adverse moves, retracement, and endpoint extremeness.
-16. v2 lexicographic key order and exact-tie behaviour.
-17. v3 within-tier percentiles, tier isolation, and v2 tie-break.
-18. reorder_shock_review reusing measurements; review_id includes order version.
-19. review_rows exact rational serialization and no discarded hypothesis.
-20. Scan and review identity completeness; same input gives same identity.
-21. 24-hour scan limit and calendar handoff clipping.
-22. Price, trade counts, and chart bars never used as detection input.
-23. Runtime stop, completion sequence, and stale review publication.
-24. Diagnostic CLI results equal to the UI runtime on the same request.
-25. Real-data baseline equivalence after every performance change.
+1. Verified row, codec, preset, and source-provenance ownership.
+2. Bounded reads without retaining the full one-second range.
+3. Exact expected-market composition at each UTC second.
+4. Missing, invalid, and partial-market seconds remain explicit gaps.
+5. Strict viewing bars versus the retained endpoint aggregation foundation.
+6. Total and Delta candles use same-second values, not separate extrema.
+7. Percentage candles and undefined denominator ownership.
+8. Adjacent usable viewing-bar closes own change metrics.
+9. Closed request endpoints, partial edge bars, and UTC alignment.
+10. Explicit timeframe rejection and finest-fitting Auto selection.
+11. Cached coarsening preserves gaps, percentages, identity, and counts.
+12. Optional price failure does not block independently usable L2.
+13. Outage runs cross hour/chunk boundaries and use strict thresholds.
+14. Duration limits, memory-budget heuristics, and cancellation boundaries.
+15. Deterministic loaded input identity and complete displayed-bar exports.
 
 ---
 
-# Core 5 — NiceGUI, charts, exports, controls, and user workflows
+# Core 5 — NiceGUI, Analysis charts, exports, controls, and workflows
 
 ## Primary modules
 
@@ -713,108 +670,82 @@ l2shock/ui/availability_calendar.py
 l2shock/ui/chart_interactions.py
 l2shock/ui/chart_navigation.py
 l2shock/ui/components.py
+l2shock/ui/display_timezone.py
 l2shock/ui/echarts.py
 l2shock/ui/fetch_runtime.py
+l2shock/ui/l2_view_chart_options.py
+l2shock/ui/l2_view_presentation.py
+l2shock/ui/l2_view_runtime.py
+l2shock/ui/l2_view_warning_style.py
 l2shock/ui/processing_runtime.py
 l2shock/ui/remote_import_runtime.py
-l2shock/ui/shock_annotation_visibility.py
-l2shock/ui/shock_chart_options.py
-l2shock/ui/shock_dataset_view.py
-l2shock/ui/shock_inspection.py
-l2shock/ui/shock_legend.py
-l2shock/ui/shock_price_context.py
-l2shock/ui/shock_runtime.py
-l2shock/ui/shock_view_bars.py
-l2shock/ui/shock_view_chart_options.py
-l2shock/ui/shock_view_selection.py
-l2shock/ui/shock_warning_regions.py
 l2shock/ui/shutdown.py
 l2shock/ui/shutdown_control.py
 l2shock/ui/state.py
 l2shock/ui/tab_fetch.py
+l2shock/ui/tab_l2_view.py
 l2shock/ui/tab_settings.py
-l2shock/ui/tab_shock_review.py
-```
-
-## Primary tests
-
-```text
-tests/test_availability_calendar.py
-tests/test_chart_interactions.py
-tests/test_diagnostics.py
-tests/test_echarts_live_state.py
-tests/test_echarts_publication.py
-tests/test_maintenance_actions.py
-tests/test_maintenance_diagnostics.py
-tests/test_remote_import_runtime.py
-tests/test_shock_analysis_handoff.py
-tests/test_shock_annotation_visibility_and_header_shutdown.py
-tests/test_shock_chart_options.py
-tests/test_shock_dataset_view.py
-tests/test_shock_legend.py
-tests/test_shock_price_context_ui.py
-tests/test_shock_review_row_event.py
-tests/test_shock_scale_controls.py
-tests/test_shock_ui_localization.py
-tests/test_shock_view_bars.py
-tests/test_shock_view_chart_options.py
-tests/test_shock_view_selection.py
-tests/test_shock_warning_regions.py
-tests/test_tab_settings_lock_contract.py
-tests/test_tab_shock_review.py
-tests/test_ui_fetch_runtime.py
-tests/test_ui_foundation.py
-tests/test_ui_processing_runtime.py
-tests/test_ui_shutdown.py
 ```
 
 ## Important dependencies
+
 ```text
 l2shock/config.py
 l2shock/timeutils.py
 l2shock/logging_setup.py
 l2shock/db/engine.py
 l2shock/filesystem.py
-l2shock/analysis/shock_review.py
-l2shock/analysis/shock_execution.py
+l2shock/analysis/l2_view_stream.py
+l2shock/analysis/l2_view_metrics.py
+```
+
+## Primary tests
+
+```text
+tests/test_analysis_inputs_independence.py
+tests/test_availability_calendar.py
+tests/test_chart_interactions.py
+tests/test_chart_publication_preflight.py
+tests/test_diagnostics.py
+tests/test_echarts_live_state.py
+tests/test_echarts_publication.py
+tests/test_header_shutdown_and_timezone.py
+tests/test_l2_view_batch2.py
+tests/test_l2_view_batch3a.py
+tests/test_l2_view_batch3b.py
+tests/test_l2_view_batch3e.py
+tests/test_maintenance_actions.py
+tests/test_maintenance_diagnostics.py
+tests/test_remote_import_runtime.py
+tests/test_tab_settings_lock_contract.py
+tests/test_ui_fetch_runtime.py
+tests/test_ui_foundation.py
+tests/test_ui_localization.py
+tests/test_ui_processing_runtime.py
+tests/test_ui_shutdown.py
 ```
 
 ## Focus areas
 
-1. Undefined elements, stale closures, and wrong NiceGUI client context.
-2. Process runtime state versus browser-visible state.
-3. Start/stop button enablement under every active operation.
-4. Completion sequence handling and stale review publication.
-5. Rapid stop/start and operation ownership changes.
-6. Client disconnect during progress and publication.
-7. ECharts option replacement and stale merged series.
-8. Browser render-token acknowledgement.
-9. Chart publication superseded while awaiting acknowledgement.
-10. Bounded-view selection, bar construction, and viewport ownership.
-11. DataZoom capture, restoration, and chart navigation.
-12. Review-row identity and row-event to bounded-view mapping.
-13. Selected review-row emphasis, B/C anchor lines, B bands, and rank labels.
-14. Annotation switches staying presentation-only: no render or analysis
-    rerun, cached-viewport republication, and switch flips mid-publication.
-15. Annotation visibility transforms never mutating the cached base option.
-16. Order selector: UI default v3, backend default v2, and reordering that
-    reuses existing measurements.
-17. Structural-scale controls and strict high-to-low threshold ordering.
-18. Optional Binance price context remaining presentation-only.
-19. Legend colours matching series, anchor, band, and label roles.
-20. Crosshair and tooltip safety, including discontinuity metadata.
-21. PNG/SVG export from the currently acknowledged generation.
-22. Deterministic exact JSON export of review rows.
-23. Export filename safety and extension preservation.
-24. Empty scan, zero-row review, and zero-visible-bar behaviour.
-25. Availability calendar refresh races and calendar-to-review clipping.
-26. Remote/local workflow profile visibility and state.
-27. Header Shutdown button on every tab: confirmation, already-started
-    shutdown, and task-creation failure.
-28. Settings tab owning no shutdown code; maintenance preview usability.
-29. Localized labels and persistent-notification duplication.
-30. Secret and internal-path exposure through UI diagnostics.
-31. Large-table/large-chart responsiveness, accessibility, and error clarity.
+1. Exactly five panels and the current eleven-metric registry.
+2. Presentation-only metric/warning changes use displayed bars.
+3. Timeframe/bar-budget changes use cache or a cancellable reload.
+4. Maximum viewing bars commits on blur or Enter.
+5. Synchronized X zoom and independent hovered-panel Shift+wheel Y zoom.
+6. Metric changes reset only the changed panel's Y zoom.
+7. Timeframe changes restore the UTC left edge and visible duration.
+8. Strict JSON preflight before withdrawing old publication ownership.
+9. Complete options, render-token acknowledgement, and stale publication.
+10. Per-chart crosshair generations and latest-pointer frame coalescing.
+11. PNG/SVG export from acknowledged ownership.
+12. JSON/CSV export of the full displayed-bar dataset.
+13. Localized inputs, labels, pointers, and tooltips retain UTC data.
+14. Optional price status and warning-region truncation are truthful.
+15. Calendar refresh races and closed-endpoint Analysis handoff.
+16. Remote/local workflow visibility and shared operation admission.
+17. Global header Shutdown confirmation, failure reporting, and retry.
+18. Settings maintenance remains explicitly authorized and fail-closed.
+19. Client disconnects, secret safety, and publication error clarity.
 
 ---
 
@@ -822,11 +753,12 @@ l2shock/analysis/shock_execution.py
 
 ## Primary scope
 
-Cross-cutting contracts, concurrency, cancellation, and integration
-Core 6 may inspect every file in the global inventories. Its purpose is to find
-failures that cannot be established from one subsystem alone.
+Core 6 may inspect every file in the global inventories. All tests are
+valid for Core 6. Its purpose is to establish failures crossing subsystem
+boundaries.
 
 ## Primary modules
+
 ```text
 l2shock/ui/state.py
 l2shock/ui/shutdown.py
@@ -834,7 +766,7 @@ l2shock/ui/shutdown_control.py
 l2shock/ui/components.py
 l2shock/ui/fetch_runtime.py
 l2shock/ui/processing_runtime.py
-l2shock/ui/shock_runtime.py
+l2shock/ui/l2_view_runtime.py
 l2shock/ui/automatic_fetch_runtime.py
 l2shock/ui/remote_import_runtime.py
 l2shock/processing/checkpoint_references.py
@@ -846,6 +778,7 @@ l2shock/main.py
 ```
 
 ## Important dependencies
+
 ```text
 l2shock/config.py
 l2shock/timeutils.py
@@ -864,6 +797,7 @@ l2shock/presets/identity.py
 ```
 
 ## Workflow files
+
 ```text
 .github/workflows/remote-hourly-processing.yml
 .github/workflows/bybit-contract-diagnostics.yml
@@ -871,69 +805,44 @@ l2shock/presets/identity.py
 
 ## Primary tests
 
-All tests are valid for Core 6, especially:
-
 ```text
-tests/test_acquisition_coordinator.py
-tests/test_acquisition_repository_postgresql.py
-tests/test_shock_analysis_handoff.py
-tests/test_shock_runtime.py
-tests/test_automatic_fetch_runtime.py
-tests/test_echarts_publication.py
-tests/test_processing_contracts.py
-tests/test_processing_integrity.py
-tests/test_remote_headless_processing.py
-tests/test_remote_importer_postgresql.py
-tests/test_remote_worker.py
-tests/test_shock_annotation_visibility_and_header_shutdown.py
-tests/test_ui_fetch_runtime.py
-tests/test_ui_processing_runtime.py
-tests/test_ui_shutdown.py
+tests/test_checkpoint_chain_contract.py
 tests/test_checkpoint_reference_lock_contract.py
 tests/test_checkpoint_reference_locks_postgresql.py
-tests/test_remote_workflow_contract.py
-tests/test_bybit_orderbook_replay.py
+tests/test_compile_all_python.py
+tests/test_detector_backend_deleted.py
+tests/test_header_shutdown_and_timezone.py
+tests/test_l2_view_batch3b.py
+tests/test_lm_backend_deleted.py
+tests/test_migration_freeze.py
 tests/test_processing_post_stream_integrity.py
 tests/test_processing_worker_repeated_cancellation.py
-tests/test_compile_all_python.py
-tests/test_readme_contract.py
 tests/test_project_cores_contract.py
 tests/test_project_cores_inventory.py
-tests/test_ai_preparation_scripts.py
+tests/test_readme_contract.py
+tests/test_readme_analysis_transition.py
+tests/test_readme_analysis_doc02.py
+tests/test_remote_workflow_contract.py
+tests/test_ui_shutdown.py
 ```
 
 ## Focus areas
 
-1. Global UTC and identity invariants.
-2. Source → replay → materialization → aggregate → analysis identity.
-3. Local and remote processing equivalence.
-4. Operation admission across all runtimes.
-5. Async lock ownership while synchronous worker threads execute.
-6. Cross-process advisory locking versus process-local locks.
-7. Cooperative cancellation propagation across nested layers.
-8. Native task cancellation while threads continue running.
-9. Shutdown truthfulness about worker termination.
-10. Database engine disposal while work is still active.
-11. Filesystem publication versus transaction commit ordering.
-12. Exactly-once versus at-least-once behavior.
-13. Retry idempotency after partial publication.
-14. Restart recovery of source, checkpoint, pruning, and remote states.
-15. Durable backend truth versus optimistic runtime/UI truth.
-16. Error translation across acquisition, replay, processing, remote, and UI.
-17. Secret safety across all exception and logging boundaries.
-18. Deterministic hashes and canonical JSON across modules.
-19. Cache invalidation after source or semantic changes.
-20. Missing/invalid/degraded quality propagation.
-21. Availability agreeing with actual analytical usability.
-22. Test-suite ordering and shared singleton contamination.
-23. Production behavior versus workflow and diagnostic-script assumptions.
-24. Configuration defaults matching workflow and packaging requirements.
-25. Deadlocks caused by inconsistent lock acquisition order.
-26. TOCTOU between validation, hashing, streaming, pruning, and import.
-27. Cancellation after commit but before runtime result publication.
-28. Duplicate concurrent workers publishing the same immutable identity.
-29. Failure to release resources after exceptions.
-30. Cross-module assumptions that are only enforced in tests or comments.
+1. UTC, immutable identity, provenance, and source ownership.
+2. Local/remote processing and verified importer equivalence.
+3. Admission reservations and process-lock ownership.
+4. Cancellation before execution and during synchronous worker execution.
+5. Repeated cancellation must not release ownership before worker exit.
+6. Shutdown engine disposal requires all work owners to be resolved.
+7. Registered database readers outliving cancelled UI callers.
+8. Source/checkpoint advisory-lock ordering and cross-process races.
+9. Filesystem publication versus database transaction commit.
+10. Idempotency, conflict detection, and recovery after partial publication.
+11. Failed loads retain the previous successful projection.
+12. Browser publication failure is not a guaranteed rollback.
+13. Availability, analytical usability, and handoff policy distinctions.
+14. Singleton contamination and test-suite ordering.
+15. Secret-safe errors and truthful operational diagnostics.
 
 ---
 
@@ -1056,7 +965,7 @@ Run focused single-core reviews in this order:
 3. Core 2 — Acquisition, availability, retention, and lifecycle
 4. Core 1 — Database, persistence, provenance, and maintenance
 5. Core 6 — Cross-cutting contracts, concurrency, and cancellation
-6. Core 4 — Shock-Start loading, detection, channel evidence, and B-area review
+6. Core 4 — Verified detector-free Analysis loading and viewing mathematics
 7. Core 5 — NiceGUI, charts, exports, and workflows
 ```
 
@@ -1088,10 +997,10 @@ because its best results depend on already understanding those subsystems.
    Source state machine, advisory locks, retention, and recovery.
 
 6. Core 3 + Core 4
-   One-second L2 semantics consumed by Shock-Start detection and review.
+   One-second L2 semantics consumed by verified Analysis loading and viewing.
 
 7. Core 4 + Core 5
-   Scan/review identity, bounded-view rendering, annotation toggles, export,
+   Analysis input identity, viewing-bar rendering, warning toggles, export,
    and stale publication.
 
 8. Core 5 + Core 7
@@ -1107,7 +1016,7 @@ because its best results depend on already understanding those subsystems.
     Fetch/processing controls, availability, lifecycle, and shutdown.
 
 12. Core 4 + Core 6
-    Scan/review identity, cancellation, deterministic v2/v3 ordering, and stale data.
+    Analysis input identity, cancellation, deterministic projections, and stale data.
 ```
 
 ---
@@ -1131,7 +1040,7 @@ because its best results depend on already understanding those subsystems.
    Source lifecycle, remote imports, availability, and durable metadata.
 
 6. Core 4 + Core 5 + Core 6
-   Shock-Start runtime → bounded-view/UI publication → cancellation and stale ownership.
+   Analysis loading runtime → viewing-bar/UI publication → cancellation and stale ownership.
 
 7. Core 1 + Core 6 + Core 7
    Immutable identity, transaction boundaries, remote concurrency, and recovery.
@@ -1140,7 +1049,7 @@ because its best results depend on already understanding those subsystems.
    Local/remote workflow UX, progress, availability, and operation admission.
 
 9. Core 1 + Core 4 + Core 7
-   Imported analytical rows → aggregate loading → scan/review identity.
+   Imported analytical rows → aggregate loading → Analysis input identity.
 
 10. Core 2 + Core 3 + Core 6
     Active-file ownership, replay workers, retention, cancellation, and shutdown.
@@ -1159,7 +1068,7 @@ Current priority order:
 1. GitHub Actions remote preprocessing must not fail.
 2. Fetching and importing published remote artifacts from GitHub/Hugging Face
    must not fail or silently corrupt identity/provenance.
-3. Shock-Start analysis must not fail or consume incorrect, stale, incomplete, or
+3. detector-free Analysis must not fail or consume incorrect, stale, incomplete, or
    non-equivalent analytical data.
 4. Only after those paths are covered should general acquisition, persistence,
    maintenance, NiceGUI, export, and other secondary concerns receive priority.
@@ -1324,7 +1233,7 @@ Primary concerns:
 ### 9. Core 1 + Core 4 + Core 7
 **Remote import → analytical identity → aggregate/analysis loading**
 
-This is the first major Shock-Start analysis protection round.
+This is the first major detector-free Analysis protection round.
 
 Primary concerns:
 - imported rows carrying incorrect identity;
@@ -1337,16 +1246,16 @@ Primary concerns:
 - remote metadata causing analysis selection to load the wrong dataset.
 
 ### 10. Core 3 + Core 4 + Core 6
-**L2 semantics → aggregation → Shock-Start analysis semantics**
+**L2 semantics → aggregation → detector-free Analysis semantics**
 
 Primary concerns:
 - timestamp alignment;
 - second/hour ownership;
 - missing-hour generation;
-- endpoint-state aggregation;
+- retained endpoint-state aggregation versus strict active viewing bars;
 - degraded/invalid quality propagation;
-- price and trade counts never used as detection input;
-- 24-hour scan limit and calendar-handoff clipping;
+- optional price and trade counts never determine L2 bar eligibility;
+- editable owned-second duration limit and calendar-handoff clipping;
 - aggregation boundary errors;
 - cancellation and stale analysis publication;
 - deterministic analysis inputs.
@@ -1364,7 +1273,7 @@ Primary concerns:
 - runtime state disagreeing with persisted analytical truth.
 
 ### 12. Core 3 + Core 4
-**Data semantics consumed by Shock-Start analysis**
+**Data semantics consumed by detector-free Analysis**
 
 Primary concerns:
 - exact L2 sampling boundaries;
@@ -1372,21 +1281,21 @@ Primary concerns:
 - missing versus invalid periods;
 - degraded coverage;
 - aggregation bucket ownership;
-- endpoint-state semantics;
-- pivot-radius and forward-horizon boundaries;
-- adverse-move accounting;
+- retained endpoint-state semantics versus strict active viewing bars;
+- UTC-aligned viewing bars and clipped request boundaries;
+- adjacent usable-bar change metrics and predecessor ownership;
 - deterministic extrema/tie handling.
 
 ### 13. Core 4 + Core 6
-**Shock-Start execution, identity, cancellation, and stale-review prevention**
+**Analysis loading, identity, cancellation, and stale-publication prevention**
 
 Primary concerns:
 - cache-key incompleteness;
 - cancellation after computation but before publication;
 - stale analysis ownership;
 - concurrent analysis requests;
-- deterministic v2/v3 review ordering;
-- whole-scan Total-range denominator leakage;
+- deterministic Analysis input identity and cached coarsening;
+- undefined denominators and strict percentage-gap propagation;
 - empty/all-invalid datasets;
 - large-range behavior;
 - analysis identity drift.
@@ -1406,7 +1315,7 @@ Primary concerns:
 - corruption detection.
 
 This remains high priority because defects here can make both remote processing
-and Shock-Start analysis wrong even when all surrounding infrastructure succeeds.
+and detector-free Analysis wrong even when all surrounding infrastructure succeeds.
 
 ### 15. Core 2
 **Acquisition, availability, retention, and lifecycle correctness**
@@ -1558,19 +1467,21 @@ Core 3:
     processing coordinators
 
 Core 4:
-    timeframe/aggregation
-    multi-market loading
-    shock dataset/window
-    Shock-Start detection/channel evidence
-    B-area review and v2/v3 ordering
-    shock runtime/diagnostic CLI
+    retained timeframe/aggregation foundation
+    verified exact-second decoding and multi-market composition
+    bounded-chunk Analysis loading and strict viewing bars
+    eleven derived metrics and undefined-denominator handling
+    cached coarsening, coverage counts, and outage boundaries
+    Analysis input identity and optional verified price
 
 Core 5:
     NiceGUI state/components/app
-    Shock review tab/controls/table/export
-    bounded-view chart options/annotation visibility/legend
-    ECharts/chart interactions
-    fetch/settings tabs
+    detector-free Analysis tab/controls/image and data exports
+    viewing-bar chart options/warning visibility/formula legend
+    independent timezone presentation
+    ECharts/publication acknowledgement/chart interactions
+    synchronized X viewport and independent Shift+wheel Y zoom
+    fetch/settings tabs and availability-calendar handoff
     header shutdown control/shutdown runtime
 
 Core 6:
