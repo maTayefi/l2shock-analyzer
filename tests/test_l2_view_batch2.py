@@ -161,8 +161,14 @@ def test_percentage_coarsening_does_not_skip_undefined_subbar() -> None:
         timeframe_seconds=5,
         max_bars=100,
     )
+
     assert coarse is not None
     assert coarse.bars[0].valid_l2 is True
+    assert coarse.bars[0].bid is not None
+    assert coarse.bars[0].ask is not None
+
+    # Undefined percentages do not suppress the numerical liquidity
+    # channels, but cached coarsening cannot fabricate a defined ratio.
     assert coarse.bars[0].bid_share_pct is None
 
 
@@ -343,3 +349,86 @@ async def test_analysis_worker_timeout_blocks_engine_disposal(
     assert events == [("analysis_stop", 0.01)]
     assert get_state().shutdown_started is True
     assert get_state().shutdown_complete is False
+
+
+def test_analysis_publication_explains_empty_l2_viewing_bars():
+    import ast
+    import inspect
+
+    from l2shock.analysis import l2_view_stream
+    from l2shock.ui import tab_l2_view
+
+    source = inspect.getsource(tab_l2_view)
+    tree = ast.parse(source)
+
+    # Keep the publication counters and warning admission conditions
+    # covered by this retained source-contract test.
+    assert "valid_l2_bars = sum(" in source
+    assert "renderable_l2_bars=%d" in source
+    assert "unusable_l2_seconds=%d" in source
+    assert "partial_market_seconds=%d" in source
+    assert "if new_source and (" in source
+    assert "valid_l2_bars == 0" in source
+    assert "projection.unusable_l2_seconds > 0" in source
+    assert "projection.partial_market_seconds > 0" in source
+
+    # The UI selects a title first, then passes title=notify_title.
+    # Do not require a literal title keyword that the implementation
+    # deliberately does not use.
+    assigned_titles = {
+        node.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "notify_title"
+            for target in node.targets
+        )
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    }
+
+    assert "No renderable L2 candles" in assigned_titles
+    assert "L2 data-quality warning" in assigned_titles
+
+    title_variable_is_used = any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "persistent_notify"
+        and any(
+            keyword.arg == "title"
+            and isinstance(keyword.value, ast.Name)
+            and keyword.value.id == "notify_title"
+            for keyword in node.keywords
+        )
+        for node in ast.walk(tree)
+    )
+    assert title_variable_is_used
+
+    # Python joins adjacent ordinary string literals in the AST.
+    # These checks therefore survive harmless source-line wrapping.
+    string_values = tuple(
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    )
+
+    required_messages = (
+        "ANALYSIS L2 COMPONENT MISSING",
+        "ANALYSIS L2 COMPONENT COVERAGE",
+        "Analysis rendered the available verified L2 data.",
+        "Cross-check price and L2 with trdr.io before trading.",
+    )
+    for message in required_messages:
+        assert any(message in value for value in string_values), message
+
+    retired_message = "Optional price loading failed. L2 remains displayed;"
+    assert not any(retired_message in value for value in string_values)
+
+    # Load-summary diagnostics belong to the loader, not the UI module.
+    loader_tree = ast.parse(inspect.getsource(l2_view_stream))
+    assert any(
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and "ANALYSIS L2 LOAD SUMMARY" in node.value
+        for node in ast.walk(loader_tree)
+    )

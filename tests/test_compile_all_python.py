@@ -12,6 +12,7 @@ def _python_files() -> tuple[Path, ...]:
     roots = (
         PROJECT_ROOT / "l2shock",
         PROJECT_ROOT / "tools",
+        PROJECT_ROOT / "tests",
     )
 
     return tuple(

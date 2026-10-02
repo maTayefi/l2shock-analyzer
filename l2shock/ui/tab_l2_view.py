@@ -515,18 +515,73 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
                     title="Analysis chart",
                 )
 
+            valid_l2_bars = sum(bar.valid_l2 for bar in projection.bars)
+            gap_l2_bars = len(projection.bars) - valid_l2_bars
+            price_bars = sum(bar.price is not None for bar in projection.bars)
+
             status.set_text(
                 f"Showing {len(projection.bars):,} "
                 f"{projection.timeframe_seconds}s bars; "
+                f"L2 candles={valid_l2_bars:,}; "
+                f"L2 gap bars={gap_l2_bars:,}; "
                 f"usable L2 seconds={projection.usable_l2_seconds:,}; "
                 f"unusable={projection.unusable_l2_seconds:,}; "
                 f"partial-market={projection.partial_market_seconds:,}; "
-                f"price={projection.price_status}."
+                f"price={projection.price_status}; "
+                f"price candles={price_bars:,}."
             )
+
+            if new_source and (
+                valid_l2_bars == 0
+                or projection.unusable_l2_seconds > 0
+                or projection.partial_market_seconds > 0
+            ):
+                if valid_l2_bars == 0:
+                    quality_message = (
+                        "Analysis completed, but the verified source data "
+                        "contains no numerical L2 observations in this range. "
+                        "The L2 channels remain null because there are no "
+                        "values to plot, not because a quality threshold "
+                        "blocked rendering. Optional price is independent. "
+                        "Check 'ANALYSIS L2 COMPONENT MISSING' and "
+                        "'ANALYSIS L2 COMPONENT COVERAGE' in the log."
+                    )
+                    notify_title = "No renderable L2 candles"
+                else:
+                    quality_message = (
+                        "Analysis rendered the available verified L2 data. "
+                        f"{projection.unusable_l2_seconds:,} seconds have "
+                        "no numerical L2 observations; "
+                        f"{projection.partial_market_seconds:,} seconds "
+                        "contain only some expected markets. "
+                        "Candles use the available observations without "
+                        "zero-fill or forward-fill. Changes in contributing "
+                        "venues can create apparent liquidity changes. "
+                        "Cross-check price and L2 with trdr.io before trading."
+                    )
+                    notify_title = "L2 data-quality warning"
+                log.warning(
+                    "Analysis L2 quality warning: "
+                    "analysis_id=%s timeframe_seconds=%d "
+                    "renderable_l2_bars=%d unusable_l2_seconds=%d "
+                    "partial_market_seconds=%d",
+                    projection.input_id,
+                    projection.timeframe_seconds,
+                    valid_l2_bars,
+                    projection.unusable_l2_seconds,
+                    projection.partial_market_seconds,
+                )
+                persistent_notify(
+                    quality_message,
+                    title=notify_title,
+                    notification_type="warning",
+                )
+
             if projection.price_status in {"failed", "corrupt"}:
                 persistent_notify(
-                    "Optional price loading failed. L2 remains displayed; "
-                    "price outage regions are unavailable for this load.",
+                    "Optional price loading failed. L2 eligibility is "
+                    "unchanged; price outage regions are unavailable "
+                    "for this load.",
                     title="Optional price",
                 )
             if projection.l2_regions_truncated or projection.price_regions_truncated:
@@ -774,10 +829,15 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
                     for spec in L2_VIEW_METRIC_SPECS.values():
                         ui.label(f"{spec.label}: {spec.formula}").classes("text-sm")
                     ui.label(
-                        "Derived percentage candles are based on valid "
+                        "L2 candles use available verified observations. "
+                        "Partial-market sums remain visible with quality "
+                        "warnings; changing contributors can create apparent "
+                        "liquidity changes. Derived percentage candles use "
                         "one-second ratios, not ratios of separate OHLC "
-                        "extrema. Change metrics compare adjacent bar closes. "
-                        "Undefined values remain gaps."
+                        "extrema. A contributing zero-total second makes "
+                        "that bar's percentage candle undefined. Change "
+                        "metrics compare adjacent renderable bar closes. "
+                        "Unavailable values remain gaps."
                     ).classes("text-xs text-gray-500")
                     ui.button("Close", on_click=legend_dialog.close)
 

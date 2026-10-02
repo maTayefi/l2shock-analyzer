@@ -126,15 +126,16 @@ def test_foundation_is_not_documented_as_active_strict_viewing_policy() -> None:
     assert "Calendar month timeframes" in foundation
 
 
-def test_verified_loading_keeps_partial_coverage_as_gaps() -> None:
+def test_verified_loading_renders_partial_coverage_with_warnings() -> None:
     loading = _section(
         "### Verified detector-free Analysis loading",
         "### Price source identity",
     )
 
     assert "verify_codec=True" in loading
-    assert "partial-market second; unusable for viewing" in loading
+    assert "partial-market second; exact available-market sum rendered" in loading
     assert "does not reject the complete Analysis request" in loading
+    assert "diagnostics and warning regions" in loading
     assert "no separately persisted\naggregate L2 rows" in loading
     assert "does not publish a partial replacement" in loading
 

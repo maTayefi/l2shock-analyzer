@@ -1279,13 +1279,17 @@ INVALID:
 A missing or invalid component market is never forward-filled and never
 replaced with zero.
 
-The retained aggregation foundation can represent a degraded aggregate
-diagnostically as the exact sum of the markets that contributed.
+The retained aggregation foundation represents a degraded aggregate as
+the exact sum of the valid markets that contributed at that UTC second.
 
-That diagnostic representation is not the active Analysis plotting
-policy. Detector-free Analysis treats a partial-market second as
-unusable and does not plot its smaller sum. A viewing bar containing
-such a second is null in every L2 channel.
+Detector-free Analysis renders those partial-market sums. Partial
+coverage remains explicitly counted and warned about; it is not labelled
+complete-market coverage. Missing markets contribute no observation,
+rather than a fabricated zero or a forward-filled value.
+
+A viewing bar remains renderable when at least one numerical L2 second
+contributes. Changes in contributing markets can create apparent
+liquidity changes and must be considered during manual interpretation.
 
 The aggregate coverage records:
 
@@ -1329,48 +1333,51 @@ Verified Analysis loading derives its component hashes, loads each component
 through the ordinary codec and provenance verification boundary, and sums
 exact Bid and Ask Liquidity only after all components are verified.
 
-n Analysis second is usable only when every expected market contributes
-valid Bid and Ask Liquidity at that exact UTC second. Missing Bybit, Binance,
-or OKX data is never represented as zero and is never forward-filled.
+An Analysis second is numerically usable when at least one expected market
+contributes valid Bid and Ask Liquidity at that exact UTC second.
+Missing Bybit, Binance, or OKX observations are never zero-filled or
+forward-filled.
 
 If only some expected markets contribute, Analysis records a partial-market
-second and renders it as an unusable gap, not as a smaller aggregate sum.
-If no market contributes, the second is also unusable.
+second and renders the exact sum of those valid contributors. If no market
+contributes, the second remains numerically unavailable.
 
-A viewing bar containing any unusable L2 second is null in every L2 channel.
-Coverage gaps do not abort the complete Analysis request; independently
-usable bars elsewhere in the requested range remain available.
+A viewing bar remains renderable when at least one numerical L2 second
+contributes. Coverage gaps do not abort the complete Analysis request and
+do not suppress available candles.
 
-The three-market aggregate therefore reduces dependence on one venue's local
-liquidity behavior without hiding missing-market coverage or allowing the set
-of displayed contributors to change silently.
+Partial-market sums are plotted with explicit quality warnings. Changes
+in the contributing venue set can create apparent Bid, Ask, Total, Delta,
+percentage, or change-metric movements. These are research observations,
+not proof of a complete-market liquidity change.
 
-### Strict aggregate analysis loading
+### Warning-only aggregate Analysis coverage
 
 Multi-market presets are resolved into their immutable component single-market
 preset identities during verified Analysis loading.
 
-Each component row is loaded and decoded independently through the normal
-single-market PostgreSQL verification boundary.
+Each available component row is loaded and decoded independently through the
+normal single-market PostgreSQL verification boundary.
 
-At every exact UTC second, all expected markets must contribute valid Bid and
-Ask Liquidity. For the Binance + OKX aggregate preset, the contributing market
-set must remain exactly Binance Futures plus OKX Futures throughout the
-effective Analysis range.
+At every exact UTC second, Analysis sums valid Bid and Ask observations from
+the expected markets that actually contribute. Complete-market and
+partial-market coverage remain distinguishable.
 
-A missing or invalid expected market is never represented as zero, never
-forward-filled, and never silently omitted from the aggregate.
+A missing or invalid expected market is never represented by a fabricated
+zero and is never forward-filled. Its absence remains a coverage fact.
 
-If fewer than all expected markets contribute at a second, the detector-free
-Analysis loader marks that second unusable. Partial-market seconds are
-counted separately for diagnostics and are never plotted as partial sums.
+Partial-market sums are plotted with explicit quality warnings. A viewing
+bar remains renderable when at least one numerical L2 second contributes.
+A bar with no numerical observations remains null.
 
-The strict viewing-bar policy nulls all L2 channels in any bar containing an
-unusable second. The rest of the requested range can still be rendered.
+Quality gaps do not abort the complete Analysis request or suppress available
+candles. Source identity, codec, hash, preset, and provenance verification
+remain mandatory.
 
-This prevents changes such as Binance-only liquidity followed by Binance+OKX
-liquidity from producing artificial Bid, Ask, Total, Delta, or Imbalance steps.
-It does not require rejecting otherwise usable data elsewhere in the range.
+A change from Binance-only to Binance+OKX coverage can create an apparent
+liquidity step. Analysis deliberately exposes the available data and reports
+the coverage limitation rather than hiding the entire interval. Cross-check
+price and L2 with trdr.io before trading.
 
 Aggregate coverage provenance records:
 
@@ -2065,8 +2072,10 @@ is materialized and valid for all 3,600 L2 seconds. Partial market coverage
 remains visible diagnostically but is not eligible for Analysis handoff. The UI labels the
 coverage as partial rather than treating the missing market as zero.
 
-Calendar handoff therefore follows the same strict full-market coverage policy
-as verified Analysis loading.
+Calendar handoff retains a conservative full-market coverage criterion for
+its analyzable-window shortcut. This is not an Analysis rendering requirement:
+a manually entered Analysis range can render available verified observations,
+including partial-market sums, with quality warnings.
 
 The newest contiguous analyzable window is calculated independently for BTC
 and ETH using each base's newest enabled data preset.
@@ -2804,9 +2813,17 @@ An explicit timeframe that does not fit the budget is rejected. It is
 never silently coarsened. The bar budget changes viewing granularity;
 it never truncates the requested source interval.
 
-A viewing bar containing any unusable L2 second is null in every L2
-channel. Missing, invalid, and partial-market seconds are never dropped,
-zero-filled, or forward-filled to construct a usable bar.
+A viewing bar remains renderable when at least one numerical L2 second
+contributes. Missing and invalid seconds do not contribute numerical values,
+but remain included in source ownership and quality counts.
+
+Partial-market seconds contribute the exact same-second sum of their valid
+markets and remain explicitly counted as partial coverage. Unavailable
+observations are never zero-filled or forward-filled.
+
+Poor coverage, whether sparse or across the whole request, produces warnings
+rather than a rendering veto. A bar with no numerical L2 observations remains
+null because no actual values exist to plot.
 
 Bid and Ask candles are reduced from their usable one-second values.
 Total and Delta candles are reduced from same-second Total and Delta:
@@ -2835,8 +2852,8 @@ L2 bars unavailable.
 
 Compatible coarser views can be built from the retained projection without
 a database reread. A finer uncached view requires a cancellable background
-reload. Cached coarsening must preserve the same source interval, strict
-L2 gap policy, percentage undefined-value policy, and quality counts.
+reload. Cached coarsening must preserve the same source interval, available-observation
+L2 policy, percentage undefined-value policy, and quality counts.
 
 Panel and warning changes operate on the currently displayed projection.
 They do not validate unrelated loading controls or admit another load.
@@ -2966,8 +2983,9 @@ endpoint invalid or missing:
 ```
 
 That retained endpoint policy differs intentionally from the active
-Analysis viewing policy, which nulls all L2 channels in a viewing bar
-containing any unusable second.
+Analysis viewing policy, which reduces available numerical seconds into
+OHLC even when the final owned second is unavailable. Coverage limitations
+remain explicit and do not veto rendering.
 
 The foundation's real-trade price aggregation uses:
 
@@ -3038,18 +3056,19 @@ Multi-market presets compose observations at the same exact UTC second:
 
 ```text
 every expected market contributes valid Bid and Ask:
-    exact component sums; usable L2 second
+    exact component sums; complete-market usable L2 second
 
 some, but not all, expected markets contribute:
-    partial-market second; unusable for viewing
+    partial-market second; exact available-market sum rendered
 
 no expected market contributes:
-    unusable L2 second
+    numerically unavailable L2 second
 ```
 
 Partial-market coverage does not reject the complete Analysis request.
-It contributes to diagnostics and null viewing bars; usable bars elsewhere
-in the requested range remain available.
+It contributes numerical sums to viewing bars and remains included in
+diagnostics and warning regions. Usable means numerically available,
+not necessarily complete-market coverage.
 
 The loader does not merge raw events, snapshots, replay frontiers, or
 checkpoints across markets. Aggregate presets own no separately persisted
@@ -3433,10 +3452,25 @@ A valid reconstructed book may retain its last state through a quiet
 bucket, but only while initialization, sequence continuity, and book
 structure remain proven.
 
-The active Analysis viewing policy requires usable L2 at every owned
-second inside a viewing bar. Invalid, missing, or partial-market seconds
-make all L2 channels of that viewing bar null. Usable bars elsewhere in
-the request remain available.
+The active Analysis viewing policy uses available verified numerical L2
+observations. A viewing bar remains renderable when at least one numerical
+second contributes; partial-market sums are permitted and explicitly counted.
+
+Data-quality limitations do not veto Analysis or suppress available candles.
+If the entire range has no numerical L2 observations, Analysis still completes,
+but the L2 channels remain null rather than acquiring fabricated values.
+
+Undefined percentage denominators remain null. A contributing zero-total
+second makes that bar's percentage candle undefined without suppressing its
+Bid, Ask, Total, or Delta candle.
+
+Usable-second counts include partial-market numerical observations.
+Partial-market counts are a subset of usable-second counts, not an additional
+category to add to usable plus unusable.
+
+The user cross-checks price and L2 with trdr.io before trading. Coverage
+warnings remain important because changing contributors can create apparent
+liquidity movements.
 
 Persistent red data-outage warning regions are measured over the
 effective requested one-second range:
@@ -3459,9 +3493,12 @@ Outage tracking continues across hour and chunk boundaries. The active
 streaming loader does not use the retired bounded viewport's
 threshold-padded price-warning query.
 
-A run exactly equal to the threshold is not flagged. Missing and invalid
-seconds join the same uninterrupted outage run. A usable observation
-ends that run.
+A run exactly equal to the threshold is not flagged. Missing, invalid,
+and partial-market seconds join the same uninterrupted L2 quality-warning
+run. Only complete-market usable coverage ends that L2 run.
+
+Partial-market numerical values can therefore remain visible beneath a
+quality-warning overlay. Price warning runs remain independent.
 
 The "Show data-quality warnings" switch is on by default. Changing it
 rebuilds presentation from the displayed projection without rereading
@@ -3954,13 +3991,13 @@ expected markets:
     exact immutable component identities resolved from the preset
 
 usable multi-market second:
-    every expected component contributes valid Bid and Ask
+    at least one expected component contributes valid Bid and Ask
 
 partial-market second:
-    explicit unusable coverage; never a smaller plotted aggregate
+    exact available-market sum rendered with explicit quality warnings
 
 viewing-bar L2 policy:
-    any unusable owned second nulls every L2 channel in that bar
+    available numerical seconds contribute; no quality-based rendering veto
 
 Total and Delta:
     constructed from Bid and Ask of the same second

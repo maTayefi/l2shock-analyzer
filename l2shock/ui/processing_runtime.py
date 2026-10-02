@@ -475,6 +475,49 @@ class ManualProcessingRuntime:
 
         self._task = task
         state.tracked_tasks.add(task)
+
+        def finalize(done: asyncio.Task[ManualProcessingResult]) -> None:
+            state.tracked_tasks.discard(done)
+
+            with self._state_lock:
+                owns_unfinalized_reservation = (
+                    self._task is done and self._operation_id == operation_id
+                )
+
+                if owns_unfinalized_reservation:
+                    # A task cancelled before its first execution never
+                    # enters _run(), so _run's finally cannot release its
+                    # process-local reservation.
+                    cancellation_event.set()
+                    self._completion_sequence += 1
+                    self._stop_requested = False
+                    self._cancellation_event = None
+                    self._operation_id = None
+                    self._started_at = None
+
+                    if done.cancelled():
+                        self._last_error = (
+                            "Manual processing was cancelled before it started"
+                        )
+
+                if self._task is done:
+                    self._task = None
+
+            if (
+                owns_unfinalized_reservation
+                and state.active_operation_name == "manual_processing"
+                and state.active_operation_started_at == started_at
+            ):
+                # Do not erase a newer operation's admission marker.
+                state.active_operation_name = ""
+                state.active_operation_started_at = None
+
+            # Observe unawaited failures without changing the exception
+            # that an awaiting caller receives.
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(finalize)
         return task
 
     def request_stop(self) -> bool:

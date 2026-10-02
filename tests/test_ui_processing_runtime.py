@@ -710,3 +710,162 @@ def test_processing_start_without_event_loop_rolls_back_admission() -> None:
 
     assert get_state().active_operation_name == ""
     assert runtime.snapshot().operation_id is None
+
+
+@pytest.mark.asyncio
+async def test_processing_cancel_before_first_execution_releases_admission() -> None:
+    reset_state_for_tests()
+    state = get_state()
+    loader_calls = 0
+
+    async def loader(_start, _end, _lower, _upper):
+        nonlocal loader_calls
+        loader_calls += 1
+        return ()
+
+    runtime = ManualProcessingRuntime(
+        target_loader=loader,
+        l2_coordinator_factory=lambda _sink: FakeL2Coordinator(),
+        price_coordinator_factory=lambda _sink: FakePriceCoordinator(),
+    )
+
+    task = runtime.start(
+        requested_start_utc=_hour(12),
+        requested_end_utc=_hour(13),
+        lower_depth_fraction=Decimal("0"),
+        upper_depth_fraction=Decimal("0.01"),
+    )
+
+    assert state.active_operation_name == "manual_processing"
+    assert runtime.snapshot().operation_id is not None
+    assert task in state.tracked_tasks
+
+    # There is deliberately no await between start() and cancel().
+    # The coroutine has not entered its own try/finally yet.
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Allow registered completion callbacks to finish.
+    await asyncio.sleep(0)
+
+    snapshot = runtime.snapshot()
+
+    assert loader_calls == 0
+    assert runtime.is_running is False
+    assert runtime.task is None
+    assert snapshot.operation_id is None
+    assert snapshot.started_at is None
+    assert snapshot.stop_requested is False
+    assert snapshot.completion_sequence == 1
+    assert snapshot.last_error == ("Manual processing was cancelled before it started")
+    assert task not in state.tracked_tasks
+    assert state.active_operation_name == ""
+    assert state.active_operation_started_at is None
+    assert state.operation_lock.locked() is False
+
+    # The leaked reservation must not prevent a subsequent normal start.
+    second_task = runtime.start(
+        requested_start_utc=_hour(12),
+        requested_end_utc=_hour(13),
+        lower_depth_fraction=Decimal("0"),
+        upper_depth_fraction=Decimal("0.01"),
+    )
+    result = await second_task
+    await asyncio.sleep(0)
+
+    assert result.status == "no_work"
+    assert loader_calls == 1
+    assert runtime.task is None
+    assert runtime.snapshot().completion_sequence == 2
+    assert state.active_operation_name == ""
+    assert state.active_operation_started_at is None
+    assert state.tracked_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_processing_prestart_cancel_preserves_newer_operation_owner() -> None:
+    reset_state_for_tests()
+    state = get_state()
+
+    async def loader(_start, _end, _lower, _upper):
+        raise AssertionError("A prestart-cancelled task must not call its loader")
+
+    runtime = ManualProcessingRuntime(
+        target_loader=loader,
+        l2_coordinator_factory=lambda _sink: FakeL2Coordinator(),
+        price_coordinator_factory=lambda _sink: FakePriceCoordinator(),
+    )
+
+    task = runtime.start(
+        requested_start_utc=_hour(12),
+        requested_end_utc=_hour(13),
+        lower_depth_fraction=Decimal("0"),
+        upper_depth_fraction=Decimal("0.01"),
+    )
+
+    # Simulate another subsystem replacing the admission marker.
+    replacement_started_at = _hour(13)
+    state.active_operation_name = "settings_maintenance"
+    state.active_operation_started_at = replacement_started_at
+
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.sleep(0)
+
+    assert runtime.task is None
+    assert runtime.snapshot().operation_id is None
+    assert runtime.snapshot().completion_sequence == 1
+    assert task not in state.tracked_tasks
+    assert state.active_operation_name == "settings_maintenance"
+    assert state.active_operation_started_at == replacement_started_at
+
+
+@pytest.mark.asyncio
+async def test_processing_prestart_cancel_preserves_newer_same_name_marker() -> None:
+    from datetime import timedelta
+
+    reset_state_for_tests()
+    state = get_state()
+
+    async def loader(_start, _end, _lower, _upper):
+        raise AssertionError("A prestart-cancelled task must not call its loader")
+
+    runtime = ManualProcessingRuntime(
+        target_loader=loader,
+        l2_coordinator_factory=lambda _sink: FakeL2Coordinator(),
+        price_coordinator_factory=lambda _sink: FakePriceCoordinator(),
+    )
+
+    task = runtime.start(
+        requested_start_utc=_hour(12),
+        requested_end_utc=_hour(13),
+        lower_depth_fraction=Decimal("0"),
+        upper_depth_fraction=Decimal("0.01"),
+    )
+
+    original_started_at = state.active_operation_started_at
+    assert original_started_at is not None
+    replacement_started_at = original_started_at + timedelta(seconds=1)
+
+    # The operation name alone is not sufficient ownership evidence.
+    state.active_operation_name = "manual_processing"
+    state.active_operation_started_at = replacement_started_at
+
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.sleep(0)
+
+    assert runtime.task is None
+    assert runtime.snapshot().operation_id is None
+    assert runtime.snapshot().completion_sequence == 1
+    assert task not in state.tracked_tasks
+    assert state.active_operation_name == "manual_processing"
+    assert state.active_operation_started_at == replacement_started_at

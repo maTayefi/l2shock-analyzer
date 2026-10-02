@@ -578,7 +578,7 @@ def test_depth_cancellation_propagates_from_hourly_sampling(
     assert checks >= 10
 
 
-def test_received_time_regression_is_rejected_by_liquidity_sampler(
+def test_received_time_regression_is_clamped_by_liquidity_sampler(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "received_time_regression.parquet"
@@ -606,18 +606,36 @@ def test_received_time_regression_is_rejected_by_liquidity_sampler(
 
     _write(path, rows)
 
-    from l2shock.ingest import StreamedParquetReadError
+    result = sample_liquidity_archives(
+        ((path, _spec()),),
+        _top_band(),
+        batch_size=1,
+    )
 
-    with pytest.raises(StreamedParquetReadError) as exc_info:
-        sample_liquidity_archives(
-            ((path, _spec()),),
-            _top_band(),
-            batch_size=1,
-        )
+    assert len(result.hours) == 1
+    observations = result.hours[0].observations
+    assert len(observations) == 3_600
 
-    cause = exc_info.value.__cause__
-    assert isinstance(cause, HourlyLiquidityError)
-    assert "received_time_ns regressed" in str(cause)
+    # The snapshot arrives after the first two bucket endpoints.
+    # Clamping the later archive event's regressing receive timestamp must
+    # not retroactively populate those already-emitted observations.
+    for observation in observations[:2]:
+        assert observation.quality is BookSampleQuality.INVALID
+        assert observation.invalid_reason is BookSampleInvalidReason.UNINITIALIZED
+        assert observation.bid_liquidity is None
+        assert observation.ask_liquidity is None
+
+    # The sequence-continuous update is applied in archive order. Both
+    # events are visible by the third bucket endpoint.
+    first_usable = observations[2]
+    assert first_usable.quality is BookSampleQuality.VALID
+    assert first_usable.last_update_id == 101
+    assert first_usable.bid_liquidity == Decimal("500")
+
+    # Quiet subsequent buckets retain the reconstructed valid state.
+    assert observations[-1].quality is BookSampleQuality.VALID
+    assert observations[-1].last_update_id == 101
+    assert observations[-1].bid_liquidity == Decimal("500")
 
 
 def test_liquidity_observation_total_validation_ignores_ambient_context() -> None:

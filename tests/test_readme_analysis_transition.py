@@ -90,7 +90,7 @@ def test_readme_documents_presentation_and_export_ownership() -> None:
     assert "not only the current browser zoom window" in workflow
 
 
-def test_readme_active_aggregate_policy_uses_gaps_not_request_rejection() -> None:
+def test_readme_active_aggregate_policy_renders_available_values() -> None:
     aggregates = _section(
         _readme(),
         "### Binance, Bybit, and OKX aggregate-liquidity identity",
@@ -99,7 +99,12 @@ def test_readme_active_aggregate_policy_uses_gaps_not_request_rejection() -> Non
 
     assert "partial-market" in aggregates
     assert "do not abort the complete Analysis request" in aggregates
-    assert "never plotted as partial sums" in aggregates
+    assert (
+        "Partial-market sums are plotted with explicit quality warnings" in aggregates
+    )
+    assert "at least one numerical L2 second" in aggregates
+    assert "provenance verification" in aggregates
+    assert "never plotted as partial sums" not in aggregates
     assert "loading fails with a market-coverage error" not in aggregates
 
 

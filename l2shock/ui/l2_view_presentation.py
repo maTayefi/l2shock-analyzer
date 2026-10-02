@@ -388,6 +388,13 @@ def displayed_json_bytes(
     payload = {
         "schema": "l2shock.displayed_analysis",
         "schema_version": 1,
+        "l2_view_policy": "available_verified_observations_v1",
+        "l2_quality_policy": {
+            "partial_market_sums_rendered": True,
+            "unavailable_seconds_filled": False,
+            "partial_market_seconds_are_usable_subset": True,
+            "warnings_suppress_rendering": False,
+        },
         "analysis_id": projection.input_id,
         "base": projection.request.base,
         "preset_hash": projection.request.preset_hash,
