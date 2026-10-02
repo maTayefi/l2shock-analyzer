@@ -554,7 +554,7 @@ class RemoteImportRuntime:
                 "Application shutdown has started; " "new remote imports are blocked"
             )
 
-        if self.is_running:
+        if self._task is not None:
             raise RemoteImportRuntimeBusyError(
                 "A remote import operation is already active"
             )
@@ -581,6 +581,10 @@ class RemoteImportRuntime:
             lower_depth_fraction=lower_depth_fraction,
             upper_depth_fraction=upper_depth_fraction,
         )
+
+        # A call outside a running event loop must leave both the runtime
+        # snapshot and process admission state untouched.
+        loop = asyncio.get_running_loop()
 
         operation_id = uuid4()
         started_at = now_utc()
@@ -610,7 +614,7 @@ class RemoteImportRuntime:
         )
 
         try:
-            task = asyncio.create_task(
+            task = loop.create_task(
                 coroutine,
                 name="l2shock-remote-hf-import",
             )
@@ -622,7 +626,10 @@ class RemoteImportRuntime:
                 self._started_at = None
                 self._cancellation_event = None
 
-            if state.active_operation_name == "remote_hf_import":
+            if (
+                state.active_operation_name == "remote_hf_import"
+                and state.active_operation_started_at == started_at
+            ):
                 state.active_operation_name = ""
                 state.active_operation_started_at = None
 
@@ -631,6 +638,47 @@ class RemoteImportRuntime:
         self._task = task
         state.tracked_tasks.add(task)
 
+        def finalize(done: asyncio.Task[RemoteImportRangeResult]) -> None:
+            state.tracked_tasks.discard(done)
+
+            with self._state_lock:
+                owns_unfinalized_reservation = (
+                    self._task is done and self._operation_id == operation_id
+                )
+
+                if owns_unfinalized_reservation:
+                    # Cancellation before the coroutine's first execution
+                    # bypasses _run() and therefore bypasses its finally.
+                    cancellation_event.set()
+                    self._completion_sequence += 1
+                    self._stop_requested = False
+                    self._cancellation_event = None
+                    self._operation_id = None
+                    self._started_at = None
+                    self._pinned_revision = None
+
+                    if done.cancelled():
+                        self._last_error = (
+                            "Remote import was cancelled before it started"
+                        )
+
+                if self._task is done:
+                    self._task = None
+
+            if (
+                owns_unfinalized_reservation
+                and state.active_operation_name == "remote_hf_import"
+                and state.active_operation_started_at == started_at
+            ):
+                state.active_operation_name = ""
+                state.active_operation_started_at = None
+
+            # Observe failures even when the caller does not await this task.
+            # Awaiting callers still receive the task's original exception.
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(finalize)
         return task
 
     def request_stop(self) -> bool:
@@ -1046,8 +1094,12 @@ class RemoteImportRuntime:
                 self._stop_requested = False
                 self._cancellation_event = None
                 self._operation_id = None
+                self._started_at = None
 
-            if state.active_operation_name == "remote_hf_import":
+            if (
+                state.active_operation_name == "remote_hf_import"
+                and state.active_operation_started_at == started_at
+            ):
                 state.active_operation_name = ""
                 state.active_operation_started_at = None
 

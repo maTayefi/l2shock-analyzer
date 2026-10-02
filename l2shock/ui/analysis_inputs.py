@@ -74,8 +74,28 @@ class AnalysisPresetOption:
             if lower and upper:
                 depth_label = f" | depth {lower}..{upper}"
 
+        raw_markets = self.config_json.get("eligible_markets")
+        market_labels: list[str] = []
+
+        if isinstance(raw_markets, (list, tuple)):
+            for raw_market in raw_markets:
+                if not isinstance(raw_market, Mapping):
+                    continue
+
+                venue = str(raw_market.get("venue", "")).strip()
+                instrument = str(raw_market.get("instrument", "")).strip()
+
+                if venue and instrument:
+                    market_labels.append(f"{venue}/{instrument}")
+
+        market_label = (
+            " + ".join(sorted(set(market_labels)))
+            if market_labels
+            else "market composition unavailable"
+        )
+
         return (
-            f"{self.base}{depth_label} | "
+            f"{self.base} | {market_label}{depth_label} | "
             f"{self.algorithm_version} | "
             f"{self.preset_hash[:12]}"
         )

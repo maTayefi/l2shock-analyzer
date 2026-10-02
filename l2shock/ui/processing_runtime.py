@@ -996,9 +996,13 @@ class ManualProcessingRuntime:
                 self._stop_requested = False
                 self._cancellation_event = None
                 self._operation_id = None
+                self._started_at = None
 
-            # Clear only operation ownership still belonging to this runtime.
-            if state.active_operation_name == "manual_processing":
+            # Name alone does not prove ownership of the admission marker.
+            if (
+                state.active_operation_name == "manual_processing"
+                and state.active_operation_started_at == started_at
+            ):
                 state.active_operation_name = ""
                 state.active_operation_started_at = None
 

@@ -538,15 +538,22 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
             ):
                 if valid_l2_bars == 0:
                     quality_message = (
-                        "Analysis completed, but the verified source data "
-                        "contains no numerical L2 observations in this range. "
-                        "The L2 channels remain null because there are no "
-                        "values to plot, not because a quality threshold "
-                        "blocked rendering. Optional price is independent. "
-                        "Check 'ANALYSIS L2 COMPONENT MISSING' and "
-                        "'ANALYSIS L2 COMPONENT COVERAGE' in the log."
+                        "Analysis completed without numerical L2 observations "
+                        "for the selected preset and range. Available verified "
+                        "L2 seconds are not suppressed by a coverage threshold. "
+                        "If the log says 'no_row_for_exact_component_preset', "
+                        "the required local component rows are absent: the "
+                        "remote collector depth, Remote HF Import depth, and "
+                        "Analysis preset depth must match exactly. Enabled "
+                        "presets are configurations, not proof of materialized "
+                        "L2 data. Remote publication must also be imported "
+                        "into this local database. If component rows exist "
+                        "but have zero usable seconds, inspect 'ANALYSIS L2 "
+                        "COMPONENT COVERAGE' for their quality reasons. "
+                        "Price is independent; loaded price does not prove "
+                        "that the selected L2 components exist."
                     )
-                    notify_title = "No renderable L2 candles"
+                    notify_title = "No numerical L2 data for selected preset"
                 else:
                     quality_message = (
                         "Analysis rendered the available verified L2 data. "

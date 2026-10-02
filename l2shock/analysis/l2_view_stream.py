@@ -500,7 +500,10 @@ def _log_l2_component_coverage(
             "ANALYSIS L2 COMPONENT MISSING: provider=%s venue=%s "
             "instrument=%s component_preset_hash=%s hour_utc=%s "
             "start_utc=%s end_utc_exclusive=%s expected_seconds=%d "
-            "reason=no_row_for_exact_component_preset",
+            "reason=no_row_for_exact_component_preset "
+            "rendering_veto=false "
+            "action=materialize_or_import_exact_component_preset "
+            "hint=collector_import_and_analysis_depth_must_match",
             component.market.provider,
             component.market.venue,
             component.market.instrument,

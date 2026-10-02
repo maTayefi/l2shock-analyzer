@@ -869,3 +869,55 @@ async def test_processing_prestart_cancel_preserves_newer_same_name_marker() -> 
     assert task not in state.tracked_tasks
     assert state.active_operation_name == "manual_processing"
     assert state.active_operation_started_at == replacement_started_at
+
+
+@pytest.mark.asyncio
+async def test_processing_normal_completion_preserves_newer_same_name_marker() -> None:
+    from datetime import timedelta
+
+    reset_state_for_tests()
+    state = get_state()
+    loader_entered = asyncio.Event()
+    release_loader = asyncio.Event()
+
+    async def loader(_start, _end, _lower, _upper):
+        loader_entered.set()
+        await release_loader.wait()
+        return ()
+
+    runtime = ManualProcessingRuntime(
+        target_loader=loader,
+        l2_coordinator_factory=lambda _sink: FakeL2Coordinator(),
+        price_coordinator_factory=lambda _sink: FakePriceCoordinator(),
+    )
+
+    task = runtime.start(
+        requested_start_utc=_hour(12),
+        requested_end_utc=_hour(13),
+        lower_depth_fraction=Decimal("0"),
+        upper_depth_fraction=Decimal("0.25"),
+    )
+
+    await loader_entered.wait()
+
+    original_started_at = state.active_operation_started_at
+    assert original_started_at is not None
+
+    replacement_started_at = original_started_at + timedelta(seconds=1)
+    state.active_operation_name = "manual_processing"
+    state.active_operation_started_at = replacement_started_at
+
+    release_loader.set()
+    result = await task
+    await asyncio.sleep(0)
+
+    assert result.status == "no_work"
+    assert runtime.task is None
+    assert runtime.snapshot().operation_id is None
+    assert runtime.snapshot().started_at is None
+    assert task not in state.tracked_tasks
+    assert state.operation_lock.locked() is False
+    assert state.active_operation_name == "manual_processing"
+    assert state.active_operation_started_at == replacement_started_at
+
+    reset_state_for_tests()

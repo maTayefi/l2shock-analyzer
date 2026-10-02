@@ -40,7 +40,7 @@ def test_local_input_errors_are_value_errors() -> None:
 
 
 def test_preset_option_label() -> None:
-    option = AnalysisPresetOption(
+    option_without_markets = AnalysisPresetOption(
         preset_hash="a" * 64,
         base="btc",
         algorithm_version="v1",
@@ -53,7 +53,31 @@ def test_preset_option_label() -> None:
         },
     )
 
-    assert option.label == ("BTC | depth 0..0.01 | v1 | aaaaaaaaaaaa")
+    assert option_without_markets.label == (
+        "BTC | market composition unavailable | depth 0..0.01 | v1 | aaaaaaaaaaaa"
+    )
+
+    option_with_markets = AnalysisPresetOption(
+        preset_hash="b" * 64,
+        base="eth",
+        algorithm_version="v1",
+        created_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        config_json={
+            "depth_band": {
+                "lower_fraction": "0",
+                "upper_fraction": "0.05",
+            },
+            "eligible_markets": [
+                {"venue": "binance_futures", "instrument": "ETHUSDT"},
+                {"venue": "okx_futures", "instrument": "ETH-USDT-SWAP"},
+            ],
+        },
+    )
+
+    assert option_with_markets.label == (
+        "ETH | binance_futures/ETHUSDT + okx_futures/ETH-USDT-SWAP | "
+        "depth 0..0.05 | v1 | bbbbbbbbbbbb"
+    )
 
 
 def test_navigation_window_validation() -> None:
