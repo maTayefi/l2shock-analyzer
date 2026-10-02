@@ -299,7 +299,7 @@ def build_fetch_tab(
                 remote_depth_upper = (
                     ui.input(
                         label="Remote depth upper fraction",
-                        value="0.01",
+                        value="0.25",
                     )
                     .props("type=number min=0 max=0.999999 step=0.0001")
                     .classes("w-60")
@@ -536,7 +536,7 @@ def build_fetch_tab(
                 depth_upper_fraction = (
                     ui.input(
                         label="Depth upper fraction",
-                        value="0.01",
+                        value="0.25",
                     )
                     .props("type=number min=0 max=0.999999 step=0.0001")
                     .classes("w-56")

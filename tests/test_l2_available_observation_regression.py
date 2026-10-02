@@ -205,13 +205,9 @@ def test_different_depths_do_not_share_component_hashes() -> None:
     )
 
     narrow_hashes = {
-        component.preset_hash
-        for component in component_data_presets(narrow)
+        component.preset_hash for component in component_data_presets(narrow)
     }
-    wide_hashes = {
-        component.preset_hash
-        for component in component_data_presets(wide)
-    }
+    wide_hashes = {component.preset_hash for component in component_data_presets(wide)}
 
     assert narrow.preset_hash != wide.preset_hash
     assert narrow_hashes.isdisjoint(wide_hashes)
