@@ -1124,7 +1124,6 @@ def test_planner_repairs_price_on_blocked_hour_without_frontier() -> None:
     ) == latest - timedelta(hours=1)
 
 
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("worker_fails", (False, True))
 async def test_joined_remote_worker_preserves_normal_outcome_and_context(
@@ -1238,8 +1237,7 @@ def test_remote_worker_routes_thread_calls_through_joining_helper() -> None:
     helper = next(
         node
         for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_to_thread_joined"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_to_thread_joined"
     )
     direct_thread_calls = [
         node

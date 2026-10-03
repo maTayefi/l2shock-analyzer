@@ -81,7 +81,10 @@ from l2shock.remote import (
 from l2shock.timeutils import now_utc, require_utc_hour
 import logging
 import time as _time_mod
+
 log = logging.getLogger(__name__)
+
+
 async def _to_thread_joined[T](
     function: Callable[..., T],
     /,
@@ -2165,7 +2168,7 @@ def main(argv: list[str] | None = None) -> int:
         return int(RemoteWorkerExitStatus.UNEXPECTED_ERROR)
 
     result_dict = result.to_dict()
-    if isinstance(result, RemoteCatchUpRunResult) and hasattr(result, '_timing'):
+    if isinstance(result, RemoteCatchUpRunResult) and hasattr(result, "_timing"):
         result_dict["timing"] = result._timing  # type: ignore[attr-defined]
     print(
         json.dumps(

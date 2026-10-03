@@ -108,4 +108,51 @@ class AsyncRollingWindowRateLimiter:
         return None
 
 
-__all__ = ["AsyncRollingWindowRateLimiter"]
+_SHARED_LIMITER_ATTRIBUTE: Final[str] = (
+    "_l2shock_cryptohft_shared_rolling_window_limiter"
+)
+
+
+def get_shared_acquisition_rate_limiter(
+    limit: int,
+) -> AsyncRollingWindowRateLimiter:
+    """Return the default acquisition limiter owned by the running loop.
+
+    Downloader replacement must not reset the provider's rolling admission
+    history. Keep the limiter on its owning loop rather than in a process-global
+    singleton that could bind an asyncio.Lock to the wrong loop.
+
+    A lower requested limit takes effect without discarding history. A higher
+    requested limit does not increase admission during this loop's lifetime.
+    Explicitly injected downloader limiters bypass this default accessor.
+    """
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise ValueError("limit must be an integer")
+
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+
+    loop = asyncio.get_running_loop()
+    existing = getattr(loop, _SHARED_LIMITER_ATTRIBUTE, None)
+
+    if existing is None:
+        existing = AsyncRollingWindowRateLimiter(limit)
+        setattr(loop, _SHARED_LIMITER_ATTRIBUTE, existing)
+        return existing
+
+    if not isinstance(existing, AsyncRollingWindowRateLimiter):
+        raise RuntimeError(
+            "The event loop's shared acquisition limiter has invalid ownership"
+        )
+
+    # This synchronous adjustment has no intervening await. It cannot reset
+    # admissions or race another coroutine on the same event-loop thread.
+    existing._limit = min(existing.limit, limit)
+
+    return existing
+
+
+__all__ = [
+    "AsyncRollingWindowRateLimiter",
+    "get_shared_acquisition_rate_limiter",
+]

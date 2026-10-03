@@ -1425,7 +1425,10 @@ def _execute_raw_pruning(
                         }
                     )
 
-    except Exception:
+    except BaseException:
+        # An interruption rolls back the transaction just like an ordinary
+        # failure. Restore every earlier successful rename before allowing
+        # that interruption to leave the batch.
         for original, temporary, _item, _spec in reversed(renamed):
             try:
                 if temporary.exists() and not original.exists():

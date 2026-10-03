@@ -29,6 +29,7 @@ Environment:
   L2SHOCK_HF_REPO_ID   - HF dataset repo ID (default: maTayefi/l2shock-processed)
   L2SHOCK__CRYPTOHFT__API_KEY - Optional CryptoHFTData API key
 """
+
 from __future__ import annotations
 
 import argparse
@@ -102,12 +103,12 @@ def _check_archive_exists(venue: str, symbol: str, hour_utc: datetime) -> bool:
     hour_str = hour_utc.strftime("%H")
     path = f"{venue}/{date_str}/{hour_str}/{symbol}_orderbook.parquet"
     url = f"https://api.cryptohftdata.com/v1/download?file={path}"
-    
+
     api_key = os.environ.get("L2SHOCK__CRYPTOHFT__API_KEY", "")
     params = {}
     if api_key:
         params["api_key"] = api_key
-        
+
     try:
         with httpx.Client(timeout=15.0, follow_redirects=True) as client:
             # Use Range to avoid downloading the whole file and bypassing HEAD issues
@@ -117,7 +118,9 @@ def _check_archive_exists(venue: str, symbol: str, hour_utc: datetime) -> bool:
         return False
 
 
-def _download_archive(venue: str, symbol: str, hour_utc: datetime, workspace: Path) -> Path:
+def _download_archive(
+    venue: str, symbol: str, hour_utc: datetime, workspace: Path
+) -> Path:
     """Download one real CryptoHFTData archive into the workspace."""
     from l2shock.acquisition import SourceDataKind, SourceFileSpec
     from l2shock.acquisition.downloader import CryptoHFTDownloader
@@ -160,7 +163,9 @@ def _download_archive(venue: str, symbol: str, hour_utc: datetime, workspace: Pa
         ) as downloader:
             artifact = await downloader.download(spec)
             if artifact is None or not artifact.local_path.exists():
-                raise RuntimeError(f"Failed to download {venue}/{symbol} for {hour_utc.isoformat()}")
+                raise RuntimeError(
+                    f"Failed to download {venue}/{symbol} for {hour_utc.isoformat()}"
+                )
             return artifact.local_path
 
     path = asyncio.run(_download())
@@ -210,7 +215,9 @@ def _process_archive(archive_path: Path, venue: str, symbol: str, hour_utc: date
         print("  ✗ No usable output checkpoint — archive lacks a real snapshot.")
         return None
 
-    print(f"  ✓ Output checkpoint produced (content_sha256={output.artifact.manifest.output_checkpoint_content_sha256})")
+    print(
+        f"  ✓ Output checkpoint produced (content_sha256={output.artifact.manifest.output_checkpoint_content_sha256})"
+    )
     print(f"  Valid seconds: {output.quality_summary.get('valid_count', 0)}")
     print(f"  Invalid seconds: {output.quality_summary.get('invalid_count', 0)}")
 
@@ -245,7 +252,9 @@ def _publish_to_hf(output) -> bool:
     return True
 
 
-def seed_one_chain_manual(venue: str, symbol: str, date_str: str, hour_str: str) -> bool:
+def seed_one_chain_manual(
+    venue: str, symbol: str, date_str: str, hour_str: str
+) -> bool:
     """Full pipeline: download → process → publish for one specific hour."""
     hour_utc = _parse_hour(date_str, hour_str)
     preset = _build_preset(venue, symbol)
@@ -299,7 +308,9 @@ def seed_one_chain_auto(venue: str, symbol: str, max_lookback_hours: int = 96) -
     print(f"  SEED (Auto): {venue} / {symbol}")
     print(f"  Depth: {DEPTH_LOWER} → {DEPTH_UPPER}")
     print(f"  Preset: {preset.preset_hash}")
-    print(f"  Searching backwards up to {max_lookback_hours} hours for a valid snapshot...")
+    print(
+        f"  Searching backwards up to {max_lookback_hours} hours for a valid snapshot..."
+    )
     print(f"{'='*60}")
 
     now = datetime.now(timezone.utc)
@@ -311,7 +322,9 @@ def seed_one_chain_auto(venue: str, symbol: str, max_lookback_hours: int = 96) -
         date_str = hour_utc.strftime("%Y-%m-%d")
         hour_str = hour_utc.strftime("%H")
 
-        print(f"\n[{i+1}/{max_lookback_hours}] Probing {date_str} {hour_str}:00 UTC ...")
+        print(
+            f"\n[{i+1}/{max_lookback_hours}] Probing {date_str} {hour_str}:00 UTC ..."
+        )
 
         if not _check_archive_exists(venue, symbol, hour_utc):
             print("  ⤷ Archive not available yet or missing.")
@@ -342,14 +355,18 @@ def seed_one_chain_auto(venue: str, symbol: str, max_lookback_hours: int = 96) -
             try:
                 success = _publish_to_hf(output)
                 if success:
-                    print(f"\n  ✓✓✓ {venue}/{symbol} seeded successfully at {hour_utc.isoformat()} ✓✓✓")
+                    print(
+                        f"\n  ✓✓✓ {venue}/{symbol} seeded successfully at {hour_utc.isoformat()} ✓✓✓"
+                    )
                     return True
             except Exception as exc:
                 print(f"  ✗ Publication failed: {exc}")
                 traceback.print_exc()
                 continue
 
-    print(f"\n✗ Failed to find a valid snapshot for {venue}/{symbol} in the last {max_lookback_hours} hours.")
+    print(
+        f"\n✗ Failed to find a valid snapshot for {venue}/{symbol} in the last {max_lookback_hours} hours."
+    )
     return False
 
 
@@ -357,12 +374,23 @@ def main():
     parser = argparse.ArgumentParser(
         description="Seed remote chains with real CryptoHFTData snapshots at 25% depth."
     )
-    parser.add_argument("--venue", choices=["binance_futures", "bybit"], help="Venue to seed")
+    parser.add_argument(
+        "--venue", choices=["binance_futures", "bybit"], help="Venue to seed"
+    )
     parser.add_argument("--symbol", help="e.g. BTCUSDT or ETHUSDT")
-    parser.add_argument("--date", help="YYYY-MM-DD (optional, auto-discovers if omitted)")
+    parser.add_argument(
+        "--date", help="YYYY-MM-DD (optional, auto-discovers if omitted)"
+    )
     parser.add_argument("--hour", help="00-23 (optional, auto-discovers if omitted)")
-    parser.add_argument("--all", action="store_true", help="Auto-seed all 4 supported chains")
-    parser.add_argument("--lookback", type=int, default=96, help="Max hours to look back for auto-discovery (default: 96)")
+    parser.add_argument(
+        "--all", action="store_true", help="Auto-seed all 4 supported chains"
+    )
+    parser.add_argument(
+        "--lookback",
+        type=int,
+        default=96,
+        help="Max hours to look back for auto-discovery (default: 96)",
+    )
 
     args = parser.parse_args()
 
@@ -370,12 +398,14 @@ def main():
         chains = list(SEED_CHAINS)
         results = {}
         for venue, symbol in chains:
-            success = seed_one_chain_auto(venue, symbol, max_lookback_hours=args.lookback)
+            success = seed_one_chain_auto(
+                venue, symbol, max_lookback_hours=args.lookback
+            )
             results[f"{venue}/{symbol}"] = success
-        
-        print("\n" + "="*60)
+
+        print("\n" + "=" * 60)
         print("AUTO-SEED SUMMARY")
-        print("="*60)
+        print("=" * 60)
         for chain, success in results.items():
             status = "✓ SUCCESS" if success else "✗ FAILED"
             print(f"  {chain:<25} {status}")
@@ -383,7 +413,7 @@ def main():
 
     if not args.venue or not args.symbol:
         parser.error("You must provide --venue and --symbol, or use --all.")
-        
+
     chain = (args.venue, args.symbol.upper())
     if chain not in SEED_CHAINS:
         print(f"Unsupported chain: {args.venue}/{args.symbol}")
@@ -391,10 +421,14 @@ def main():
         return 1
 
     if args.date and args.hour:
-        success = seed_one_chain_manual(args.venue, args.symbol.upper(), args.date, args.hour)
+        success = seed_one_chain_manual(
+            args.venue, args.symbol.upper(), args.date, args.hour
+        )
     else:
-        success = seed_one_chain_auto(args.venue, args.symbol.upper(), max_lookback_hours=args.lookback)
-        
+        success = seed_one_chain_auto(
+            args.venue, args.symbol.upper(), max_lookback_hours=args.lookback
+        )
+
     return 0 if success else 1
 
 

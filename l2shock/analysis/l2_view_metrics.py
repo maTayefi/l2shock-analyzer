@@ -195,8 +195,8 @@ def _ohlc(value: Sequence[object] | None) -> FloatOhlc | None:
     return (_f(value[0]), _f(value[1]), _f(value[2]), _f(value[3]))
 
 
-def _share_close(bar: L2ViewBar) -> float | None:
-    return None if bar.bid_share_pct is None else _f(bar.bid_share_pct[3])
+def _share_close(bar: L2ViewBar) -> Fraction | None:
+    return None if bar.bid_share_pct is None else Fraction(bar.bid_share_pct[3])
 
 
 def _close(bar: L2ViewBar, channel: str) -> Fraction | None:
@@ -222,25 +222,39 @@ def compute_l2_view_metric(
         return tuple(_ohlc(bar.bid_share_pct) for bar in bars)
 
     if selected is L2ViewMetric.IMBALANCE_PCT:
-        # Imbalance % = 2 * BidShare % - 100 is monotonic increasing.
+        # This increasing transformation preserves OHLC ordering.
+        # Transform the exact ratios before converting coordinates.
         for bar in bars:
-            s = _ohlc(bar.bid_share_pct)
-            result.append(None if s is None else tuple(2 * v - 100 for v in s))  # type: ignore[arg-type]
+            share = bar.bid_share_pct
+            result.append(
+                None
+                if share is None
+                else _ohlc(tuple(2 * Fraction(value) - 100 for value in share))
+            )
         return tuple(result)
 
     if selected is L2ViewMetric.ASK_SHARE_PCT:
-        # Ask % = 100 - Bid % is monotonic decreasing: high and low swap.
+        # This decreasing transformation swaps the high and low.
         for bar in bars:
-            s = _ohlc(bar.bid_share_pct)
+            share = bar.bid_share_pct
             result.append(
-                None if s is None else (100 - s[0], 100 - s[2], 100 - s[1], 100 - s[3])
+                None
+                if share is None
+                else _ohlc(
+                    (
+                        100 - Fraction(share[0]),
+                        100 - Fraction(share[2]),
+                        100 - Fraction(share[1]),
+                        100 - Fraction(share[3]),
+                    )
+                )
             )
         return tuple(result)
 
     if selected is L2ViewMetric.BID_ASK_SHARES_PCT:
         for bar in bars:
-            c = _share_close(bar)
-            result.append(None if c is None else (c, 100.0 - c))
+            close = _share_close(bar)
+            result.append(None if close is None else (_f(close), _f(100 - close)))
         return tuple(result)
 
     previous: L2ViewBar | None = None
@@ -260,7 +274,7 @@ def compute_l2_view_metric(
             elif selected is L2ViewMetric.IMBALANCE_CHANGE_PP:
                 now, before_s = _share_close(bar), _share_close(previous)
                 if now is not None and before_s is not None:
-                    value = 2 * (now - before_s)
+                    value = _f(2 * (now - before_s))
             elif selected is L2ViewMetric.RELATIVE_SIDE_CHANGE_PCT:
                 b0, a0 = _close(previous, "bid"), _close(previous, "ask")
                 if b0 and a0:

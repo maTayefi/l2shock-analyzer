@@ -33,6 +33,7 @@ from l2shock.acquisition.http import (
 from l2shock.acquisition.models import SourceFileSpec
 from l2shock.acquisition.rate_limit import (
     AsyncRollingWindowRateLimiter,
+    get_shared_acquisition_rate_limiter,
 )
 from l2shock.acquisition.results import (
     DownloadArtifact,
@@ -135,13 +136,10 @@ class CryptoHFTDownloader:
         self._free_bytes_provider = free_bytes_provider
         self._use_api_key = bool(use_api_key)
 
-        self._rate_limiter = (
-            rate_limiter
-            if rate_limiter is not None
-            else AsyncRollingWindowRateLimiter(
-                cryptohft.download_rate_limit_per_minute,
-            )
-        )
+        # Default admission belongs to the running event loop, not this
+        # downloader's lifetime. Resolve it lazily so synchronous construction
+        # still works. Explicit injection retains its existing behavior.
+        self._rate_limiter: AsyncRollingWindowRateLimiter | None = rate_limiter
 
         self._client = client
         self._owns_client = client is None
@@ -280,8 +278,18 @@ class CryptoHFTDownloader:
         self,
         cancel_event: asyncio.Event | None,
     ) -> None:
+        self._check_cancelled(cancel_event)
+
+        limiter = self._rate_limiter
+
+        if limiter is None:
+            limiter = get_shared_acquisition_rate_limiter(
+                self._cryptohft.download_rate_limit_per_minute,
+            )
+            self._rate_limiter = limiter
+
         await self._await_or_cancel(
-            self._rate_limiter.acquire(),
+            limiter.acquire(),
             cancel_event=cancel_event,
         )
 

@@ -491,7 +491,7 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
                 shown,
                 owner_id=projection.input_id,
                 preserve_viewport=False,
-                shock_time_viewport=viewport,
+                shock_time_viewport=None if new_source else viewport,
             )
             if commit is None:
                 raise RuntimeError("Chart publication was superseded")
@@ -681,10 +681,15 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
                     _admit(loaded.request, options, viewport)
                     return
 
+                new_source = (
+                    displayed is None
+                    or displayed.request != projection.request
+                    or displayed.input_id != projection.input_id
+                )
                 await _publish(
                     projection,
-                    viewport=viewport,
-                    new_source=False,
+                    viewport=None if new_source else viewport,
+                    new_source=new_source,
                     timeframe_setting=(
                         0
                         if options.timeframe_seconds is None
@@ -767,7 +772,11 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
                     if successful_operation_id == pending_operation_id
                     else None
                 )
-                same_range = loaded is not None and loaded.request == projection.request
+                same_range = (
+                    displayed is not None
+                    and displayed.request == projection.request
+                    and displayed.input_id == projection.input_id
+                )
                 loaded = projection
 
                 try:
@@ -787,7 +796,9 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
                     log.exception("Could not publish completed Analysis.")
                     status.set_text(
                         "Data loaded, but chart publication failed. "
-                        "Try changing the viewing controls to republish."
+                        "Change Timeframe or Maximum viewing bars to retry "
+                        "the loaded result. Panel and Warnings changes only "
+                        "rebuild the last displayed result."
                     )
 
                 # Record a handled publication attempt, not a claim that

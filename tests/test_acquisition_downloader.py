@@ -590,3 +590,116 @@ async def test_terminal_http_status_is_not_retried(
 
     assert attempts == 1
     assert sleeps == []
+
+
+def test_default_downloader_can_be_constructed_without_running_loop(
+    tmp_path: Path,
+) -> None:
+    downloader = CryptoHFTDownloader(
+        cryptohft=_cryptohft(),
+        storage=_storage(tmp_path),
+        free_bytes_provider=lambda _path: 10 * 1024**3,
+    )
+
+    assert downloader._rate_limiter is None
+    assert downloader._client is None
+
+
+@pytest.mark.asyncio
+async def test_default_budget_survives_downloader_close_and_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import l2shock.acquisition.rate_limit as rate_module
+
+    clock_value = 0.0
+    sleeps: list[float] = []
+
+    def clock() -> float:
+        return clock_value
+
+    async def sleep(seconds: float) -> None:
+        nonlocal clock_value
+        sleeps.append(seconds)
+        clock_value += seconds
+
+    shared = rate_module.AsyncRollingWindowRateLimiter(
+        1,
+        clock=clock,
+        sleeper=sleep,
+    )
+    loop = asyncio.get_running_loop()
+
+    monkeypatch.setattr(
+        loop,
+        rate_module._SHARED_LIMITER_ATTRIBUTE,
+        shared,
+        raising=False,
+    )
+
+    settings = _cryptohft()
+    settings.download_rate_limit_per_minute = 1
+
+    first = CryptoHFTDownloader(
+        cryptohft=settings,
+        storage=_storage(tmp_path),
+        free_bytes_provider=lambda _path: 10 * 1024**3,
+    )
+
+    await first._acquire_rate_slot(None)
+    assert first._rate_limiter is shared
+    assert sleeps == []
+
+    await first.aclose()
+
+    second = CryptoHFTDownloader(
+        cryptohft=settings,
+        storage=_storage(tmp_path),
+        free_bytes_provider=lambda _path: 10 * 1024**3,
+    )
+
+    try:
+        await second._acquire_rate_slot(None)
+
+        assert second._rate_limiter is shared
+        assert sleeps == [pytest.approx(60.0)]
+    finally:
+        await second.aclose()
+
+
+@pytest.mark.asyncio
+async def test_explicit_downloader_limiter_does_not_use_shared_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import l2shock.acquisition.rate_limit as rate_module
+
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(
+        loop,
+        rate_module._SHARED_LIMITER_ATTRIBUTE,
+        None,
+        raising=False,
+    )
+    custom = rate_module.AsyncRollingWindowRateLimiter(60)
+
+    downloader = CryptoHFTDownloader(
+        cryptohft=_cryptohft(),
+        storage=_storage(tmp_path),
+        rate_limiter=custom,
+        free_bytes_provider=lambda _path: 10 * 1024**3,
+    )
+
+    try:
+        await downloader._acquire_rate_slot(None)
+
+        assert downloader._rate_limiter is custom
+        assert (
+            getattr(
+                loop,
+                rate_module._SHARED_LIMITER_ATTRIBUTE,
+            )
+            is None
+        )
+    finally:
+        await downloader.aclose()

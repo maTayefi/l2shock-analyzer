@@ -653,8 +653,11 @@ class _TradeIdFingerprintStore:
                 (
                     trade_id,
                     symbol,
-                    format(price, "f"),
-                    format(quantity, "f"),
+                    # This temporary store compares reconstructed Decimals,
+                    # not their textual spellings. Scientific notation retains
+                    # the exact value without expanding exponent-implied zeros.
+                    str(price),
+                    str(quantity),
                     received_time_ns,
                     event_time_ms,
                     trade_time_ms,

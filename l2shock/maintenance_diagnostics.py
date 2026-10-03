@@ -40,6 +40,7 @@ from l2shock.ingest.checkpoint_codec import (
     load_checkpoint_file,
 )
 from l2shock.processing.checkpoint_references import (
+    CheckpointReferenceError,
     collect_referenced_checkpoint_sha256s,
 )
 from l2shock.processing.checkpoint_store import (
@@ -388,7 +389,51 @@ def checkpoint_storage_diagnostics(
         )
         source_identities.add(identity_key)
 
-        quality = raw_quality if isinstance(raw_quality, Mapping) else {}
+        source_payload = {
+            "provider": identity_key[0],
+            "venue": identity_key[1],
+            "instrument": identity_key[2],
+            "hour_utc": hour.isoformat(),
+            "status": str(status),
+        }
+
+        if raw_quality is None:
+            continue
+
+        if not isinstance(raw_quality, Mapping):
+            malformed_source_references.append(
+                {
+                    **source_payload,
+                    "problem": "Order-book source quality_json must be an object",
+                }
+            )
+            continue
+
+        quality = raw_quality
+
+        # The standard output key is checked below because it also owns
+        # the expected local output-checkpoint identity. Other durable
+        # reference keys still need malformed-reference diagnostics.
+        for reference_key in (
+            "input_checkpoint_content_sha256",
+            "remote_input_checkpoint_content_sha256",
+            "remote_output_checkpoint_content_sha256",
+        ):
+            reference_value = quality.get(reference_key)
+
+            if (
+                reference_value is not None
+                and _canonical_sha256_or_none(reference_value) is None
+            ):
+                malformed_source_references.append(
+                    {
+                        **source_payload,
+                        "problem": (
+                            f"{reference_key} is not a canonical lowercase SHA-256"
+                        ),
+                    }
+                )
+
         raw_digest = quality.get("output_checkpoint_content_sha256")
 
         if raw_digest is None:
@@ -414,7 +459,20 @@ def checkpoint_storage_diagnostics(
 
         expected_by_identity[identity_key] = digest
 
-    referenced_checkpoint_hashes = collect_referenced_checkpoint_sha256s(session)
+    reference_graph_complete = True
+    reference_graph_error: str | None = None
+
+    try:
+        referenced_checkpoint_hashes = collect_referenced_checkpoint_sha256s(
+            session
+        )
+    except CheckpointReferenceError as exc:
+        # Destructive maintenance keeps using the strict collector and
+        # therefore still fails closed. A read-only inventory can continue,
+        # but an incomplete graph cannot establish orphan ownership.
+        referenced_checkpoint_hashes = frozenset()
+        reference_graph_complete = False
+        reference_graph_error = type(exc).__name__
 
     valid_artifacts: list[dict[str, object]] = []
     invalid_artifacts: list[dict[str, object]] = []
@@ -471,7 +529,10 @@ def checkpoint_storage_diagnostics(
             }
             valid_artifacts.append(item)
 
-            if encoding_info.content_sha256 not in referenced_checkpoint_hashes:
+            if (
+                reference_graph_complete
+                and encoding_info.content_sha256 not in referenced_checkpoint_hashes
+            ):
                 orphan_artifacts.append(
                     {
                         **item,
@@ -527,6 +588,10 @@ def checkpoint_storage_diagnostics(
         "invalid_artifact_count": len(invalid_artifacts),
         "total_bytes": total_bytes,
         "expected_reference_count": len(expected_by_identity),
+        "reference_graph_complete": reference_graph_complete,
+        "reference_graph_error": reference_graph_error,
+        "reference_graph_error_count": int(not reference_graph_complete),
+        "orphan_classification_available": reference_graph_complete,
         "orphan_artifact_count": len(orphan_artifacts),
         "missing_expected_count": len(missing_expected),
         "malformed_source_reference_count": len(malformed_source_references),
@@ -1350,6 +1415,7 @@ def maintenance_diagnostics_report(
             int(checkpoint["orphan_artifact_count"]),
             int(checkpoint["missing_expected_count"]),
             int(checkpoint["malformed_source_reference_count"]),
+            int(checkpoint["reference_graph_error_count"]),
             int(stale["stale_downloading_count"]),
             int(stale["stale_processing_count"]),
             int(stale_fetch_runs["stale_running_fetch_run_count"]),

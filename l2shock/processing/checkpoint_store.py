@@ -11,6 +11,14 @@ from pathlib import Path
 from typing import Final
 
 from l2shock.acquisition.models import SourceDataKind, SourceFileSpec
+from l2shock.filesystem import (
+    OwnedPathError,
+    absolute_path_without_resolution,
+    path_entry_exists,
+    path_entry_is_link_like,
+    prepare_owned_file_path,
+    require_owned_regular_file,
+)
 from l2shock.ingest.checkpoint_codec import (
     CHECKPOINT_FORMAT_VERSION,
     CheckpointCodecError,
@@ -155,7 +163,7 @@ class CheckpointArtifact:
         if not isinstance(self.identity, CheckpointIdentity):
             raise ProcessingContractError("identity must be a CheckpointIdentity")
 
-        path = Path(self.path).expanduser().resolve()
+        path = absolute_path_without_resolution(self.path)
         object.__setattr__(self, "path", path)
 
         if not isinstance(self.checkpoint, OrderBookCheckpoint):
@@ -321,22 +329,51 @@ class CheckpointStore:
     """
 
     def __init__(self, cache_root: Path) -> None:
-        root = Path(cache_root).expanduser().resolve()
+        self._cache_root = absolute_path_without_resolution(cache_root)
+        self._root = self._cache_root / "checkpoints"
 
-        if root.exists() and not root.is_dir():
-            raise CheckpointStoreError(
-                "Configured cache root exists but is not a directory"
-            )
+        # Construction and discovery are read-only. Validate every existing
+        # component without creating absent cache/checkpoint directories.
+        self._validate_owned_directory(self._root)
 
-        self._cache_root = root
-        self._root = (root / "checkpoints").resolve()
+    def _validate_owned_directory(self, path: Path) -> Path:
+        """Validate existing directory components without following aliases."""
+        candidate = absolute_path_without_resolution(path)
 
         try:
-            self._root.relative_to(self._cache_root)
+            relative = candidate.relative_to(self._cache_root)
         except ValueError as exc:
             raise CheckpointStoreError(
-                "Checkpoint root escaped the configured cache root"
+                "Checkpoint directory escaped the configured cache root"
             ) from exc
+
+        current = self._cache_root
+
+        try:
+            for part in (None, *relative.parts):
+                if part is not None:
+                    current = current / part
+
+                if not path_entry_exists(current):
+                    # Descendants of the first absent directory cannot be
+                    # inspected yet. Do not create them during discovery.
+                    return candidate
+
+                if path_entry_is_link_like(current):
+                    raise CheckpointStoreError(
+                        "Checkpoint directory contains a symbolic link or junction"
+                    )
+
+                if not current.is_dir():
+                    raise CheckpointStoreError(
+                        "Checkpoint directory component is not a directory"
+                    )
+        except (OwnedPathError, OSError) as exc:
+            raise CheckpointStoreError(
+                "Could not validate checkpoint directory ownership"
+            ) from exc
+
+        return candidate
 
     @property
     def cache_root(self) -> Path:
@@ -356,14 +393,14 @@ class CheckpointStore:
         date_part = identity.through_hour_utc.strftime("%Y-%m-%d")
         hour_part = identity.through_hour_utc.strftime("%H")
 
-        result = (
+        result = absolute_path_without_resolution(
             self._root
             / identity.provider
             / identity.venue
             / identity.instrument
             / date_part
             / hour_part
-        ).resolve()
+        )
 
         try:
             result.relative_to(self._root)
@@ -372,7 +409,7 @@ class CheckpointStore:
                 "Generated checkpoint directory escaped the checkpoint root"
             ) from exc
 
-        return result
+        return self._validate_owned_directory(result)
 
     def path_for(
         self,
@@ -400,6 +437,13 @@ class CheckpointStore:
         *,
         expected_identity: CheckpointIdentity,
     ) -> CheckpointArtifact:
+        try:
+            path = require_owned_regular_file(self._cache_root, path)
+        except (OwnedPathError, OSError) as exc:
+            raise CheckpointStoreError(
+                "Checkpoint artifact is not an application-owned regular file"
+            ) from exc
+
         filename_match = _CHECKPOINT_FILENAME_RE.fullmatch(path.name)
 
         if filename_match is None:
@@ -435,8 +479,17 @@ class CheckpointStore:
             info.content_sha256,
         )
 
-        if path.resolve() != canonical_path.resolve():
+        if path != canonical_path:
             raise CheckpointStoreError("Checkpoint file path is not canonical")
+
+        # Revalidate after reading. This catches an observable alias replacement
+        # during validation, without claiming an adversarial race-free open.
+        try:
+            require_owned_regular_file(self._cache_root, path)
+        except (OwnedPathError, OSError) as exc:
+            raise CheckpointStoreError(
+                "Checkpoint artifact ownership changed during validation"
+            ) from exc
 
         return CheckpointArtifact(
             identity=actual_identity,
@@ -470,7 +523,8 @@ class CheckpointStore:
             path.name
             for path in checkpoint_files
             if (
-                not path.is_file()
+                path_entry_is_link_like(path)
+                or not path.is_file()
                 or _CHECKPOINT_FILENAME_RE.fullmatch(path.name) is None
             )
         ]
@@ -533,6 +587,15 @@ class CheckpointStore:
             return existing
 
         try:
+            destination = prepare_owned_file_path(
+                self._cache_root,
+                destination,
+                create_parents=True,
+            )
+
+            if path_entry_exists(destination):
+                require_owned_regular_file(self._cache_root, destination)
+
             write_checkpoint_file(
                 destination,
                 checkpoint,
@@ -543,7 +606,7 @@ class CheckpointStore:
             # artifact after the initial lookup. Verify it through the public
             # reader rather than assuming equivalence.
             pass
-        except CheckpointCodecError as exc:
+        except (OwnedPathError, CheckpointCodecError, OSError) as exc:
             raise CheckpointStoreError("Could not publish checkpoint artifact") from exc
 
         published = self.find_exact(identity)

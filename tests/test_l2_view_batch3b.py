@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import inspect
 import logging
 import threading
 import warnings
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -16,6 +18,8 @@ from typing import Any
 
 import pytest
 
+
+from l2shock.analysis.l2_view_metrics import L2ViewMetric
 from l2shock.analysis.l2_view_stream import (
     L2ViewBar,
     L2ViewLoadOptions,
@@ -556,4 +560,433 @@ def test_start_checks_render_transaction_before_admission() -> None:
     assert "render_lock.locked()" in handler_source
     assert handler_source.index("render_lock.locked()") < (
         handler_source.index("_admit(")
+    )
+
+
+def _completion_snapshot(
+    *,
+    projection,
+    operation_id: str,
+    successful_operation_id: str | None,
+    timeframe_setting: int | None,
+    sequence: int = 1,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        phase=L2ViewRuntimePhase.COMPLETED,
+        is_running=False,
+        completion_sequence=sequence,
+        hours_done=1,
+        hours_total=1,
+        last_projection=projection,
+        last_error=None,
+        operation_id=operation_id,
+        stop_requested=False,
+        last_projection_operation_id=successful_operation_id,
+        last_projection_timeframe_setting=timeframe_setting,
+    )
+
+
+def _completion_ui_harness(
+    snapshot,
+    *,
+    initial_projection=None,
+    initial_setting=0,
+    initial_successful_operation_id=None,
+):
+    loaded = initial_projection
+    displayed = initial_projection
+    displayed_timeframe_setting = initial_setting
+    observed_successful_operation_id = initial_successful_operation_id
+    observed_completion = 0
+    pending_operation_id = None
+    pending_viewport = None
+    publishing = False
+
+    class _Controller:
+        def __init__(self):
+            self.fail = False
+            self.calls: list[dict] = []
+            self.commit = SimpleNamespace(
+                owner_id="initial",
+                publication=SimpleNamespace(render_token="t" * 32),
+            )
+
+        async def publish(
+            self,
+            option,
+            *,
+            owner_id,
+            preserve_viewport,
+            shock_time_viewport=None,
+            temporal_viewport=None,
+        ):
+            self.calls.append(
+                {
+                    "owner_id": owner_id,
+                    "shock_time_viewport": shock_time_viewport,
+                    "preserve_viewport": preserve_viewport,
+                }
+            )
+            if self.fail:
+                raise RuntimeError("Mock publish failure")
+            self.commit = SimpleNamespace(
+                owner_id=owner_id,
+                publication=SimpleNamespace(render_token="t" * 32),
+            )
+            return self.commit
+
+    controller = _Controller()
+
+    class _Status:
+        def __init__(self):
+            self.text = ""
+
+        def set_text(self, value):
+            self.text = value
+
+    status = _Status()
+
+    namespace: dict[str, Any] = {
+        "log": logging.getLogger("l2shock.ui.tab_l2_view"),
+        "persistent_notify": lambda msg, **kwargs: None,
+        "capture_shock_time_viewport": lambda chart: None,
+        "capture_y_viewports": lambda chart, **kwargs: {},
+        "panel_a": SimpleNamespace(value="imbalance_pct"),
+        "panel_b": SimpleNamespace(value="delta"),
+        "warnings_switch": SimpleNamespace(value=True),
+    }
+
+    class _Runtime:
+        def __init__(self):
+            self._snap = snapshot
+
+        def snapshot(self):
+            return self._snap
+
+    runtime = _Runtime()
+
+    async def _publish_impl(projection, *, viewport, new_source, timeframe_setting):
+        nonlocal displayed, displayed_timeframe_setting, publishing
+        publishing = True
+        try:
+            commit = await controller.publish(
+                {},
+                owner_id=projection.input_id,
+                preserve_viewport=False,
+                shock_time_viewport=viewport,
+            )
+            if commit is None:
+                raise RuntimeError("Chart publication was superseded")
+            displayed = projection
+            displayed_timeframe_setting = timeframe_setting
+            valid_l2_bars = sum(bar.valid_l2 for bar in projection.bars)
+            if new_source and (
+                valid_l2_bars == 0
+                or projection.unusable_l2_seconds > 0
+                or projection.partial_market_seconds > 0
+            ):
+                notify_fn = namespace.get("persistent_notify")
+                if notify_fn is not None:
+                    notify_fn(
+                        "quality warning",
+                        title="L2 data-quality warning",
+                        notification_type="warning",
+                    )
+        finally:
+            publishing = False
+
+    async def poll():
+        nonlocal loaded, displayed, displayed_timeframe_setting
+        nonlocal observed_successful_operation_id, observed_completion
+        nonlocal pending_operation_id, pending_viewport, publishing
+
+        snap = runtime.snapshot()
+        if publishing or snap.is_running:
+            return
+        successful_operation_id = snap.last_projection_operation_id
+        has_unhandled_success = (
+            snap.last_projection is not None
+            and successful_operation_id is not None
+            and successful_operation_id != observed_successful_operation_id
+        )
+        if (
+            snap.completion_sequence == observed_completion
+            and not has_unhandled_success
+        ):
+            return
+        if has_unhandled_success:
+            projection = snap.last_projection
+            viewport = (
+                pending_viewport
+                if successful_operation_id == pending_operation_id
+                else None
+            )
+            same_range = (
+                displayed is not None
+                and displayed.request == projection.request
+                and displayed.input_id == projection.input_id
+            )
+            loaded = projection
+            try:
+                tf_setting = snap.last_projection_timeframe_setting
+                if tf_setting is None:
+                    raise RuntimeError(
+                        "Successful Analysis result lacks timeframe ownership"
+                    )
+                await _publish_impl(
+                    projection,
+                    viewport=viewport,
+                    new_source=not same_range,
+                    timeframe_setting=tf_setting,
+                )
+            except Exception:
+                status.set_text(
+                    "Data loaded, but chart publication failed. "
+                    "Change Timeframe or Maximum viewing bars to retry "
+                    "the loaded result. Panel and Warnings changes only "
+                    "rebuild the last displayed result."
+                )
+            observed_successful_operation_id = successful_operation_id
+        if pending_operation_id == successful_operation_id:
+            pending_operation_id = None
+            pending_viewport = None
+        snap = runtime.snapshot()
+        if snap.is_running:
+            return
+        observed_completion = snap.completion_sequence
+
+    async def change_view():
+        nonlocal publishing
+        snap = runtime.snapshot()
+        if snap.is_running or loaded is None:
+            return
+        capture_fn = namespace.get("capture_shock_time_viewport")
+        if inspect.iscoroutinefunction(capture_fn):
+            viewport = await capture_fn(None)
+        elif callable(capture_fn):
+            viewport = capture_fn(None)
+        else:
+            viewport = None
+        new_source = (
+            displayed is None
+            or displayed.request != loaded.request
+            or displayed.input_id != loaded.input_id
+        )
+        await _publish_impl(
+            loaded,
+            viewport=None if new_source else viewport,
+            new_source=new_source,
+            timeframe_setting=displayed_timeframe_setting,
+        )
+
+    async def change_presentation():
+        nonlocal publishing
+        if displayed is None:
+            return
+        capture_fn = namespace.get("capture_shock_time_viewport")
+        if inspect.iscoroutinefunction(capture_fn):
+            viewport = await capture_fn(None)
+        elif callable(capture_fn):
+            viewport = capture_fn(None)
+        else:
+            viewport = None
+        await _publish_impl(
+            displayed,
+            viewport=viewport,
+            new_source=False,
+            timeframe_setting=displayed_timeframe_setting,
+        )
+
+    def read_state():
+        return {"loaded": loaded, "displayed": displayed}
+
+    return SimpleNamespace(
+        namespace=namespace,
+        controller=controller,
+        status=status,
+        runtime=runtime,
+        handlers={
+            "poll": poll,
+            "change_view": change_view,
+            "change_presentation": change_presentation,
+            "read_state": read_state,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_publication_cached_retry_owns_new_dataset_warning() -> None:
+    previous = _projection()
+    successful = replace(
+        previous,
+        input_id="d" * 64,
+        usable_l2_seconds=2,
+        unusable_l2_seconds=1,
+    )
+    harness = _completion_ui_harness(
+        _completion_snapshot(
+            projection=successful,
+            operation_id="operation-new",
+            successful_operation_id="operation-new",
+            timeframe_setting=0,
+        ),
+        initial_projection=previous,
+        initial_setting=0,
+    )
+    notifications = []
+    y_captures = []
+    old_viewport = object()
+
+    def notify(message, **kwargs):
+        notifications.append((message, kwargs))
+
+    async def capture_x(_chart):
+        return old_viewport
+
+    async def capture_y(_chart, **kwargs):
+        y_captures.append(kwargs)
+        return {}
+
+    harness.namespace["persistent_notify"] = notify
+    harness.namespace["capture_shock_time_viewport"] = capture_x
+    harness.namespace["capture_y_viewports"] = capture_y
+
+    harness.controller.fail = True
+    await harness.handlers["poll"]()
+
+    assert harness.handlers["read_state"]()["loaded"] is successful
+    assert harness.handlers["read_state"]()["displayed"] is previous
+    assert "Timeframe or Maximum viewing bars" in harness.status.text
+    assert notifications == []
+
+    harness.controller.fail = False
+    await harness.handlers["change_view"]()
+
+    assert harness.handlers["read_state"]()["displayed"] is successful
+    assert harness.controller.calls[-1]["owner_id"] == successful.input_id
+    assert harness.controller.calls[-1]["shock_time_viewport"] is None
+    assert y_captures == []
+    assert any(
+        kwargs.get("title") == "L2 data-quality warning"
+        for _message, kwargs in notifications
+    )
+
+
+@pytest.mark.asyncio
+async def test_same_dataset_cached_view_preserves_existing_viewport() -> None:
+    projection = _projection()
+    harness = _completion_ui_harness(
+        _completion_snapshot(
+            projection=projection,
+            operation_id="operation-existing",
+            successful_operation_id="operation-existing",
+            timeframe_setting=0,
+        ),
+        initial_projection=projection,
+        initial_setting=0,
+        initial_successful_operation_id="operation-existing",
+    )
+    viewport = object()
+    notifications = []
+
+    async def capture_x(_chart):
+        return viewport
+
+    def notify(message, **kwargs):
+        notifications.append((message, kwargs))
+
+    harness.namespace["capture_shock_time_viewport"] = capture_x
+    harness.namespace["persistent_notify"] = notify
+
+    await harness.handlers["change_view"]()
+
+    assert harness.controller.calls[-1]["shock_time_viewport"] is viewport
+    assert harness.handlers["read_state"]()["displayed"].input_id == (
+        projection.input_id
+    )
+    assert not any(
+        kwargs.get("title") == "L2 data-quality warning"
+        for _message, kwargs in notifications
+    )
+
+
+@pytest.mark.asyncio
+async def test_panel_change_after_failed_publication_keeps_displayed_source() -> None:
+    previous = _projection()
+    successful = replace(previous, input_id="e" * 64)
+    harness = _completion_ui_harness(
+        _completion_snapshot(
+            projection=successful,
+            operation_id="operation-new",
+            successful_operation_id="operation-new",
+            timeframe_setting=0,
+        ),
+        initial_projection=previous,
+        initial_setting=0,
+    )
+
+    harness.controller.fail = True
+    await harness.handlers["poll"]()
+
+    harness.controller.fail = False
+    harness.namespace["panel_a"].value = "total"
+
+    await harness.handlers["change_presentation"]()
+
+    observed = harness.handlers["read_state"]()
+    assert observed["loaded"] is successful
+    assert observed["displayed"] is previous
+    assert harness.controller.calls[-1]["owner_id"] == previous.input_id
+
+
+@pytest.mark.asyncio
+async def test_success_after_failed_publication_is_compared_to_displayed_source() -> (
+    None
+):
+    previous = _projection()
+    first_success = replace(
+        previous,
+        input_id="f" * 64,
+        usable_l2_seconds=2,
+        unusable_l2_seconds=1,
+    )
+    harness = _completion_ui_harness(
+        _completion_snapshot(
+            projection=first_success,
+            operation_id="operation-first",
+            successful_operation_id="operation-first",
+            timeframe_setting=0,
+        ),
+        initial_projection=previous,
+        initial_setting=0,
+    )
+    notifications = []
+
+    def notify(message, **kwargs):
+        notifications.append((message, kwargs))
+
+    harness.namespace["persistent_notify"] = notify
+    harness.controller.fail = True
+    await harness.handlers["poll"]()
+
+    # The next successful operation has the same request and input identity
+    # as the failed publication, but that source was never displayed.
+    harness.controller.fail = False
+
+    # Use the runtime double's snapshot method directly so this test does
+    # not depend on the name of its internal storage attribute.
+    harness.runtime.snapshot = lambda: _completion_snapshot(
+        projection=first_success,
+        operation_id="operation-second",
+        successful_operation_id="operation-second",
+        timeframe_setting=0,
+        sequence=2,
+    )
+
+    await harness.handlers["poll"]()
+
+    assert harness.handlers["read_state"]()["displayed"] is first_success
+    assert any(
+        kwargs.get("title") == "L2 data-quality warning"
+        for _message, kwargs in notifications
     )

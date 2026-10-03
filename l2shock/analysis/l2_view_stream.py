@@ -20,8 +20,9 @@ Analysis viewing policies:
 - warning runs are measured across hour and chunk boundaries over the whole
   requested range and reported only when strictly longer than a threshold.
 
-Exact Decimal arithmetic is used for Bid, Ask, Total, and Delta. Bid share
-is converted to float per second because it is only a plotting coordinate.
+Exact Decimal arithmetic is used for Bid, Ask, Total, and Delta. Percentage
+ratios remain exact Fractions through reduction and cached coarsening.
+Only completed presentation coordinates are converted to float.
 """
 
 from __future__ import annotations
@@ -236,10 +237,18 @@ class L2ViewLoadOptions:
     def __post_init__(self) -> None:
         timeframe = self.timeframe_seconds
 
-        if timeframe is not None and (
-            isinstance(timeframe, bool) or timeframe not in L2_VIEW_TIMEFRAMES_SECONDS
-        ):
-            raise L2ViewError("Unsupported viewing timeframe")
+        if timeframe is not None:
+            timeframe = _bounded_int(
+                timeframe,
+                "Viewing timeframe (seconds)",
+                1,
+                max(L2_VIEW_TIMEFRAMES_SECONDS),
+            )
+
+            if timeframe not in L2_VIEW_TIMEFRAMES_SECONDS:
+                raise L2ViewError("Unsupported viewing timeframe")
+
+            object.__setattr__(self, "timeframe_seconds", timeframe)
 
         object.__setattr__(
             self,
@@ -283,10 +292,14 @@ def select_l2_view_timeframe(
 ) -> int:
     """Explicit timeframe must fit; Auto picks the finest that fits."""
     if timeframe_seconds is not None:
-        if (
-            isinstance(timeframe_seconds, bool)
-            or timeframe_seconds not in L2_VIEW_TIMEFRAMES_SECONDS
-        ):
+        timeframe_seconds = _bounded_int(
+            timeframe_seconds,
+            "Viewing timeframe (seconds)",
+            1,
+            max(L2_VIEW_TIMEFRAMES_SECONDS),
+        )
+
+        if timeframe_seconds not in L2_VIEW_TIMEFRAMES_SECONDS:
             raise L2ViewError("Unsupported viewing timeframe")
 
         count = l2_view_bar_count(start_utc, end_utc_exclusive, timeframe_seconds)
@@ -321,7 +334,7 @@ class L2ViewBar:
     ask: DecimalOhlc | None
     total: DecimalOhlc | None
     delta: DecimalOhlc | None
-    bid_share_pct: FloatOhlc | None
+    bid_share_pct: tuple[Fraction, Fraction, Fraction, Fraction] | None
     price: DecimalOhlc | None
 
 
@@ -736,7 +749,10 @@ class _BarBuilder:
                 self._share_ok = False
                 self._s = None
             else:
-                share_pct = float(100 * Fraction(bid) / Fraction(total))
+                # Keep the ratio exact through OHLC reduction and cached
+                # coarsening. Complementary percentages and imbalance must
+                # be calculated before final float-coordinate conversion.
+                share_pct = 100 * Fraction(bid) / Fraction(total)
                 self._s = _ohlc_add(self._s, share_pct)
 
     def _flush(self) -> None:
@@ -1169,27 +1185,8 @@ def stream_l2_view(
                     for component in components
                 ]
 
-                price_rows: dict[int, Any] = {}
-
                 if price_repository is None:
                     price_tracking = False
-                elif price_status is None:
-                    try:
-                        price_rows = _price_rows_by_hour(
-                            price_repository.list_price_hours(
-                                base=request.base,
-                                start_utc=_from_epoch(chunk_start),
-                                end_utc=_from_epoch(chunk_end),
-                                verify_codec=True,
-                            ),
-                            base=request.base,
-                            chunk_start=chunk_start,
-                            chunk_end=chunk_end,
-                        )
-                    except Exception as exc:
-                        price_status = _price_failure_status(exc)
-                        price_tracking = False
-                        log.exception("Optional Analysis price context unavailable.")
 
             for hour_epoch in range(chunk_start, chunk_end, _HOUR_SECONDS):
                 check_cancel()
@@ -1207,7 +1204,35 @@ def stream_l2_view(
                 partial_total += partial
 
                 decoded_price = None
-                price_row = price_rows.get(hour_epoch)
+                price_row = None
+
+                if price_tracking and price_status is None:
+                    try:
+                        # Optional-price failure ownership is one UTC hour,
+                        # independent of the L2 streaming chunk size.
+                        with open_repositories() as (
+                            _l2_repository,
+                            hourly_price_repository,
+                        ):
+                            if hourly_price_repository is None:
+                                price_tracking = False
+                            else:
+                                hourly_price_rows = _price_rows_by_hour(
+                                    hourly_price_repository.list_price_hours(
+                                        base=request.base,
+                                        start_utc=_from_epoch(hour_epoch),
+                                        end_utc=_from_epoch(hour_epoch + _HOUR_SECONDS),
+                                        verify_codec=True,
+                                    ),
+                                    base=request.base,
+                                    chunk_start=hour_epoch,
+                                    chunk_end=hour_epoch + _HOUR_SECONDS,
+                                )
+                                price_row = hourly_price_rows.get(hour_epoch)
+                    except Exception as exc:
+                        price_status = _price_failure_status(exc)
+                        price_tracking = False
+                        log.exception("Optional Analysis price context unavailable.")
 
                 if price_row is not None and price_status is None:
                     digest.update(

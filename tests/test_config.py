@@ -372,3 +372,23 @@ def test_remote_hf_default_workflow_is_strict() -> None:
         match="default_workflow",
     ):
         Settings(**raw)
+
+
+def test_environment_example_contains_only_supported_settings(
+    monkeypatch,
+) -> None:
+    import os
+    from pathlib import Path
+
+    from l2shock.config import Settings
+
+    # Real process overrides have higher precedence than the template.
+    # Remove them only inside this isolated test; monkeypatch restores them.
+    for name in tuple(os.environ):
+        if name.upper().startswith("L2SHOCK__"):
+            monkeypatch.delenv(name, raising=False)
+
+    template = Path(__file__).resolve().parents[1] / ".env.example"
+    settings = Settings(_env_file=template)
+
+    assert settings.processing.checkpoint_search_max_hours == 168

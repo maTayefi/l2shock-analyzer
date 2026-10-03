@@ -299,24 +299,26 @@ def quarantine_file(
             f"Could not quarantine local archive {source.name!r}"
         ) from exc
 
-    metadata = {
-        "quarantined_at_utc": timestamp.isoformat(),
-        "reason": safe_reason,
-        "provider": spec.provider,
-        "venue": spec.venue,
-        "symbol": spec.symbol,
-        "data_kind": spec.data_kind.value,
-        "hour_utc": spec.hour_utc.isoformat(),
-        "remote_path": spec.remote_path,
-        "original_filename": source.name,
-        "quarantined_filename": destination.name,
-        "file_size_bytes": destination.stat().st_size,
-    }
-
     sidecar = destination.with_suffix(destination.suffix + ".quarantine.json")
     temporary_sidecar = sidecar.with_suffix(sidecar.suffix + f".{uuid.uuid4().hex}.tmp")
 
     try:
+        # The raw-file move has completed. Every ordinary failure from this
+        # point must retain its exact destination for transaction recovery.
+        metadata = {
+            "quarantined_at_utc": timestamp.isoformat(),
+            "reason": safe_reason,
+            "provider": spec.provider,
+            "venue": spec.venue,
+            "symbol": spec.symbol,
+            "data_kind": spec.data_kind.value,
+            "hour_utc": spec.hour_utc.isoformat(),
+            "remote_path": spec.remote_path,
+            "original_filename": source.name,
+            "quarantined_filename": destination.name,
+            "file_size_bytes": destination.stat().st_size,
+        }
+
         temporary_sidecar.write_text(
             json.dumps(
                 metadata,
@@ -336,7 +338,8 @@ def quarantine_file(
 
         raise QuarantineError(
             "File was quarantined, but its diagnostic sidecar "
-            f"could not be written for {destination.name!r}"
+            f"could not be written for {destination.name!r}",
+            quarantined_path=destination,
         ) from exc
 
     return destination

@@ -42,6 +42,12 @@ from typing import Final
 import pyarrow as pa
 import pyarrow.ipc as ipc
 
+from l2shock.arrow_ipc_limits import (
+    IPCAllocationLimitError,
+    IPCLayoutError,
+    preflight_hourly_ipc,
+    validate_decimal_string_offsets,
+)
 from l2shock.price.hourly import (
     PRICE_OBSERVATIONS_PER_HOUR,
     HourlyTradeOHLCBlock,
@@ -169,30 +175,38 @@ def _canonical_positive_decimal_text(
     if not value.is_finite() or value <= 0:
         raise PriceBlockCodecError(f"{field_name} must be a finite positive Decimal")
 
-    try:
-        text = format(value, "f")
-    except (ValueError, OverflowError) as exc:
-        raise PriceBlockCodecError(
-            f"{field_name} cannot be represented canonically"
-        ) from exc
+    parts = value.as_tuple()
+    exponent = int(parts.exponent)
+    stop = len(parts.digits)
 
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
+    # Preserve exact value and canonical bytes without context rounding.
+    while stop > 1 and parts.digits[stop - 1] == 0:
+        stop -= 1
+        exponent += 1
 
-    if not text or text in {"0", "-0", "+0"}:
-        raise PriceBlockCodecError(f"{field_name} must be positive")
+    point = stop + exponent
 
-    if "e" in text.lower():
-        raise PriceBlockCodecError(
-            f"{field_name} canonical text must not use exponent notation"
-        )
+    if exponent >= 0:
+        text_length = point
+    elif point > 0:
+        text_length = stop + 1
+    else:
+        text_length = 2 - point + stop
 
-    if len(text) > _MAX_DECIMAL_TEXT_LENGTH:
+    if text_length > _MAX_DECIMAL_TEXT_LENGTH:
         raise PriceBlockLimitError(
             f"{field_name} exceeds the maximum encoded decimal length"
         )
 
-    return text
+    coefficient = "".join(str(parts.digits[index]) for index in range(stop))
+
+    if exponent >= 0:
+        return coefficient + "0" * exponent
+
+    if point > 0:
+        return coefficient[:point] + "." + coefficient[point:]
+
+    return "0." + "0" * (-point) + coefficient
 
 
 def _parse_canonical_positive_decimal(
@@ -438,6 +452,13 @@ def _read_arrow_table(
     source = pa.BufferReader(payload)
 
     try:
+        preflight_hourly_ipc(
+            payload,
+            schema=expected_schema,
+            expected_rows=PRICE_OBSERVATIONS_PER_HOUR,
+            max_decimal_bytes=_MAX_DECIMAL_TEXT_LENGTH,
+        )
+
         reader = ipc.open_stream(source)
 
         if not reader.schema.equals(
@@ -464,6 +485,11 @@ def _read_arrow_table(
                     f"Decoded {channel.name} row count is not 3,600"
                 )
 
+            validate_decimal_string_offsets(
+                batch,
+                max_decimal_bytes=_MAX_DECIMAL_TEXT_LENGTH,
+            )
+
             batches.append(batch)
 
         if row_count != PRICE_OBSERVATIONS_PER_HOUR:
@@ -475,6 +501,10 @@ def _read_arrow_table(
             batches,
             schema=expected_schema,
         )
+    except IPCAllocationLimitError as exc:
+        raise PriceBlockLimitError(str(exc)) from exc
+    except IPCLayoutError as exc:
+        raise PriceBlockCorruptionError(str(exc)) from exc
     except PriceBlockCodecError, PriceBlockCorruptionError:
         raise
     except Exception as exc:

@@ -517,7 +517,7 @@ def test_cli_rejects_redirected_output_paths(
 
     try:
         link.symlink_to(target, target_is_directory=directory_link)
-    except (OSError, NotImplementedError):
+    except OSError, NotImplementedError:
         pytest.skip("Symbolic links are unavailable on this platform")
 
     before = {
@@ -586,7 +586,7 @@ def test_cli_rejects_output_symlink_even_when_target_is_inside_root(
 
     try:
         link.symlink_to(target)
-    except (OSError, NotImplementedError):
+    except OSError, NotImplementedError:
         pytest.skip("Symbolic links are unavailable on this platform")
 
     arguments = [
@@ -635,7 +635,7 @@ def test_atomic_manifest_writer_rejects_symlink_destination(
 
     try:
         destination.symlink_to(target)
-    except (OSError, NotImplementedError):
+    except OSError, NotImplementedError:
         pytest.skip("Symbolic links are unavailable on this platform")
 
     with pytest.raises(LocalArtifactConflictError):
@@ -674,24 +674,27 @@ def test_cli_overwrite_preserves_supported_regular_file_behavior(
     artifact_path.write_bytes(b"old-artifact")
     manifest_path.write_bytes(b"old-manifest")
 
-    assert main(
-        [
-            "price",
-            "--venue",
-            "binance_futures",
-            "--instrument",
-            "BTCUSDT",
-            "--hour",
-            "2026-09-14T12:00:00Z",
-            "--input-dir",
-            str(raw_root),
-            "--output-dir",
-            str(output_root),
-            "--batch-size",
-            "1",
-            "--overwrite",
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "price",
+                "--venue",
+                "binance_futures",
+                "--instrument",
+                "BTCUSDT",
+                "--hour",
+                "2026-09-14T12:00:00Z",
+                "--input-dir",
+                str(raw_root),
+                "--output-dir",
+                str(output_root),
+                "--batch-size",
+                "1",
+                "--overwrite",
+            ]
+        )
+        == 0
+    )
 
     decoded = read_remote_artifact_file(
         artifact_path,

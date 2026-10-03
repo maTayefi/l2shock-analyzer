@@ -42,7 +42,29 @@ class ParquetValidationError(AcquisitionError):
 
 
 class QuarantineError(AcquisitionError):
-    """A corrupt or conflicting file could not be moved to quarantine."""
+    """Quarantine failed before or after moving the source file.
+
+    ``quarantined_path`` is set only after the move completed. It is
+    structured recovery information, not part of the public diagnostic text.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        quarantined_path: object = None,
+    ) -> None:
+        from pathlib import Path
+
+        super().__init__(message)
+
+        if quarantined_path is not None and not isinstance(
+            quarantined_path,
+            Path,
+        ):
+            raise TypeError("quarantined_path must be a Path or None")
+
+        self.quarantined_path = quarantined_path
 
 
 __all__ = [

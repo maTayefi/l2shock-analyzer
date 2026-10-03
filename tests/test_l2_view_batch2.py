@@ -845,7 +845,12 @@ async def test_analysis_poll_uses_viewport_owned_by_successful_operation() -> No
             operation_id="operation-a",
             successful_operation_id="operation-a",
             timeframe_setting=0,
-        )
+        ),
+        # This is a reload of an already displayed dataset. Only that case
+        # is allowed to preserve the pending operation's viewport.
+        initial_projection=projection,
+        initial_setting=0,
+        initial_successful_operation_id="operation-before-a",
     )
     viewport = object()
     harness.handlers["set_pending"]("operation-a", viewport)
@@ -854,6 +859,27 @@ async def test_analysis_poll_uses_viewport_owned_by_successful_operation() -> No
 
     assert len(harness.controller.calls) == 1
     assert harness.controller.calls[0]["shock_time_viewport"] is viewport
+    assert harness.handlers["read_state"]()["pending_operation_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_analysis_poll_discards_pending_viewport_for_first_dataset() -> None:
+    projection = _projection()
+    harness = _completion_ui_harness(
+        _completion_snapshot(
+            projection=projection,
+            operation_id="operation-first",
+            successful_operation_id="operation-first",
+            timeframe_setting=0,
+        )
+    )
+    viewport = object()
+    harness.handlers["set_pending"]("operation-first", viewport)
+
+    await harness.handlers["poll"]()
+
+    assert len(harness.controller.calls) == 1
+    assert harness.controller.calls[0]["shock_time_viewport"] is None
     assert harness.handlers["read_state"]()["pending_operation_id"] is None
 
 

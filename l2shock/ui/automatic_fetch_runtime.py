@@ -33,7 +33,10 @@ from l2shock.acquisition import (
     SourceFileSpec,
     create_production_manual_fetch_coordinator,
 )
-from l2shock.acquisition.errors import DownloadIntegrityError
+from l2shock.acquisition.errors import (
+    DownloadIntegrityError,
+    QuarantineError,
+)
 from l2shock.acquisition.locks import (
     acquire_source_hour_transaction_lock,
 )
@@ -773,7 +776,7 @@ def _prepare_corrupt_local_sources_for_reacquisition_sync(
                     spec=spec,
                     reason="automatic_fetch_content_mismatch",
                 )
-            except Exception:
+            except Exception as exc:
                 if os.path.lexists(confirmed_path):
                     # Nothing moved. Roll back this source's pending row change
                     # (and its transaction-scoped advisory lock) so both sides
@@ -792,9 +795,23 @@ def _prepare_corrupt_local_sources_for_reacquisition_sync(
 
                     continue
 
-                # The file moved but its sidecar failed. The row must follow
-                # the filesystem, so commit the pending source-row change.
-                session.commit()
+                # Missing source bytes alone do not prove where they moved.
+                # Only quarantine_file's structured post-move exception owns
+                # a destination that this transaction can restore.
+                if not isinstance(exc, QuarantineError) or not isinstance(
+                    exc.quarantined_path,
+                    Path,
+                ):
+                    raise
+
+                quarantined = exc.quarantined_path
+
+                try:
+                    session.commit()
+                except BaseException:
+                    _restore_quarantined_archive(quarantined, confirmed_path)
+                    raise
+
                 repaired_count += 1
                 log.exception(
                     "Automatic Fetch quarantined %s without a diagnostic sidecar.",
@@ -1100,8 +1117,7 @@ class AutomaticFetchRuntime:
 
         if failure is not None:
             self._last_error = (
-                "Automatic fetch task failed: "
-                f"Unexpected {type(failure).__name__}"
+                "Automatic fetch task failed: " f"Unexpected {type(failure).__name__}"
             )
 
         self._enabled = False

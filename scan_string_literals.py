@@ -29,6 +29,7 @@ SKIP_DIRS = {
     "dist",
     "node_modules",
     "cache_depth_probe",
+    "l2_liquidity_shock_analyzer.egg-info",
     "downloads",
 }
 
@@ -49,6 +50,7 @@ AI_COPY_SKIP_DIRS = {
     "old_version",
     "older_version",
     "cache_depth_probe",
+    "l2_liquidity_shock_analyzer.egg-info",
     "downloads",
 }
 
@@ -91,6 +93,7 @@ DEFAULT_7Z_EXCLUDE_PATTERNS = (
     "pylint_reports",
     "cache_depth_probe",
     "downloads",
+    "l2_liquidity_shock_analyzer.egg-info",
     ".VSCodeCounter",
     "exports",
     "ai_chunks",

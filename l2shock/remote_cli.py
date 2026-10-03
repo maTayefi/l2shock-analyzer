@@ -320,9 +320,7 @@ def _write_bytes_atomic(
 
     temporary = prepare_owned_file_path(
         output_root,
-        destination.with_name(
-            f".{destination.name}.{uuid.uuid4().hex}.tmp"
-        ),
+        destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp"),
     )
 
     try:
@@ -349,10 +347,7 @@ def _write_bytes_atomic(
         except FileExistsError:
             destination = _owned_output_file(output_root, destination)
 
-            if (
-                path_entry_exists(destination)
-                and destination.read_bytes() == data
-            ):
+            if path_entry_exists(destination) and destination.read_bytes() == data:
                 return False
 
             raise LocalArtifactConflictError(

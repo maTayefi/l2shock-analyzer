@@ -62,6 +62,7 @@ l2shock/analysis/l2_view_metrics.py
 l2shock/analysis/l2_view_stream.py
 l2shock/analysis/multi_market.py
 l2shock/analysis/timeframes.py
+l2shock/arrow_ipc_limits.py
 l2shock/config.py
 l2shock/db/__init__.py
 l2shock/db/analytical_repository.py
@@ -161,10 +162,12 @@ tests/test_analysis_inputs_independence.py
 tests/test_analysis_multi_market.py
 tests/test_analytical_provenance.py
 tests/test_analytical_repository_postgresql.py
+tests/test_arrow_ipc_limits.py
 tests/test_automatic_fetch_retry_cursor_cancellation.py
 tests/test_automatic_fetch_runtime.py
 tests/test_availability_calendar.py
 tests/test_availability_filesystem.py
+tests/test_block_decimal_preflight_regression.py
 tests/test_bootstrap_creation_race.py
 tests/test_bybit_contract_diagnostics.py
 tests/test_bybit_orderbook_replay.py
@@ -173,8 +176,10 @@ tests/test_chart_interactions.py
 tests/test_chart_publication_preflight.py
 tests/test_checkpoint_chain_contract.py
 tests/test_checkpoint_codec.py
+tests/test_checkpoint_diagnostics_reference_regression.py
 tests/test_checkpoint_reference_lock_contract.py
 tests/test_checkpoint_reference_locks_postgresql.py
+tests/test_checkpoint_store_ownership_regression.py
 tests/test_compile_all_python.py
 tests/test_config.py
 tests/test_data_preset_identity.py
@@ -196,8 +201,12 @@ tests/test_l2_view_batch2.py
 tests/test_l2_view_batch3a.py
 tests/test_l2_view_batch3b.py
 tests/test_l2_view_batch3e.py
+tests/test_l2_view_percentage_precision_regression.py
+tests/test_l2_view_price_failure_boundary_regression.py
+tests/test_l2_view_publication_boundary_regression.py
 tests/test_l2_view_request_ordering.py
 tests/test_l2_view_stream.py
+tests/test_l2_view_timeframe_canonical_regression.py
 tests/test_lm_backend_deleted.py
 tests/test_maintenance_actions.py
 tests/test_maintenance_actions_postgresql.py
@@ -225,6 +234,8 @@ tests/test_processing_worker_repeated_cancellation.py
 tests/test_project_cores_contract.py
 tests/test_project_cores_inventory.py
 tests/test_pruning_recovery.py
+tests/test_quarantine_transaction_recovery.py
+tests/test_raw_pruning_interruption_regression.py
 tests/test_raw_retention.py
 tests/test_readme_analysis_doc02.py
 tests/test_readme_analysis_transition.py
@@ -249,6 +260,7 @@ tests/test_shutdown_header_retry_regression.py
 tests/test_tab_settings_lock_contract.py
 tests/test_timeframe_aggregation.py
 tests/test_timeutils.py
+tests/test_trade_fingerprint_decimal_storage_regression.py
 tests/test_trade_ohlc.py
 tests/test_trade_ohlc_block_codec.py
 tests/test_ui_fetch_runtime.py
@@ -636,6 +648,7 @@ tests/test_multi_market_aggregation.py
 tests/test_timeframe_aggregation.py
 tests/test_processing_l2_coordinator_postgresql.py
 tests/test_l2_available_observation_regression.py
+tests/test_l2_view_percentage_precision_regression.py
 ```
 
 ## Focus areas
@@ -728,6 +741,7 @@ tests/test_ui_foundation.py
 tests/test_ui_localization.py
 tests/test_ui_processing_runtime.py
 tests/test_ui_shutdown.py
+tests/test_l2_view_percentage_precision_regression.py
 ```
 
 ## Focus areas
