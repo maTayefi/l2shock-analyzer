@@ -406,6 +406,7 @@ def _presentation_namespace() -> tuple[dict[str, Any], list[Any]]:
         "displayed": projection,
         "loaded": object(),
         "chart": chart,
+        "displayed_timeframe_setting": 0,
         "status": SimpleNamespace(
             set_text=lambda value: events.append(("status", value)),
         ),
@@ -427,10 +428,11 @@ def _presentation_namespace() -> tuple[dict[str, Any], list[Any]]:
         *,
         viewport: Any,
         new_source: bool,
+        timeframe_setting: int,
     ) -> None:
         assert selected is projection
         assert new_source is False
-        events.append(("publish", selected, viewport))
+        events.append(("publish", selected, viewport, timeframe_setting))
 
     def forbidden(*_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("Presentation entered a loading-capable path")
@@ -499,6 +501,7 @@ async def test_presentation_failure_restores_transaction_state() -> None:
         *,
         viewport: Any,
         new_source: bool,
+        timeframe_setting: int,
     ) -> None:
         raise RuntimeError("test publication failure")
 

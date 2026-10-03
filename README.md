@@ -3470,7 +3470,7 @@ category to add to usable plus unusable.
 
 The user cross-checks price and L2 with trdr.io before trading. Coverage
 warnings remain important because changing contributors can create apparent
-liquidity movements.
+metric movements.
 
 Persistent red data-outage warning regions are measured over the
 effective requested one-second range:

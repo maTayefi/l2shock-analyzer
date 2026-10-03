@@ -54,6 +54,8 @@ class L2ViewRuntimeSnapshot:
     last_error: str | None
     operation_id: str | None = None
     stop_requested: bool = False
+    last_projection_operation_id: str | None = None
+    last_projection_timeframe_setting: int | None = None
 
 
 class L2ViewRuntime:
@@ -65,6 +67,8 @@ class L2ViewRuntime:
         self._sequence = 0
         self._progress = (0, 0)
         self._last: L2ViewProjection | None = None
+        self._last_projection_operation_id: str | None = None
+        self._last_projection_timeframe_setting: int | None = None
         self._error: str | None = None
         self._operation_id: str | None = None
 
@@ -81,6 +85,8 @@ class L2ViewRuntime:
             last_error=self._error,
             operation_id=self._operation_id,
             stop_requested=stop is not None and stop.is_set(),
+            last_projection_operation_id=self._last_projection_operation_id,
+            last_projection_timeframe_setting=(self._last_projection_timeframe_setting),
         )
 
     def start(
@@ -225,6 +231,7 @@ class L2ViewRuntime:
     async def _run(self, request, options, stop: threading.Event):
         state = get_state()
         current = asyncio.current_task()
+        owned_operation_id = self._operation_id
         lock = state.operation_lock
         acquired = False
         worker: asyncio.Task | None = None
@@ -273,6 +280,10 @@ class L2ViewRuntime:
                 raise TypeError("Analysis loader must return L2ViewProjection")
 
             self._last = projection
+            self._last_projection_operation_id = owned_operation_id
+            self._last_projection_timeframe_setting = (
+                0 if options.timeframe_seconds is None else options.timeframe_seconds
+            )
             self._phase = L2ViewRuntimePhase.COMPLETED
             return projection
 

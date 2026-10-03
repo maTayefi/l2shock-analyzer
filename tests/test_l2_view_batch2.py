@@ -387,7 +387,8 @@ def test_analysis_publication_explains_empty_l2_viewing_bars():
         and isinstance(node.value.value, str)
     }
 
-    assert "No renderable L2 candles" in assigned_titles
+    assert "No numerical L2 data for selected preset" in assigned_titles
+    assert "L2 data-quality warning" in assigned_titles
     assert "L2 data-quality warning" in assigned_titles
 
     title_variable_is_used = any(
@@ -412,23 +413,653 @@ def test_analysis_publication_explains_empty_l2_viewing_bars():
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     )
 
-    required_messages = (
-        "ANALYSIS L2 COMPONENT MISSING",
-        "ANALYSIS L2 COMPONENT COVERAGE",
+    ui_required_messages = (
         "Analysis rendered the available verified L2 data.",
         "Cross-check price and L2 with trdr.io before trading.",
     )
-    for message in required_messages:
+    for message in ui_required_messages:
         assert any(message in value for value in string_values), message
-
     retired_message = "Optional price loading failed. L2 remains displayed;"
     assert not any(retired_message in value for value in string_values)
 
     # Load-summary diagnostics belong to the loader, not the UI module.
     loader_tree = ast.parse(inspect.getsource(l2_view_stream))
-    assert any(
-        isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and "ANALYSIS L2 LOAD SUMMARY" in node.value
+    loader_string_values = tuple(
+        node.value
         for node in ast.walk(loader_tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
     )
+    loader_required_messages = (
+        "ANALYSIS L2 COMPONENT MISSING",
+        "ANALYSIS L2 COMPONENT COVERAGE",
+        "ANALYSIS L2 LOAD SUMMARY",
+    )
+    for message in loader_required_messages:
+        assert any(message in value for value in loader_string_values), message
+
+
+# Analysis successful-result ownership and timeframe regressions.
+
+import ast as _completion_ast
+import copy as _completion_copy
+import logging as _completion_logging
+from pathlib import Path as _CompletionPath
+
+from l2shock.ui.l2_view_runtime import (
+    L2ViewRuntimeSnapshot as _CompletionSnapshot,
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome",
+    ("failed", "stopped", "prestart_cancelled"),
+)
+async def test_analysis_success_metadata_survives_later_unsuccessful_load(
+    outcome: str,
+) -> None:
+    reset_state_for_tests()
+    projection = _projection()
+    calls = 0
+
+    def loader(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return projection
+        if outcome == "stopped":
+            raise L2ViewCancelledError("Stopped by ownership regression")
+        raise ValueError("Failed by ownership regression")
+
+    runtime = L2ViewRuntime(loader=loader)
+    first = runtime.start(
+        _request(),
+        L2ViewLoadOptions(timeframe_seconds=None),
+    )
+    first_operation_id = runtime.snapshot().operation_id
+
+    assert await first is projection
+    await asyncio.sleep(0)
+
+    successful = runtime.snapshot()
+    assert successful.last_projection_operation_id == first_operation_id
+    assert successful.last_projection_timeframe_setting == 0
+
+    second = runtime.start(
+        _request(),
+        L2ViewLoadOptions(timeframe_seconds=5),
+    )
+    running = runtime.snapshot()
+
+    assert running.is_running
+    assert running.operation_id != first_operation_id
+    assert running.last_projection is projection
+    assert running.last_projection_operation_id == first_operation_id
+    assert running.last_projection_timeframe_setting == 0
+
+    if outcome == "prestart_cancelled":
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+    elif outcome == "stopped":
+        assert await second is None
+    else:
+        with pytest.raises(ValueError, match="ownership regression"):
+            await second
+
+    await asyncio.sleep(0)
+    after = runtime.snapshot()
+
+    assert after.last_projection is projection
+    assert after.last_projection_operation_id == first_operation_id
+    assert after.last_projection_timeframe_setting == 0
+    assert after.completion_sequence == 2
+    assert not after.is_running
+    assert get_state().active_operation_name == ""
+    assert not get_state().operation_lock.locked()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeframe_setting", (None, 1, 5))
+async def test_analysis_success_records_requested_not_effective_timeframe(
+    timeframe_setting: int | None,
+) -> None:
+    reset_state_for_tests()
+    projection = _projection()
+
+    def loader(*_args, **_kwargs):
+        return projection
+
+    runtime = L2ViewRuntime(loader=loader)
+    task = runtime.start(
+        _request(),
+        L2ViewLoadOptions(timeframe_seconds=timeframe_setting),
+    )
+    operation_id = runtime.snapshot().operation_id
+
+    assert await task is projection
+    await asyncio.sleep(0)
+
+    snapshot = runtime.snapshot()
+    assert snapshot.last_projection_operation_id == operation_id
+    assert snapshot.last_projection_timeframe_setting == (
+        0 if timeframe_setting is None else timeframe_setting
+    )
+
+
+class _CompletionControl:
+    def __init__(self, value=None) -> None:
+        self.value = value
+        self.updates = 0
+        self.text = ""
+        self.messages: list[str] = []
+
+    def update(self) -> None:
+        self.updates += 1
+
+    def set_text(self, value: str) -> None:
+        self.text = value
+        self.messages.append(value)
+
+
+class _CompletionRuntimeDouble:
+    def __init__(self, snapshot: _CompletionSnapshot) -> None:
+        self.current = snapshot
+
+    def snapshot(self) -> _CompletionSnapshot:
+        return self.current
+
+
+class _CompletionControllerDouble:
+    def __init__(self) -> None:
+        self.commit = SimpleNamespace(
+            publication=SimpleNamespace(render_token="a" * 32),
+        )
+        self.calls: list[dict] = []
+        self.fail = False
+
+    async def publish(self, _option, **kwargs):
+        self.calls.append(kwargs)
+
+        if self.fail:
+            self.commit = None
+            raise RuntimeError("Simulated publication failure")
+
+        self.commit = SimpleNamespace(
+            owner_id=kwargs["owner_id"],
+            publication=SimpleNamespace(render_token="b" * 32),
+        )
+        return self.commit
+
+
+def _completion_snapshot(
+    *,
+    projection,
+    operation_id: str,
+    successful_operation_id: str | None,
+    timeframe_setting: int | None,
+    phase=L2ViewRuntimePhase.COMPLETED,
+    running: bool = False,
+    sequence: int = 1,
+) -> _CompletionSnapshot:
+    return _CompletionSnapshot(
+        phase=phase,
+        is_running=running,
+        completion_sequence=sequence,
+        hours_done=1,
+        hours_total=1,
+        last_projection=projection,
+        last_error=(
+            "Simulated load failure" if phase is L2ViewRuntimePhase.FAILED else None
+        ),
+        operation_id=operation_id,
+        stop_requested=False,
+        last_projection_operation_id=successful_operation_id,
+        last_projection_timeframe_setting=timeframe_setting,
+    )
+
+
+def _completion_ui_harness(
+    snapshot: _CompletionSnapshot,
+    *,
+    initial_projection=None,
+    initial_setting: int = 0,
+    initial_successful_operation_id: str | None = None,
+):
+    """Execute exact production handlers without building a browser page."""
+    source_path = (
+        _CompletionPath(__file__).resolve().parents[1]
+        / "l2shock"
+        / "ui"
+        / "tab_l2_view.py"
+    )
+    tree = _completion_ast.parse(
+        source_path.read_text(encoding="utf-8"),
+        filename=str(source_path),
+    )
+    builders = [
+        node
+        for node in tree.body
+        if isinstance(node, _completion_ast.FunctionDef)
+        and node.name == "build_l2_view_section"
+    ]
+    assert len(builders) == 1
+
+    wanted = {
+        "_publish",
+        "_poll",
+        "_change_view",
+        "_change_presentation",
+    }
+    selected = [
+        _completion_copy.deepcopy(node)
+        for node in builders[0].body
+        if isinstance(
+            node,
+            (_completion_ast.FunctionDef, _completion_ast.AsyncFunctionDef),
+        )
+        and node.name in wanted
+    ]
+    assert {node.name for node in selected} == wanted
+
+    wrapper = _completion_ast.parse(
+        "def _completion_factory("
+        "initial_projection, initial_setting, initial_successful_operation_id"
+        "):\n"
+        "    loaded = initial_projection\n"
+        "    displayed = initial_projection\n"
+        "    displayed_option = {}\n"
+        "    displayed_a = 'imbalance_pct'\n"
+        "    displayed_b = 'delta'\n"
+        "    displayed_timeframe_setting = initial_setting\n"
+        "    observed_completion = 0\n"
+        "    observed_successful_operation_id = "
+        "initial_successful_operation_id\n"
+        "    pending_operation_id = None\n"
+        "    pending_viewport = None\n"
+        "    preset_loading = False\n"
+        "    publishing = False\n"
+        "    render_lock = asyncio.Lock()\n"
+        "    def read_state():\n"
+        "        return {\n"
+        "            'loaded': loaded,\n"
+        "            'displayed': displayed,\n"
+        "            'displayed_timeframe_setting': "
+        "displayed_timeframe_setting,\n"
+        "            'observed_completion': observed_completion,\n"
+        "            'observed_successful_operation_id': "
+        "observed_successful_operation_id,\n"
+        "            'pending_operation_id': pending_operation_id,\n"
+        "            'pending_viewport': pending_viewport,\n"
+        "            'render_lock': render_lock,\n"
+        "        }\n"
+        "    def set_pending(operation_id, viewport):\n"
+        "        nonlocal pending_operation_id, pending_viewport\n"
+        "        pending_operation_id = operation_id\n"
+        "        pending_viewport = viewport\n"
+    )
+    factory = wrapper.body[0]
+    assert isinstance(factory, _completion_ast.FunctionDef)
+    factory.body.extend(selected)
+    factory.body.extend(
+        _completion_ast.parse(
+            "return {\n"
+            "    'poll': _poll,\n"
+            "    'publish': _publish,\n"
+            "    'change_view': _change_view,\n"
+            "    'change_presentation': _change_presentation,\n"
+            "    'read_state': read_state,\n"
+            "    'set_pending': set_pending,\n"
+            "}\n"
+        ).body
+    )
+    _completion_ast.fix_missing_locations(wrapper)
+
+    runtime = _CompletionRuntimeDouble(snapshot)
+    controller = _CompletionControllerDouble()
+    timeframe = _CompletionControl(initial_setting)
+    status = _CompletionControl()
+    progress = _CompletionControl()
+
+    async def capture_x(_chart):
+        return None
+
+    async def capture_y(_chart, **_kwargs):
+        return {}
+
+    async def install_y(_chart, **_kwargs):
+        return True
+
+    def options():
+        return L2ViewLoadOptions(
+            timeframe_seconds=(None if timeframe.value == 0 else timeframe.value),
+        )
+
+    def unexpected_admission(*_args, **_kwargs):
+        raise AssertionError("This test did not expect a reload admission")
+
+    namespace = {
+        "asyncio": asyncio,
+        "Any": object,
+        "L2ViewProjection": L2ViewProjection,
+        "AnalysisChartTemporalViewport": object,
+        "L2ViewRuntimePhase": L2ViewRuntimePhase,
+        "L2ViewMetric": L2ViewMetric,
+        "runtime": runtime,
+        "state": SimpleNamespace(shutdown_started=False),
+        "controller": controller,
+        "chart": object(),
+        "panel_a": _CompletionControl("imbalance_pct"),
+        "panel_b": _CompletionControl("delta"),
+        "warnings_switch": _CompletionControl(True),
+        "timeframe_input": timeframe,
+        "status": status,
+        "progress": progress,
+        "timezone_name": "UTC",
+        "_sync_controls": lambda: None,
+        "_options": options,
+        "_admit": unexpected_admission,
+        "cached_view": cached_view,
+        "capture_shock_time_viewport": capture_x,
+        "capture_y_viewports": capture_y,
+        "install_y_wheel": install_y,
+        "build_l2_view_chart_options": lambda *_args, **_kwargs: {},
+        "with_wheel_policy": lambda option, **_kwargs: option,
+        "with_display_timezone": lambda option, _timezone: option,
+        "persistent_notify": lambda *_args, **_kwargs: None,
+        "log": _completion_logging.getLogger(__name__),
+    }
+    exec(
+        compile(wrapper, str(source_path), "exec"),
+        namespace,
+    )
+    handlers = namespace["_completion_factory"](
+        initial_projection,
+        initial_setting,
+        initial_successful_operation_id,
+    )
+    return SimpleNamespace(
+        handlers=handlers,
+        runtime=runtime,
+        controller=controller,
+        timeframe=timeframe,
+        status=status,
+        namespace=namespace,
+    )
+
+
+@pytest.mark.asyncio
+async def test_analysis_poll_defers_old_success_until_newer_load_finishes() -> None:
+    previous = _projection()
+    successful = replace(previous, input_id="c" * 64)
+    snapshot = _completion_snapshot(
+        projection=successful,
+        operation_id="operation-b",
+        successful_operation_id="operation-a",
+        timeframe_setting=0,
+        phase=L2ViewRuntimePhase.RUNNING,
+        running=True,
+    )
+    harness = _completion_ui_harness(
+        snapshot,
+        initial_projection=previous,
+    )
+    pending_viewport = object()
+    harness.handlers["set_pending"]("operation-b", pending_viewport)
+
+    await harness.handlers["poll"]()
+
+    deferred = harness.handlers["read_state"]()
+    assert deferred["observed_completion"] == 0
+    assert deferred["observed_successful_operation_id"] is None
+    assert deferred["pending_operation_id"] == "operation-b"
+    assert deferred["pending_viewport"] is pending_viewport
+    assert not harness.controller.calls
+
+    harness.runtime.current = replace(
+        snapshot,
+        phase=L2ViewRuntimePhase.FAILED,
+        is_running=False,
+        completion_sequence=2,
+        last_error="Simulated later load failure",
+    )
+    await harness.handlers["poll"]()
+
+    completed = harness.handlers["read_state"]()
+    assert completed["displayed"] is successful
+    assert completed["observed_successful_operation_id"] == "operation-a"
+    assert completed["observed_completion"] == 2
+    assert completed["pending_operation_id"] is None
+    assert completed["pending_viewport"] is None
+    assert len(harness.controller.calls) == 1
+    assert harness.controller.calls[0]["shock_time_viewport"] is None
+    assert harness.timeframe.value == 0
+
+
+@pytest.mark.asyncio
+async def test_analysis_poll_uses_viewport_owned_by_successful_operation() -> None:
+    projection = _projection()
+    harness = _completion_ui_harness(
+        _completion_snapshot(
+            projection=projection,
+            operation_id="operation-a",
+            successful_operation_id="operation-a",
+            timeframe_setting=0,
+        )
+    )
+    viewport = object()
+    harness.handlers["set_pending"]("operation-a", viewport)
+
+    await harness.handlers["poll"]()
+
+    assert len(harness.controller.calls) == 1
+    assert harness.controller.calls[0]["shock_time_viewport"] is viewport
+    assert harness.handlers["read_state"]()["pending_operation_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_analysis_poll_rechecks_runtime_after_waiting_for_render_lock() -> None:
+    projection = _projection()
+    snapshot = _completion_snapshot(
+        projection=projection,
+        operation_id="operation-a",
+        successful_operation_id="operation-a",
+        timeframe_setting=0,
+    )
+    harness = _completion_ui_harness(snapshot)
+    lock = harness.handlers["read_state"]()["render_lock"]
+    await lock.acquire()
+
+    task = asyncio.create_task(harness.handlers["poll"]())
+    try:
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        harness.runtime.current = replace(
+            snapshot,
+            phase=L2ViewRuntimePhase.RUNNING,
+            is_running=True,
+            operation_id="operation-b",
+        )
+        viewport = object()
+        harness.handlers["set_pending"]("operation-b", viewport)
+    finally:
+        lock.release()
+
+    await asyncio.wait_for(task, timeout=2.0)
+
+    observed = harness.handlers["read_state"]()
+    assert observed["observed_completion"] == 0
+    assert observed["observed_successful_operation_id"] is None
+    assert observed["pending_operation_id"] == "operation-b"
+    assert observed["pending_viewport"] is viewport
+    assert not harness.controller.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "phase",
+    (L2ViewRuntimePhase.STOPPED, L2ViewRuntimePhase.FAILED),
+)
+async def test_unsuccessful_reload_restores_auto_before_presentation_change(
+    phase,
+) -> None:
+    projection = _projection()
+    harness = _completion_ui_harness(
+        _completion_snapshot(
+            projection=projection,
+            operation_id="operation-b",
+            successful_operation_id="operation-a",
+            timeframe_setting=0,
+            phase=phase,
+            sequence=2,
+        ),
+        initial_projection=projection,
+        initial_setting=0,
+        initial_successful_operation_id="operation-a",
+    )
+    harness.timeframe.value = 1
+    harness.handlers["set_pending"]("operation-b", object())
+
+    await harness.handlers["poll"]()
+
+    assert harness.timeframe.value == 0
+    assert harness.handlers["read_state"]()["displayed_timeframe_setting"] == 0
+    assert not harness.controller.calls
+
+    # Even a later unrelated selector value must not become the setting
+    # committed by a presentation-only publication.
+    harness.timeframe.value = 15
+    await harness.handlers["change_presentation"]()
+
+    assert harness.timeframe.value == 0
+    assert harness.handlers["read_state"]()["displayed_timeframe_setting"] == 0
+    assert len(harness.controller.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_identical_projection_new_success_is_handled_once_per_operation() -> None:
+    projection = _projection()
+    snapshot = _completion_snapshot(
+        projection=projection,
+        operation_id="operation-a",
+        successful_operation_id="operation-a",
+        timeframe_setting=0,
+    )
+    harness = _completion_ui_harness(snapshot)
+
+    await asyncio.gather(
+        harness.handlers["poll"](),
+        harness.handlers["poll"](),
+    )
+    assert len(harness.controller.calls) == 1
+
+    harness.runtime.current = replace(
+        snapshot,
+        operation_id="operation-b",
+        last_projection_operation_id="operation-b",
+        completion_sequence=2,
+    )
+    await harness.handlers["poll"]()
+    await harness.handlers["poll"]()
+
+    assert len(harness.controller.calls) == 2
+    assert (
+        harness.handlers["read_state"]()["observed_successful_operation_id"]
+        == "operation-b"
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_publication_does_not_commit_requested_timeframe() -> None:
+    previous = _projection()
+    successful = replace(previous, input_id="d" * 64)
+    harness = _completion_ui_harness(
+        _completion_snapshot(
+            projection=successful,
+            operation_id="operation-a",
+            successful_operation_id="operation-a",
+            timeframe_setting=5,
+        ),
+        initial_projection=previous,
+        initial_setting=0,
+    )
+    harness.controller.fail = True
+
+    await harness.handlers["poll"]()
+
+    observed = harness.handlers["read_state"]()
+    assert observed["loaded"] is successful
+    assert observed["displayed"] is previous
+    assert observed["displayed_timeframe_setting"] == 0
+    assert observed["observed_successful_operation_id"] == "operation-a"
+    assert harness.controller.commit is None
+    assert "chart publication failed" in harness.status.text
+
+    # Do not repeatedly publish the same failed browser generation on
+    # every timer poll. An explicit view change remains the retry path.
+    await harness.handlers["poll"]()
+    assert len(harness.controller.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_cached_view_commits_captured_auto_setting_not_live_selector() -> None:
+    projection = _projection()
+    harness = _completion_ui_harness(
+        _completion_snapshot(
+            projection=projection,
+            operation_id="operation-a",
+            successful_operation_id="operation-a",
+            timeframe_setting=0,
+        ),
+        initial_projection=projection,
+        initial_setting=0,
+        initial_successful_operation_id="operation-a",
+    )
+
+    async def capture_and_change_selector(_chart):
+        harness.timeframe.value = 15
+        return None
+
+    harness.namespace["capture_shock_time_viewport"] = capture_and_change_selector
+    harness.namespace["cached_view"] = lambda *_args, **_kwargs: (
+        projection.timeframe_seconds,
+        projection,
+    )
+
+    await harness.handlers["change_view"]()
+
+    observed = harness.handlers["read_state"]()
+    assert observed["displayed"] is projection
+    assert observed["displayed_timeframe_setting"] == 0
+    assert harness.timeframe.value == 0
+    assert len(harness.controller.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_rejected_cached_view_restores_last_committed_setting() -> None:
+    projection = _projection()
+    harness = _completion_ui_harness(
+        _completion_snapshot(
+            projection=projection,
+            operation_id="operation-a",
+            successful_operation_id="operation-a",
+            timeframe_setting=0,
+        ),
+        initial_projection=projection,
+        initial_setting=0,
+        initial_successful_operation_id="operation-a",
+    )
+
+    def rejected_options():
+        raise ValueError("Simulated invalid viewing controls")
+
+    harness.namespace["_options"] = rejected_options
+    harness.timeframe.value = 15
+
+    await harness.handlers["change_view"]()
+
+    assert harness.timeframe.value == 0
+    assert harness.handlers["read_state"]()["displayed_timeframe_setting"] == 0
+    assert not harness.controller.calls
+    assert "View not changed" in harness.status.text

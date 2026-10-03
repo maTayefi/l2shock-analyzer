@@ -190,6 +190,7 @@ tests/test_finalize_analysis_transition.py
 tests/test_header_shutdown_and_timezone.py
 tests/test_hourly_block_codec.py
 tests/test_hourly_liquidity.py
+tests/test_l2_available_observation_regression.py
 tests/test_l2_ohlc_aggregation.py
 tests/test_l2_view_batch2.py
 tests/test_l2_view_batch3a.py
@@ -234,6 +235,7 @@ tests/test_remote_cli.py
 tests/test_remote_contracts.py
 tests/test_remote_headless_processing.py
 tests/test_remote_hf_repository.py
+tests/test_remote_import_admission_regression.py
 tests/test_remote_import_checkpoint_reconciliation.py
 tests/test_remote_import_runtime.py
 tests/test_remote_importer.py
@@ -243,6 +245,7 @@ tests/test_remote_worker.py
 tests/test_remote_workflow_contract.py
 tests/test_replay_diagnostics.py
 tests/test_replay_validation_cli.py
+tests/test_shutdown_header_retry_regression.py
 tests/test_tab_settings_lock_contract.py
 tests/test_timeframe_aggregation.py
 tests/test_timeutils.py
@@ -459,6 +462,7 @@ tests/test_raw_retention.py
 tests/test_ui_fetch_runtime.py
 tests/test_ui_processing_runtime.py
 tests/test_ui_shutdown.py
+tests/test_remote_import_admission_regression.py
 ```
 
 ## Focus areas
@@ -631,6 +635,7 @@ tests/test_detector_backend_deleted.py
 tests/test_multi_market_aggregation.py
 tests/test_timeframe_aggregation.py
 tests/test_processing_l2_coordinator_postgresql.py
+tests/test_l2_available_observation_regression.py
 ```
 
 ## Focus areas

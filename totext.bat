@@ -21,8 +21,8 @@ echo.
     echo if (Test-Path $OutputFile^) { Remove-Item $OutputFile }
     echo.
     echo # Exclude common heavy/binary/generated/secret directories to save time and avoid leaking local secrets
-    echo $ExcludeDirs = @('.git', 'node_modules', 'venv', '.venv', '.idea', '.vs', '.vscode', '__pycache__', 'data', 'backups', '.VSCodeCounter', 'logs', 'exports', 'backups', 'ai_chunks', 'dist', 'build', '.pytest_cache', '.mypy_cache'^)
-    echo $ExcludeExtensions = @('.pyc', '.pyo', '.pyd', '.db', '.sqlite', '.sqlite3', '.dump', '.bak', '.pem', '.key', '.p12', '.pfx', '.crt', '.cer'^)
+    echo $ExcludeDirs = @('.git', 'node_modules', 'venv', '.venv', '.idea', '.vs', '.vscode', '__pycache__', 'data', 'l2_liquidity_shock_analyzer.egg-info', 'backups', '.VSCodeCounter', 'logs', 'exports', 'backups', 'ai_chunks', 'dist', 'build', '.pytest_cache', '.mypy_cache'^)
+    echo $ExcludeExtensions = @('.pyc', '.pyo', '.pyd', '.env', '.db', '.sqlite', '.sqlite3', '.dump', '.bak', '.pem', '.key', '.p12', '.pfx', '.crt', '.cer'^)
     echo $ExcludeFileNames = @('.env', '.env.local', '.env.production', 'config.yaml', 'config.yml', 'secrets.yaml', 'secrets.yml', 'project_contents.txt'^)
     echo.
     echo $Files = Get-ChildItem -Path '.' -File -Recurse ^| Where-Object { 

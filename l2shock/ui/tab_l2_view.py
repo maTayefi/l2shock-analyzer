@@ -90,6 +90,7 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
     displayed_timeframe_setting = 0
 
     observed_completion = -1
+    observed_successful_operation_id: str | None = None
     pending_operation_id: str | None = None
     pending_viewport: AnalysisChartTemporalViewport | None = None
     preset_loading = False
@@ -441,6 +442,7 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
         *,
         viewport: AnalysisChartTemporalViewport | None,
         new_source: bool,
+        timeframe_setting: int,
     ) -> None:
         nonlocal displayed, displayed_option
         nonlocal displayed_a, displayed_b
@@ -498,7 +500,9 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
             displayed_option = raw_option
             displayed_a = chosen_a.value
             displayed_b = chosen_b.value
-            displayed_timeframe_setting = int(timeframe_input.value)
+            displayed_timeframe_setting = timeframe_setting
+            timeframe_input.value = timeframe_setting
+            timeframe_input.update()
 
             try:
                 installed = await install_y_wheel(
@@ -631,14 +635,11 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
                     projection,
                     viewport=viewport,
                     new_source=False,
+                    timeframe_setting=displayed_timeframe_setting,
                 )
 
             except (TypeError, ValueError, RuntimeError) as exc:
                 status.set_text(f"Presentation not changed: {exc}")
-
-            except Exception:
-                log.exception("Could not update Analysis presentation.")
-                status.set_text("Chart presentation update failed; check the log.")
 
             finally:
                 publishing = False
@@ -684,6 +685,11 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
                     projection,
                     viewport=viewport,
                     new_source=False,
+                    timeframe_setting=(
+                        0
+                        if options.timeframe_seconds is None
+                        else options.timeframe_seconds
+                    ),
                 )
 
             except (TypeError, ValueError, RuntimeError) as exc:
@@ -701,6 +707,7 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
 
     async def _poll() -> None:
         nonlocal loaded, observed_completion
+        nonlocal observed_successful_operation_id
         nonlocal pending_operation_id, pending_viewport
 
         snapshot = runtime.snapshot()
@@ -711,32 +718,70 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
             if snapshot.is_running
             else ""
         )
-        if publishing:
-            return
-        first_poll = observed_completion < 0
-        if snapshot.completion_sequence == observed_completion:
-            return
-        observed_completion = snapshot.completion_sequence
 
-        projection = snapshot.last_projection
-        if projection is not None and (
-            snapshot.phase is L2ViewRuntimePhase.COMPLETED or first_poll
+        # A newer operation may already be running while last_projection
+        # still belongs to an earlier successful operation. Do not consume
+        # either completion or pending viewport ownership during that load.
+        if publishing or snapshot.is_running:
+            return
+
+        successful_operation_id = snapshot.last_projection_operation_id
+        has_unhandled_success = (
+            snapshot.last_projection is not None
+            and successful_operation_id is not None
+            and successful_operation_id != observed_successful_operation_id
+        )
+        if (
+            snapshot.completion_sequence == observed_completion
+            and not has_unhandled_success
         ):
-            viewport = (
-                pending_viewport
-                if snapshot.operation_id == pending_operation_id
-                else None
+            return
+
+        async with render_lock:
+            # Another page can admit a load while this page waits for its
+            # render lock. The earlier snapshot is no longer authoritative.
+            snapshot = runtime.snapshot()
+            if publishing or snapshot.is_running:
+                return
+
+            successful_operation_id = snapshot.last_projection_operation_id
+            projection = snapshot.last_projection
+            has_unhandled_success = (
+                projection is not None
+                and successful_operation_id is not None
+                and successful_operation_id != observed_successful_operation_id
             )
-            same_range = loaded is not None and loaded.request == projection.request
-            loaded = projection
-            pending_operation_id = None
-            pending_viewport = None
-            async with render_lock:
+
+            if (
+                snapshot.completion_sequence == observed_completion
+                and not has_unhandled_success
+            ):
+                return
+
+            if has_unhandled_success:
+                assert projection is not None
+                assert successful_operation_id is not None
+
+                viewport = (
+                    pending_viewport
+                    if successful_operation_id == pending_operation_id
+                    else None
+                )
+                same_range = loaded is not None and loaded.request == projection.request
+                loaded = projection
+
                 try:
+                    timeframe_setting = snapshot.last_projection_timeframe_setting
+                    if timeframe_setting is None:
+                        raise RuntimeError(
+                            "Successful Analysis result lacks timeframe ownership"
+                        )
+
                     await _publish(
                         projection,
                         viewport=viewport,
                         new_source=not same_range,
+                        timeframe_setting=timeframe_setting,
                     )
                 except Exception:
                     log.exception("Could not publish completed Analysis.")
@@ -744,20 +789,52 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
                         "Data loaded, but chart publication failed. "
                         "Try changing the viewing controls to republish."
                     )
-            return
 
-        pending_operation_id = None
-        pending_viewport = None
-        if snapshot.phase is L2ViewRuntimePhase.STOPPED:
-            status.set_text(
-                "Analysis stopped. No partial result was published; "
-                "the previous chart is retained."
-            )
-        elif snapshot.phase is L2ViewRuntimePhase.FAILED:
-            status.set_text(
-                f"Analysis failed: {snapshot.last_error}. "
-                "The previous chart is retained."
-            )
+                # Record a handled publication attempt, not a claim that
+                # browser publication succeeded. On failure, loaded retains
+                # the result for an explicit viewing-control retry, while
+                # displayed and controller.commit remain authoritative.
+                observed_successful_operation_id = successful_operation_id
+
+                if pending_operation_id == successful_operation_id:
+                    pending_operation_id = None
+                    pending_viewport = None
+
+            # Publication awaits browser work. A different page may have
+            # started another load in the meantime. Do not consume its
+            # completion or withdraw its pending state.
+            snapshot = runtime.snapshot()
+            if snapshot.is_running:
+                return
+
+            terminal_changed = snapshot.completion_sequence != observed_completion
+            observed_completion = snapshot.completion_sequence
+
+            if pending_operation_id == snapshot.operation_id and snapshot.phase in {
+                L2ViewRuntimePhase.COMPLETED,
+                L2ViewRuntimePhase.STOPPED,
+                L2ViewRuntimePhase.FAILED,
+            }:
+                pending_operation_id = None
+                pending_viewport = None
+
+            if not terminal_changed:
+                return
+
+            if snapshot.phase is L2ViewRuntimePhase.STOPPED:
+                timeframe_input.value = displayed_timeframe_setting
+                timeframe_input.update()
+                status.set_text(
+                    "Analysis stopped. No partial result was published; "
+                    "the latest committed chart is retained."
+                )
+            elif snapshot.phase is L2ViewRuntimePhase.FAILED:
+                timeframe_input.value = displayed_timeframe_setting
+                timeframe_input.update()
+                status.set_text(
+                    f"Analysis failed: {snapshot.last_error}. "
+                    "The latest committed chart is retained."
+                )
 
     def _export_data(kind: str) -> None:
         if (

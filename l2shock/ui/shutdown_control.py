@@ -108,7 +108,10 @@ def build_shutdown_header_button() -> None:
     shutdown_in_progress = False
 
     def _open_shutdown_dialog() -> None:
-        if shutdown_in_progress or state.shutdown_complete:
+        # shutdown_complete describes resource cleanup, not proof that
+        # the NiceGUI server-stop request succeeded. The backend supports
+        # retrying that request after cleanup has completed.
+        if shutdown_in_progress:
             ui.notify(
                 "Application shutdown is already in progress.",
                 type="warning",
@@ -132,11 +135,24 @@ def build_shutdown_header_button() -> None:
         except Exception as exc:
             log.exception("Application shutdown did not complete.")
             _restore_shutdown_controls()
+
+            if state.shutdown_complete:
+                message = (
+                    "Resource cleanup completed, but the local server-stop "
+                    f"request failed ({type(exc).__name__}). New operations "
+                    "stay blocked. Press Shutdown again to retry stopping "
+                    "the server."
+                )
+            else:
+                message = (
+                    "Shutdown cleanup did not complete "
+                    f"({type(exc).__name__}). New operations stay blocked. "
+                    "Check the log, wait for any active worker to finish, "
+                    "then press Shutdown again to retry."
+                )
+
             persistent_notify(
-                "Shutdown could not prove that every worker stopped "
-                f"({type(exc).__name__}). New operations stay blocked. "
-                "Wait for the active worker to finish, then press "
-                "Shutdown again to retry.",
+                message,
                 title="Application Shutdown",
                 notification_type="negative",
             )
@@ -146,7 +162,7 @@ def build_shutdown_header_button() -> None:
     async def _confirmed_shutdown() -> None:
         nonlocal shutdown_in_progress
 
-        if shutdown_in_progress or state.shutdown_complete:
+        if shutdown_in_progress:
             return
 
         shutdown_in_progress = True
@@ -154,9 +170,17 @@ def build_shutdown_header_button() -> None:
         confirm_button.disable()
         shutdown_dialog.close()
 
+        message = (
+            "Resource cleanup has already completed. Retrying the local "
+            "server-stop request; new operations remain blocked."
+            if state.shutdown_complete
+            else (
+                "Safe application shutdown has started. Active operations "
+                "are being stopped and finalized."
+            )
+        )
         persistent_notify(
-            "Safe application shutdown has started. Active operations are "
-            "being stopped and finalized.",
+            message,
             title="Application Shutdown",
             notification_type="warning",
         )

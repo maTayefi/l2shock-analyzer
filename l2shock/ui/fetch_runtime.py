@@ -121,7 +121,9 @@ class ManualFetchRuntime:
                 "Application shutdown has started; new operations are blocked"
             )
 
-        if self.is_running:
+        # A done task may still have a pending finalization callback.
+        # Its reservation must be finalized before another start is admitted.
+        if self._task is not None:
             raise FetchOperationBusyError("A manual fetch operation is already active")
 
         if state.active_operation_name:
@@ -141,30 +143,59 @@ class ManualFetchRuntime:
         if end <= start:
             raise ValueError("requested_end_utc must be after requested_start_utc")
 
-        self._started_at = now_utc()
+        # A call outside a running loop must not modify runtime or admission
+        # state, and must not create an unawaited coroutine.
+        loop = asyncio.get_running_loop()
+
+        previous_state = (
+            self._started_at,
+            self._stop_requested,
+            self._latest_progress,
+            self._last_result,
+            self._last_error,
+        )
+        started_at = now_utc()
+        entered = False
+
+        async def run_owned() -> ManualFetchResult:
+            nonlocal entered
+            entered = True
+            return await self._run(
+                requested_start_utc=start,
+                requested_end_utc=end,
+            )
+
+        self._started_at = started_at
         self._stop_requested = False
         self._latest_progress = None
         self._last_result = None
         self._last_error = None
 
         state.active_operation_name = "manual_fetch"
-        state.active_operation_started_at = self._started_at
+        state.active_operation_started_at = started_at
 
-        coroutine = self._run(
-            requested_start_utc=start,
-            requested_end_utc=end,
-        )
+        coroutine = run_owned()
 
         try:
-            task = asyncio.create_task(
+            task = loop.create_task(
                 coroutine,
                 name="l2shock-manual-fetch",
             )
         except BaseException:
             coroutine.close()
-            self._started_at = None
 
-            if state.active_operation_name == "manual_fetch":
+            (
+                self._started_at,
+                self._stop_requested,
+                self._latest_progress,
+                self._last_result,
+                self._last_error,
+            ) = previous_state
+
+            if (
+                state.active_operation_name == "manual_fetch"
+                and state.active_operation_started_at == started_at
+            ):
                 state.active_operation_name = ""
                 state.active_operation_started_at = None
 
@@ -173,6 +204,35 @@ class ManualFetchRuntime:
         self._task = task
         state.tracked_tasks.add(task)
 
+        def finalize(done: asyncio.Task[ManualFetchResult]) -> None:
+            state.tracked_tasks.discard(done)
+
+            if not entered and self._task is done and self._started_at == started_at:
+                # Pre-start cancellation never enters _run(), so its
+                # finally block cannot finalize this reservation.
+                self._completion_sequence += 1
+                self._stop_requested = False
+                self._started_at = None
+
+                if done.cancelled():
+                    self._last_error = "Manual fetch was cancelled before it started"
+
+                if (
+                    state.active_operation_name == "manual_fetch"
+                    and state.active_operation_started_at == started_at
+                ):
+                    state.active_operation_name = ""
+                    state.active_operation_started_at = None
+
+            if self._task is done:
+                self._task = None
+
+            # Observe unawaited failures. Awaiting callers still receive
+            # the original task exception.
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(finalize)
         return task
 
     async def _run(
@@ -183,6 +243,7 @@ class ManualFetchRuntime:
     ) -> ManualFetchResult:
         state = get_state()
         current_task = asyncio.current_task()
+        owned_started_at = self._started_at
 
         try:
             result = await self.coordinator.run(
@@ -216,9 +277,12 @@ class ManualFetchRuntime:
             self._completion_sequence += 1
             self._stop_requested = False
 
-            # Clear only operation ownership still belonging to this runtime.
-            # Never erase a newer or independently owned operation marker.
-            if state.active_operation_name == "manual_fetch":
+            # Name alone does not prove ownership. Preserve a newer
+            # reservation even when it uses the same operation name.
+            if (
+                state.active_operation_name == "manual_fetch"
+                and state.active_operation_started_at == owned_started_at
+            ):
                 state.active_operation_name = ""
                 state.active_operation_started_at = None
 

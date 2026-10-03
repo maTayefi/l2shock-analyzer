@@ -270,3 +270,172 @@ async def test_force_cancel_propagates_caller_cancellation() -> None:
     finally:
         coordinator.release.set()
         await asyncio.wait_for(task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_fetch_prestart_cancel_releases_admission_exactly_once() -> None:
+    reset_state_for_tests()
+    state = get_state()
+    coordinator = FakeCoordinator()
+    runtime = ManualFetchRuntime()
+    runtime.attach_coordinator(coordinator)  # type: ignore[arg-type]
+
+    task = runtime.start(
+        requested_start_utc=_utc(12),
+        requested_end_utc=_utc(13),
+    )
+
+    assert state.active_operation_name == "manual_fetch"
+    assert task in state.tracked_tasks
+
+    # No await occurs between task creation and cancellation.
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.sleep(0)
+
+    snapshot = runtime.snapshot()
+
+    assert not coordinator.entered.is_set()
+    assert runtime.is_running is False
+    assert runtime._task is None
+    assert snapshot.started_at is None
+    assert snapshot.stop_requested is False
+    assert snapshot.completion_sequence == 1
+    assert snapshot.last_error == "Manual fetch was cancelled before it started"
+    assert state.active_operation_name == ""
+    assert state.active_operation_started_at is None
+    assert task not in state.tracked_tasks
+
+    # The finalized runtime can admit and finish another operation.
+    replacement = runtime.start(
+        requested_start_utc=_utc(12),
+        requested_end_utc=_utc(13),
+    )
+
+    await coordinator.entered.wait()
+    coordinator.release.set()
+    await replacement
+    await asyncio.sleep(0)
+
+    assert runtime.snapshot().completion_sequence == 2
+    assert state.active_operation_name == ""
+    assert replacement not in state.tracked_tasks
+
+
+@pytest.mark.asyncio
+async def test_fetch_immediate_force_cancel_releases_admission() -> None:
+    reset_state_for_tests()
+    state = get_state()
+    coordinator = FakeCoordinator()
+    runtime = ManualFetchRuntime()
+    runtime.attach_coordinator(coordinator)  # type: ignore[arg-type]
+
+    task = runtime.start(
+        requested_start_utc=_utc(12),
+        requested_end_utc=_utc(13),
+    )
+
+    # Exercise the public cancellation path without first letting the
+    # fetch coroutine enter the coordinator.
+    stopped = await runtime.force_cancel_and_wait(timeout_seconds=1.0)
+    await asyncio.sleep(0)
+
+    assert stopped is True
+    assert task.cancelled()
+    assert not coordinator.entered.is_set()
+    assert runtime._task is None
+    assert runtime.snapshot().completion_sequence == 1
+    assert state.active_operation_name == ""
+    assert state.active_operation_started_at is None
+    assert task not in state.tracked_tasks
+
+
+@pytest.mark.asyncio
+async def test_fetch_prestart_cancel_preserves_newer_same_name_owner() -> None:
+    reset_state_for_tests()
+    state = get_state()
+    runtime = ManualFetchRuntime()
+    runtime.attach_coordinator(FakeCoordinator())  # type: ignore[arg-type]
+
+    task = runtime.start(
+        requested_start_utc=_utc(12),
+        requested_end_utc=_utc(13),
+    )
+    old_started_at = state.active_operation_started_at
+    newer_started_at = _utc(13)
+
+    assert old_started_at != newer_started_at
+
+    state.active_operation_name = "manual_fetch"
+    state.active_operation_started_at = newer_started_at
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.sleep(0)
+
+    assert runtime._task is None
+    assert runtime.snapshot().completion_sequence == 1
+    assert task not in state.tracked_tasks
+    assert state.active_operation_name == "manual_fetch"
+    assert state.active_operation_started_at == newer_started_at
+
+
+@pytest.mark.asyncio
+async def test_fetch_normal_completion_preserves_newer_same_name_owner() -> None:
+    reset_state_for_tests()
+    state = get_state()
+    coordinator = FakeCoordinator()
+    runtime = ManualFetchRuntime()
+    runtime.attach_coordinator(coordinator)  # type: ignore[arg-type]
+
+    task = runtime.start(
+        requested_start_utc=_utc(12),
+        requested_end_utc=_utc(13),
+    )
+
+    await coordinator.entered.wait()
+
+    newer_started_at = _utc(13)
+    assert state.active_operation_started_at != newer_started_at
+
+    state.active_operation_name = "manual_fetch"
+    state.active_operation_started_at = newer_started_at
+
+    coordinator.release.set()
+    await task
+    await asyncio.sleep(0)
+
+    assert runtime._task is None
+    assert runtime.snapshot().completion_sequence == 1
+    assert task not in state.tracked_tasks
+    assert state.active_operation_name == "manual_fetch"
+    assert state.active_operation_started_at == newer_started_at
+
+
+def test_fetch_start_without_loop_preserves_existing_snapshot() -> None:
+    reset_state_for_tests()
+    state = get_state()
+    runtime = ManualFetchRuntime()
+    runtime.attach_coordinator(FakeCoordinator())  # type: ignore[arg-type]
+
+    runtime._started_at = _utc(12)
+    runtime._stop_requested = True
+    runtime._last_error = "Previous diagnostic"
+    before = runtime.snapshot()
+
+    with pytest.raises(RuntimeError):
+        runtime.start(
+            requested_start_utc=_utc(12),
+            requested_end_utc=_utc(13),
+        )
+
+    assert runtime.snapshot() == before
+    assert runtime._task is None
+    assert state.active_operation_name == ""
+    assert state.active_operation_started_at is None
+    assert state.tracked_tasks == set()

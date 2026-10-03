@@ -38,7 +38,9 @@ def test_shutdown_is_in_global_header_not_settings() -> None:
     assert "shutdown_in_progress" in control_source
     assert "nonlocal shutdown_in_progress" in control_source
     assert "state.shutdown_complete" in control_source
-    assert "if shutdown_in_progress or state.shutdown_complete:" in control_source
+    # The retry logic was decoupled to allow server-stop retries after cleanup
+    assert "if shutdown_in_progress:" in control_source
+    assert "if state.shutdown_complete:" in control_source
     assert "async def _run_shutdown" in control_source
     assert "Shutdown again to retry" in control_source
 
