@@ -954,3 +954,161 @@ async def test_stop_during_start_persists_disabled_and_refuses_restart(
 
     assert await asyncio.wait_for(stop_task, timeout=5.0) is True
     assert writes == [False, True, False]
+
+
+def test_automatic_fetch_start_without_loop_preserves_runtime_state() -> None:
+    reset_state_for_tests()
+    runtime = AutomaticFetchRuntime()
+    before = runtime.snapshot()
+
+    with pytest.raises(RuntimeError, match="running event loop"):
+        runtime.start(persist=False)
+
+    assert runtime.snapshot() == before
+    assert runtime.task is None
+    assert runtime._stop_event is None
+    assert get_state().tracked_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_automatic_fetch_task_creation_failure_preserves_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset_state_for_tests()
+    runtime = AutomaticFetchRuntime()
+    before = runtime.snapshot()
+    loop = asyncio.get_running_loop()
+
+    def reject_task(_coroutine, **_kwargs):
+        raise RuntimeError("simulated task creation failure")
+
+    # Restore the loop before pytest performs its own async cleanup.
+    with monkeypatch.context() as patch:
+        patch.setattr(loop, "create_task", reject_task)
+
+        with pytest.raises(RuntimeError, match="simulated task creation failure"):
+            runtime.start(persist=False)
+
+    assert runtime.snapshot() == before
+    assert runtime.task is None
+    assert runtime._stop_event is None
+    assert get_state().tracked_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_automatic_fetch_prestart_cancellation_releases_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import l2shock.ui.automatic_fetch_runtime as runtime_module
+
+    reset_state_for_tests()
+
+    def forbidden_settings():
+        raise AssertionError("Cancelled-before-start task must not initialize")
+
+    monkeypatch.setattr(runtime_module, "get_settings", forbidden_settings)
+
+    runtime = AutomaticFetchRuntime()
+    task = runtime.start(persist=False)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.sleep(0)
+
+    assert runtime.task is None
+    assert runtime.is_running is False
+    assert runtime.enabled is False
+    assert runtime._stop_event is None
+    assert runtime.snapshot().stop_requested is False
+    assert runtime.request_stop() is False
+    assert get_state().tracked_tasks == set()
+
+    # Admission must be reusable, not merely hidden by is_running=False.
+    replacement = runtime.start(persist=False)
+    replacement.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await replacement
+
+    await asyncio.sleep(0)
+    assert runtime.task is None
+    assert get_state().tracked_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_automatic_fetch_initialization_failure_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import l2shock.ui.automatic_fetch_runtime as runtime_module
+
+    reset_state_for_tests()
+
+    def failing_settings():
+        raise RuntimeError("simulated settings failure")
+
+    monkeypatch.setattr(runtime_module, "get_settings", failing_settings)
+
+    runtime = AutomaticFetchRuntime()
+    task = runtime.start(persist=False)
+
+    with pytest.raises(RuntimeError, match="simulated settings failure"):
+        await task
+
+    await asyncio.sleep(0)
+
+    assert runtime.task is None
+    assert runtime.is_running is False
+    assert runtime.enabled is False
+    assert runtime._stop_event is None
+    assert runtime.request_stop() is False
+    assert "RuntimeError" in (runtime.snapshot().last_error or "")
+    assert get_state().tracked_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_automatic_fetch_admission_is_safe_with_eager_task_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import l2shock.ui.automatic_fetch_runtime as runtime_module
+
+    reset_state_for_tests()
+    settings = SimpleNamespace(
+        cryptohft=SimpleNamespace(release_poll_interval_minutes=5),
+    )
+    monkeypatch.setattr(runtime_module, "get_settings", lambda: settings)
+
+    def forbidden_scan(*_args, **_kwargs):
+        raise AssertionError("Immediate Stop must prevent polling")
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_complete_source_hours_sync",
+        forbidden_scan,
+    )
+
+    runtime = AutomaticFetchRuntime()
+    loop = asyncio.get_running_loop()
+    previous_factory = loop.get_task_factory()
+
+    try:
+        loop.set_task_factory(asyncio.eager_task_factory)
+        task = runtime.start(persist=False)
+
+        assert runtime.task is task
+        assert runtime.enabled is True
+        assert task in get_state().tracked_tasks
+        assert runtime.request_stop() is True
+
+        await asyncio.wait_for(task, timeout=2.0)
+        await asyncio.sleep(0)
+    finally:
+        loop.set_task_factory(previous_factory)
+
+    assert runtime.task is None
+    assert runtime.enabled is False
+    assert runtime._stop_event is None
+    assert get_state().tracked_tasks == set()

@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-
+import pytest
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -469,3 +469,233 @@ def test_l2_cli_all_invalid_locked_hour_publishes_no_checkpoint(
 
     assert decoded.output_checkpoint is None
     assert decoded.manifest.output_checkpoint_content_sha256 is None
+
+
+@pytest.mark.parametrize(
+    "location",
+    ("root", "parent", "artifact", "manifest"),
+)
+@pytest.mark.parametrize("overwrite", (False, True))
+def test_cli_rejects_redirected_output_paths(
+    tmp_path: Path,
+    location: str,
+    overwrite: bool,
+) -> None:
+    raw_root = tmp_path / "input"
+    output_root = tmp_path / "output"
+    external = tmp_path / "external"
+    external.mkdir()
+    sentinel = external / "sentinel"
+    sentinel.write_bytes(b"must-not-change")
+
+    _write_trade_source(raw_root)
+
+    key = RemoteArtifactKey(
+        kind=RemoteArtifactKind.PRICE,
+        provider="cryptohftdata",
+        venue="binance_futures",
+        instrument="BTCUSDT",
+        hour_utc=_hour(),
+    )
+    artifact_path = output_root.joinpath(*key.relative_path.split("/"))
+    manifest_path = output_root.joinpath(*key.manifest_relative_path.split("/"))
+
+    if location == "root":
+        link = output_root
+        target = external
+        directory_link = True
+    elif location == "parent":
+        output_root.mkdir()
+        link = output_root / key.relative_path.split("/")[0]
+        target = external
+        directory_link = True
+    else:
+        link = artifact_path if location == "artifact" else manifest_path
+        link.parent.mkdir(parents=True)
+        target = sentinel
+        directory_link = False
+
+    try:
+        link.symlink_to(target, target_is_directory=directory_link)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symbolic links are unavailable on this platform")
+
+    before = {
+        path.relative_to(external): path.read_bytes()
+        for path in external.rglob("*")
+        if path.is_file()
+    }
+    arguments = [
+        "price",
+        "--venue",
+        "binance_futures",
+        "--instrument",
+        "BTCUSDT",
+        "--hour",
+        "2026-09-14T12:00:00Z",
+        "--input-dir",
+        str(raw_root),
+        "--output-dir",
+        str(output_root),
+        "--batch-size",
+        "1",
+    ]
+
+    if overwrite:
+        arguments.append("--overwrite")
+
+    assert main(arguments) == 4
+    assert link.is_symlink()
+    assert {
+        path.relative_to(external): path.read_bytes()
+        for path in external.rglob("*")
+        if path.is_file()
+    } == before
+
+    if location == "artifact":
+        assert not manifest_path.exists()
+    elif location == "manifest":
+        assert not artifact_path.exists()
+
+
+@pytest.mark.parametrize("leaf", ("artifact", "manifest"))
+@pytest.mark.parametrize("overwrite", (False, True))
+def test_cli_rejects_output_symlink_even_when_target_is_inside_root(
+    tmp_path: Path,
+    leaf: str,
+    overwrite: bool,
+) -> None:
+    raw_root = tmp_path / "input"
+    output_root = tmp_path / "output"
+    _write_trade_source(raw_root)
+
+    key = RemoteArtifactKey(
+        kind=RemoteArtifactKind.PRICE,
+        provider="cryptohftdata",
+        venue="binance_futures",
+        instrument="BTCUSDT",
+        hour_utc=_hour(),
+    )
+    artifact_path = output_root.joinpath(*key.relative_path.split("/"))
+    manifest_path = output_root.joinpath(*key.manifest_relative_path.split("/"))
+    link = artifact_path if leaf == "artifact" else manifest_path
+    link.parent.mkdir(parents=True)
+
+    target = output_root / "owned-target"
+    target.write_bytes(b"must-not-change")
+
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symbolic links are unavailable on this platform")
+
+    arguments = [
+        "price",
+        "--venue",
+        "binance_futures",
+        "--instrument",
+        "BTCUSDT",
+        "--hour",
+        "2026-09-14T12:00:00Z",
+        "--input-dir",
+        str(raw_root),
+        "--output-dir",
+        str(output_root),
+        "--batch-size",
+        "1",
+    ]
+
+    if overwrite:
+        arguments.append("--overwrite")
+
+    assert main(arguments) == 4
+    assert link.is_symlink()
+    assert target.read_bytes() == b"must-not-change"
+
+
+@pytest.mark.parametrize("dangling", (False, True))
+@pytest.mark.parametrize("overwrite", (False, True))
+def test_atomic_manifest_writer_rejects_symlink_destination(
+    tmp_path: Path,
+    dangling: bool,
+    overwrite: bool,
+) -> None:
+    from l2shock.remote_cli import (
+        LocalArtifactConflictError,
+        _write_bytes_atomic,
+    )
+
+    root = tmp_path / "output"
+    root.mkdir()
+    target = tmp_path / "target"
+    destination = root / "manifest.json"
+
+    if not dangling:
+        target.write_bytes(b"must-not-change")
+
+    try:
+        destination.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symbolic links are unavailable on this platform")
+
+    with pytest.raises(LocalArtifactConflictError):
+        _write_bytes_atomic(
+            destination,
+            b"new-content",
+            output_root=root,
+            overwrite=overwrite,
+        )
+
+    assert destination.is_symlink()
+
+    if dangling:
+        assert not target.exists()
+    else:
+        assert target.read_bytes() == b"must-not-change"
+
+
+def test_cli_overwrite_preserves_supported_regular_file_behavior(
+    tmp_path: Path,
+) -> None:
+    raw_root = tmp_path / "input"
+    output_root = tmp_path / "output"
+    _write_trade_source(raw_root)
+
+    key = RemoteArtifactKey(
+        kind=RemoteArtifactKind.PRICE,
+        provider="cryptohftdata",
+        venue="binance_futures",
+        instrument="BTCUSDT",
+        hour_utc=_hour(),
+    )
+    artifact_path = output_root.joinpath(*key.relative_path.split("/"))
+    manifest_path = output_root.joinpath(*key.manifest_relative_path.split("/"))
+    manifest_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(b"old-artifact")
+    manifest_path.write_bytes(b"old-manifest")
+
+    assert main(
+        [
+            "price",
+            "--venue",
+            "binance_futures",
+            "--instrument",
+            "BTCUSDT",
+            "--hour",
+            "2026-09-14T12:00:00Z",
+            "--input-dir",
+            str(raw_root),
+            "--output-dir",
+            str(output_root),
+            "--batch-size",
+            "1",
+            "--overwrite",
+        ]
+    ) == 0
+
+    decoded = read_remote_artifact_file(
+        artifact_path,
+        expected_key=key,
+        external_manifest_bytes=manifest_path.read_bytes(),
+    )
+    assert isinstance(decoded, RemotePriceProcessedArtifact)

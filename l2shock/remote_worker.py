@@ -79,10 +79,110 @@ from l2shock.remote import (
     temporary_remote_worker_workspace,
 )
 from l2shock.timeutils import now_utc, require_utc_hour
-
 import logging
-
+import time as _time_mod
 log = logging.getLogger(__name__)
+async def _to_thread_joined[T](
+    function: Callable[..., T],
+    /,
+    *args: object,
+    **kwargs: object,
+) -> T:
+    """Run synchronous work without abandoning it on owner cancellation.
+
+    Cancellation cannot stop a running thread. Keep the owning coroutine
+    alive until the worker finishes, including through repeated cancellation,
+    so its workspace cannot close underneath processing or publication.
+
+    If cancellation and worker failure both occur, cancellation remains the
+    owner's outcome; the worker failure is retrieved and logged.
+    """
+    worker = asyncio.create_task(
+        asyncio.to_thread(function, *args, **kwargs),
+        name="l2shock-remote-worker-thread",
+    )
+    cancellation: asyncio.CancelledError | None = None
+
+    while not worker.done():
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError as exc:
+            if cancellation is None:
+                cancellation = exc
+        except Exception:
+            # Retrieve the worker's actual outcome below.
+            break
+
+    if cancellation is not None:
+        if not worker.cancelled():
+            failure = worker.exception()
+
+            if failure is not None:
+                log.warning(
+                    "Remote worker thread failed during owner cancellation: %s",
+                    type(failure).__name__,
+                )
+
+        raise cancellation
+
+    return worker.result()
+
+
+class _PhaseTimer:
+    """Lightweight timing accumulator for profiling GitHub Actions jobs."""
+
+    def __init__(self) -> None:
+        self._phases: list[tuple[str, float]] = []
+        self._current_name: str | None = None
+        self._current_start: float = 0.0
+        self._total_start: float = _time_mod.monotonic()
+
+    def begin(self, name: str) -> None:
+        if self._current_name is not None:
+            self._phases.append(
+                (self._current_name, _time_mod.monotonic() - self._current_start)
+            )
+        self._current_name = name
+        self._current_start = _time_mod.monotonic()
+
+    def end(self) -> None:
+        if self._current_name is not None:
+            self._phases.append(
+                (self._current_name, _time_mod.monotonic() - self._current_start)
+            )
+            self._current_name = None
+
+    @property
+    def total_elapsed(self) -> float:
+        return _time_mod.monotonic() - self._total_start
+
+    @property
+    def phases(self) -> list[tuple[str, float]]:
+        result = list(self._phases)
+        if self._current_name is not None:
+            result.append(
+                (self._current_name, _time_mod.monotonic() - self._current_start)
+            )
+        return result
+
+    def summary_text(self) -> str:
+        lines = ["=== TIMING SUMMARY ==="]
+        for name, elapsed in self.phases:
+            lines.append(f"  {name:<45s} {elapsed:>8.2f}s")
+        lines.append(f"  {'TOTAL':<45s} {self.total_elapsed:>8.2f}s")
+        lines.append("======================")
+        return "\n".join(lines)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": "l2shock.remote_worker_timing",
+            "schema_version": 1,
+            "total_seconds": round(self.total_elapsed, 3),
+            "phases": [
+                {"name": name, "seconds": round(elapsed, 3)}
+                for name, elapsed in self.phases
+            ],
+        }
 
 
 class RemoteWorkerExitStatus(IntEnum):
@@ -336,8 +436,8 @@ class RemoteCatchUpRunResult:
             "Z",
         )
 
-    def to_dict(self) -> dict[str, object]:
-        return {
+    def to_dict(self, *, timing: dict[str, object] | None = None) -> dict[str, object]:
+        result: dict[str, object] = {
             "schema": "l2shock.remote_catch_up_run_result",
             "schema_version": 1,
             "venue": self.venue,
@@ -360,6 +460,9 @@ class RemoteCatchUpRunResult:
             "stop_reason": self.stop_reason,
             "hours": [result.to_dict() for result in self.results],
         }
+        if timing is not None:
+            result["timing"] = timing
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -851,7 +954,7 @@ async def select_remote_catch_up_hour(
         upper_fraction=upper_fraction,
     )
 
-    pinned_revision = await asyncio.to_thread(
+    pinned_revision = await _to_thread_joined(
         repository.current_revision,
     )
     observations: list[_RemoteCatchUpObservation] = []
@@ -864,7 +967,7 @@ async def select_remote_catch_up_hour(
             hour_utc=hour,
             preset=preset,
         )
-        downloaded_l2 = await asyncio.to_thread(
+        downloaded_l2 = await _to_thread_joined(
             repository.download_artifact,
             l2_key,
             revision=pinned_revision,
@@ -892,7 +995,7 @@ async def select_remote_catch_up_hour(
         price_exists = False
 
         if price_required:
-            downloaded_price = await asyncio.to_thread(
+            downloaded_price = await _to_thread_joined(
                 repository.download_artifact,
                 _price_key(
                     instrument=normalized_instrument,
@@ -1040,6 +1143,8 @@ async def process_remote_catch_up(
     completed: list[RemoteWorkerResult] = []
     stop_reason = "no_work"  # Fallback initialization
 
+    run_timer = _PhaseTimer()
+
     while True:
         # Always admit the first selected hour. On later iterations, enforce
         # the cooperative runtime budget before starting more expensive work.
@@ -1061,6 +1166,7 @@ async def process_remote_catch_up(
                 producer_git_commit=producer_git_commit,
                 use_api_key=use_api_key,
                 batch_size=batch_size,
+                timer=run_timer,
             )
         except RemoteFileNotFoundError:
             # Release eligibility is a scheduling boundary, not proof that the
@@ -1148,6 +1254,9 @@ async def process_remote_catch_up(
 
         target_hour = next_target_hour
 
+    run_timer.end()
+    log.info("\n%s", run_timer.summary_text())
+
     return RemoteCatchUpRunResult(
         venue=normalized_venue,
         instrument=normalized_instrument,
@@ -1165,11 +1274,11 @@ async def _inspect_existing_state(
     l2_key: RemoteArtifactKey,
     price_key: RemoteArtifactKey | None,
 ) -> _ExistingRemoteState:
-    revision = await asyncio.to_thread(
+    revision = await _to_thread_joined(
         repository.current_revision,
     )
 
-    downloaded_l2 = await asyncio.to_thread(
+    downloaded_l2 = await _to_thread_joined(
         repository.download_artifact,
         l2_key,
         revision=revision,
@@ -1189,7 +1298,7 @@ async def _inspect_existing_state(
     if price_key is None:
         price_artifact = None
     else:
-        downloaded_price = await asyncio.to_thread(
+        downloaded_price = await _to_thread_joined(
             repository.download_artifact,
             price_key,
             revision=revision,
@@ -1228,7 +1337,7 @@ async def _predecessor_artifact_exists(
     predecessor proves nothing: a later seed could still own that hour.
     """
     try:
-        await asyncio.to_thread(
+        await _to_thread_joined(
             repository.download_l2_predecessor_checkpoint,
             target_key,
             revision=pinned_revision,
@@ -1247,7 +1356,7 @@ async def _predecessor_checkpoint(
     predecessor_required: bool,
 ) -> bytes | None:
     try:
-        predecessor = await asyncio.to_thread(
+        predecessor = await _to_thread_joined(
             repository.download_l2_predecessor_checkpoint,
             target_key,
             revision=pinned_revision,
@@ -1348,8 +1457,11 @@ async def process_remote_hour(
     producer_git_commit: str | None,
     use_api_key: bool = False,
     batch_size: int = 131_072,
+    timer: _PhaseTimer | None = None,
 ) -> RemoteWorkerResult:
     """Acquire, process, and publish one completed remote source hour."""
+    _timer = timer if timer is not None else _PhaseTimer()
+    _timer.begin("process_remote_hour")
     log.info(
         "=== PROCESSING HOUR START === venue=%s instrument=%s hour=%s",
         venue,
@@ -1410,12 +1522,13 @@ async def process_remote_hour(
         else None
     )
 
+    _timer.begin("inspect_existing_state")
     existing = await _inspect_existing_state(
         repository,
         l2_key=target_l2_key,
         price_key=target_price_key,
     )
-
+    _timer.begin("log_existing_state")
     log.info(
         "REMOTE EXISTING STATE: venue=%s instrument=%s hour=%s "
         "pinned_revision=%s l2_exists=%s l2_checkpoint_exists=%s "
@@ -1541,6 +1654,7 @@ async def process_remote_hour(
         ],
     )
 
+    _timer.begin("acquire_sources")
     acquisition = await acquire_remote_worker_archives(
         tuple(requested_specs),
         cryptohft=cryptohft,
@@ -1548,7 +1662,7 @@ async def process_remote_hour(
         latest_eligible_hour_utc=latest_eligible,
         use_api_key=use_api_key,
     )
-
+    _timer.begin("log_acquisition")
     log.info(
         "REMOTE SOURCE ACQUISITION COMPLETE: venue=%s instrument=%s "
         "hour=%s source_count=%d downloaded=%d reused=%d sources=%s",
@@ -1576,8 +1690,8 @@ async def process_remote_hour(
             acquisition.processing_archives,
             SourceDataKind.ORDERBOOK,
         )
-
-        l2_output = await asyncio.to_thread(
+        _timer.begin("l2_processing")
+        l2_output = await _to_thread_joined(
             process_l2_archive_headlessly,
             orderbook_archive,
             preset,
@@ -1585,7 +1699,7 @@ async def process_remote_hour(
             producer_git_commit=producer_git_commit,
             batch_size=batch_size,
         )
-
+        _timer.begin("log_l2_result")
         log.info(
             "REMOTE L2 PROCESSING RESULT: venue=%s instrument=%s hour=%s "
             "events=%d snapshots=%d continuity_mismatches=%d "
@@ -1655,7 +1769,7 @@ async def process_remote_hour(
             SourceDataKind.TRADES,
         )
 
-        price_output = await asyncio.to_thread(
+        price_output = await _to_thread_joined(
             process_price_archives_headlessly,
             trade_archive.spec,
             (trade_archive,),
@@ -1667,11 +1781,12 @@ async def process_remote_hour(
     price_publication: HuggingFacePublicationResult | None = None
 
     if l2_output is not None:
-        l2_publication = await asyncio.to_thread(
+        _timer.begin("hf_publish_l2")
+        l2_publication = await _to_thread_joined(
             repository.publish_artifact,
             l2_output.artifact,
         )
-
+        _timer.begin("log_hf_l2_pub")
         log.info(
             "REMOTE HF L2 PUBLICATION: venue=%s instrument=%s hour=%s "
             "created=%s revision=%s concurrent_commit_observed=%s "
@@ -1687,7 +1802,7 @@ async def process_remote_hour(
         )
 
     if price_output is not None:
-        price_publication = await asyncio.to_thread(
+        price_publication = await _to_thread_joined(
             repository.publish_artifact,
             price_output.artifact,
         )
@@ -1768,6 +1883,7 @@ async def process_remote_hour(
         source_downloaded_count=acquisition.downloaded_count,
         source_reused_count=acquisition.reused_count,
     )
+    _timer.end()
     log.info(
         "=== PROCESSING HOUR COMPLETE === venue=%s instrument=%s hour=%s "
         "l2_created=%s price_created=%s sources_downloaded=%s",
@@ -1778,6 +1894,7 @@ async def process_remote_hour(
         result.price_created,
         result.source_downloaded_count,
     )
+    log.info("\n%s", _timer.summary_text())
     return result
 
 
@@ -1960,7 +2077,7 @@ async def _run_from_arguments(
                 batch_size=args.batch_size,
             )
 
-        return await process_remote_catch_up(
+        catch_up_result = await process_remote_catch_up(
             repository=repository,
             cryptohft=cryptohft,
             workspace=workspace,
@@ -1976,6 +2093,7 @@ async def _run_from_arguments(
             use_api_key=bool(args.use_api_key),
             batch_size=args.batch_size,
         )
+        return catch_up_result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2046,9 +2164,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return int(RemoteWorkerExitStatus.UNEXPECTED_ERROR)
 
+    result_dict = result.to_dict()
+    if isinstance(result, RemoteCatchUpRunResult) and hasattr(result, '_timing'):
+        result_dict["timing"] = result._timing  # type: ignore[attr-defined]
     print(
         json.dumps(
-            result.to_dict(),
+            result_dict,
             ensure_ascii=True,
             allow_nan=False,
             sort_keys=True,

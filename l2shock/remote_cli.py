@@ -48,6 +48,13 @@ from l2shock.acquisition import (
     sha256_file,
     validate_parquet_file,
 )
+from l2shock.filesystem import (
+    OwnedPathError,
+    absolute_path_without_resolution,
+    path_entry_exists,
+    prepare_owned_file_path,
+    require_owned_regular_file,
+)
 from l2shock.ingest import MAX_CHECKPOINT_PAYLOAD_BYTES
 from l2shock.presets import (
     build_binance_futures_data_preset,
@@ -133,26 +140,48 @@ def _depth_fraction(value: str) -> Decimal:
     return result
 
 
+def _owned_output_file(
+    output_root: Path,
+    path: Path,
+    *,
+    create_parents: bool = False,
+) -> Path:
+    """Validate an output leaf without resolving away link-like entries."""
+    try:
+        candidate = prepare_owned_file_path(
+            output_root,
+            path,
+            create_parents=create_parents,
+        )
+
+        if path_entry_exists(candidate):
+            candidate = require_owned_regular_file(
+                output_root,
+                candidate,
+            )
+
+        return candidate
+    except OwnedPathError as exc:
+        raise LocalArtifactConflictError(
+            "Output path is not an application-owned regular-file destination"
+        ) from exc
+
+
 def _canonical_output_path(
     output_root: Path,
     relative_path: str,
 ) -> Path:
-    root = Path(output_root).expanduser().resolve()
+    root = absolute_path_without_resolution(output_root)
     pure = PurePosixPath(relative_path)
 
-    if pure.is_absolute() or ".." in pure.parts:
+    if not pure.parts or pure.is_absolute() or ".." in pure.parts:
         raise LocalRemoteCLIError("Remote output path is not a safe relative path")
 
-    result = root.joinpath(*pure.parts).resolve()
-
-    try:
-        result.relative_to(root)
-    except ValueError as exc:
-        raise LocalRemoteCLIError(
-            "Remote output path escaped the output directory"
-        ) from exc
-
-    return result
+    return _owned_output_file(
+        root,
+        root.joinpath(*pure.parts),
+        create_parents=True,
+    )
 
 
 def _processing_archive(
@@ -265,27 +294,22 @@ def _write_bytes_atomic(
     path: Path,
     data: bytes,
     *,
+    output_root: Path,
     overwrite: bool,
 ) -> bool:
     """Write exact bytes using atomic replace or create-if-absent.
 
-    Returns ``True`` when this call created or replaced the destination.
-    An identical pre-existing destination is an idempotent success and returns
-    ``False``.
+    Returns True when this call created or replaced the destination.
+    An identical pre-existing destination is an idempotent success and
+    returns False.
     """
-
-    destination = Path(path).expanduser().resolve()
-    destination.parent.mkdir(
-        parents=True,
-        exist_ok=True,
+    destination = _owned_output_file(
+        output_root,
+        path,
+        create_parents=True,
     )
 
-    if destination.exists():
-        if destination.is_symlink() or not destination.is_file():
-            raise LocalArtifactConflictError(
-                "Manifest destination exists but is not a regular file"
-            )
-
+    if path_entry_exists(destination):
         if not overwrite:
             if destination.read_bytes() == data:
                 return False
@@ -294,13 +318,21 @@ def _write_bytes_atomic(
                 "Existing external manifest owns different content"
             )
 
-    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    temporary = prepare_owned_file_path(
+        output_root,
+        destination.with_name(
+            f".{destination.name}.{uuid.uuid4().hex}.tmp"
+        ),
+    )
 
     try:
         with temporary.open("xb") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+
+        # Revalidate after temporary-file creation and before publication.
+        destination = _owned_output_file(output_root, destination)
 
         if overwrite:
             os.replace(
@@ -315,9 +347,10 @@ def _write_bytes_atomic(
                 destination,
             )
         except FileExistsError:
+            destination = _owned_output_file(output_root, destination)
+
             if (
-                destination.is_file()
-                and not destination.is_symlink()
+                path_entry_exists(destination)
                 and destination.read_bytes() == data
             ):
                 return False
@@ -368,31 +401,32 @@ def _publish_artifact_pair(
     *,
     overwrite: bool,
 ) -> dict[str, object]:
+    root = absolute_path_without_resolution(output_root)
     key = artifact.manifest.key
     artifact_path = _canonical_output_path(
-        output_root,
+        root,
         key.relative_path,
     )
     manifest_path = _canonical_output_path(
-        output_root,
+        root,
         key.manifest_relative_path,
     )
     manifest_bytes = artifact.manifest.canonical_json_bytes
 
-    if manifest_path.exists() and not overwrite:
-        if manifest_path.is_symlink() or not manifest_path.is_file():
-            raise LocalArtifactConflictError(
-                "Existing manifest path is not a regular file"
-            )
+    # Validate both destinations before publishing either file.
+    artifact_path = _owned_output_file(root, artifact_path)
+    manifest_path = _owned_output_file(root, manifest_path)
 
+    if path_entry_exists(manifest_path) and not overwrite:
         if manifest_path.read_bytes() != manifest_bytes:
             raise LocalArtifactConflictError(
                 "Existing external manifest owns different content"
             )
 
     artifact_created = False
+    artifact_path = _owned_output_file(root, artifact_path)
 
-    if artifact_path.exists() and not overwrite:
+    if path_entry_exists(artifact_path) and not overwrite:
         _verify_existing_artifact(
             artifact_path,
             artifact,
@@ -406,6 +440,7 @@ def _publish_artifact_pair(
             )
             artifact_created = True
         except FileExistsError:
+            artifact_path = _owned_output_file(root, artifact_path)
             _verify_existing_artifact(
                 artifact_path,
                 artifact,
@@ -414,13 +449,17 @@ def _publish_artifact_pair(
     manifest_created = _write_bytes_atomic(
         manifest_path,
         manifest_bytes,
+        output_root=root,
         overwrite=overwrite,
     )
+
+    artifact_path = _owned_output_file(root, artifact_path)
+    manifest_path = _owned_output_file(root, manifest_path)
 
     verified = read_remote_artifact_file(
         artifact_path,
         expected_key=key,
-        expected_manifest_sha256=(artifact.manifest.manifest_sha256),
+        expected_manifest_sha256=artifact.manifest.manifest_sha256,
         external_manifest_bytes=manifest_bytes,
     )
 
@@ -444,7 +483,7 @@ def _publish_artifact_pair(
         "file_size_bytes": file_size,
         "transport_sha256": transport_sha256,
         "manifest_sha256": artifact.manifest.manifest_sha256,
-        "analytical_content_sha256": (artifact.manifest.content_sha256),
+        "analytical_content_sha256": artifact.manifest.content_sha256,
     }
 
 

@@ -28,6 +28,8 @@ SKIP_DIRS = {
     "build",
     "dist",
     "node_modules",
+    "cache_depth_probe",
+    "downloads",
 }
 
 AI_COPY_SKIP_DIRS = {
@@ -46,6 +48,8 @@ AI_COPY_SKIP_DIRS = {
     "old",
     "old_version",
     "older_version",
+    "cache_depth_probe",
+    "downloads",
 }
 
 AI_COPY_SKIP_SUFFIXES = {
@@ -85,6 +89,8 @@ DEFAULT_7Z_EXCLUDE_PATTERNS = (
     "older_version",
     ".mypy_cache",
     "pylint_reports",
+    "cache_depth_probe",
+    "downloads",
     ".VSCodeCounter",
     "exports",
     "ai_chunks",

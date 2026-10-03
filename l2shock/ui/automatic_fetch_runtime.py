@@ -1025,8 +1025,6 @@ class AutomaticFetchRuntime:
             stop_event = self._stop_event
 
             if stop_event is None or stop_event.is_set():
-                # Returning the winding-down task would make Start look
-                # accepted while the loop exits and nothing is persisted.
                 raise FetchOperationBusyError(
                     "Automatic Fetch is still stopping; start it again after "
                     "the current step finishes"
@@ -1040,24 +1038,84 @@ class AutomaticFetchRuntime:
                 f"active: {state.active_operation_name}"
             )
 
+        # Fail before constructing a coroutine or changing runtime state.
+        loop = asyncio.get_running_loop()
+
+        # The gate also makes admission safe with an eager task factory:
+        # _run cannot execute until ownership and callbacks are installed.
+        admitted = asyncio.Event()
+        stop_event = asyncio.Event()
+
+        async def run_when_admitted() -> None:
+            await admitted.wait()
+            await self._run(persist_enabled=persist)
+
+        coroutine = run_when_admitted()
+
+        try:
+            task = loop.create_task(
+                coroutine,
+                name="l2shock-automatic-fetch",
+            )
+        except BaseException:
+            coroutine.close()
+            raise
+
         self._enabled = True
         self._stop_requested = False
-        self._stop_event = asyncio.Event()
+        self._stop_event = stop_event
         self._last_error = None
-
-        task = asyncio.create_task(
-            self._run(
-                persist_enabled=persist,
-            ),
-            name="l2shock-automatic-fetch",
-        )
-
         self._task = task
+
         state.tracked_tasks.add(task)
+        task.add_done_callback(self._task_finished)
+        admitted.set()
 
         return task
 
+    def _task_finished(
+        self,
+        task: asyncio.Task[None],
+    ) -> None:
+        """Finalize tasks that never reached _run's normal cleanup boundary."""
+        state = get_state()
+        state.tracked_tasks.discard(task)
+
+        failure = None if task.cancelled() else task.exception()
+
+        if failure is not None:
+            log.error(
+                "Automatic fetch task failed: %s",
+                type(failure).__name__,
+                exc_info=(
+                    type(failure),
+                    failure,
+                    failure.__traceback__,
+                ),
+            )
+
+        # A delayed callback for an older task must not clear a new start.
+        if self._task is not task:
+            return
+
+        if failure is not None:
+            self._last_error = (
+                "Automatic fetch task failed: "
+                f"Unexpected {type(failure).__name__}"
+            )
+
+        self._enabled = False
+        self._stop_requested = False
+        self._coordinator = None
+        self._current_target_hour_utc = None
+        self._next_poll_at = None
+        self._stop_event = None
+        self._task = None
+
     def request_stop(self) -> bool:
+        if not self.is_running:
+            return False
+
         stop_event = self._stop_event
 
         if stop_event is None or stop_event.is_set():
@@ -1067,6 +1125,7 @@ class AutomaticFetchRuntime:
         stop_event.set()
 
         coordinator = self._coordinator
+
         if coordinator is not None:
             coordinator.request_stop()
 

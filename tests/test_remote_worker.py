@@ -1122,3 +1122,135 @@ def test_planner_repairs_price_on_blocked_hour_without_frontier() -> None:
         observations=observations,
         price_required=True,
     ) == latest - timedelta(hours=1)
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worker_fails", (False, True))
+async def test_joined_remote_worker_preserves_normal_outcome_and_context(
+    worker_fails: bool,
+) -> None:
+    from contextvars import ContextVar
+
+    context = ContextVar("remote-worker-test-context", default="missing")
+    token = context.set("owner-context")
+
+    def work(value: int, *, increment: int) -> int:
+        assert context.get() == "owner-context"
+
+        if worker_fails:
+            raise ValueError("simulated worker failure")
+
+        return value + increment
+
+    try:
+        if worker_fails:
+            with pytest.raises(ValueError, match="simulated worker failure"):
+                await remote_worker_module._to_thread_joined(
+                    work,
+                    40,
+                    increment=2,
+                )
+        else:
+            assert (
+                await remote_worker_module._to_thread_joined(
+                    work,
+                    40,
+                    increment=2,
+                )
+                == 42
+            )
+    finally:
+        context.reset(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worker_fails", (False, True))
+async def test_remote_worker_cancellation_retains_workspace_until_thread_exit(
+    tmp_path: Path,
+    worker_fails: bool,
+) -> None:
+    import threading
+    from tempfile import TemporaryDirectory
+
+    entered = threading.Event()
+    release = threading.Event()
+    exited = threading.Event()
+    workspace_closed = threading.Event()
+    paths: list[Path] = []
+
+    def work(root: Path) -> None:
+        entered.set()
+
+        try:
+            if not release.wait(timeout=5.0):
+                raise TimeoutError("Test did not release the remote worker")
+
+            # The owner's workspace must still exist when the worker resumes.
+            (root / "completed.txt").write_text("completed", encoding="utf-8")
+
+            if worker_fails:
+                raise ValueError("simulated worker failure")
+        finally:
+            exited.set()
+
+    async def owner() -> None:
+        try:
+            with TemporaryDirectory(dir=tmp_path) as directory:
+                root = Path(directory)
+                paths.append(root)
+                await remote_worker_module._to_thread_joined(work, root)
+        finally:
+            workspace_closed.set()
+
+    task = asyncio.create_task(owner())
+
+    try:
+        assert await asyncio.to_thread(entered.wait, 2.0)
+
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+
+        assert not task.done()
+        assert not exited.is_set()
+        assert not workspace_closed.is_set()
+        assert paths[0].is_dir()
+    finally:
+        release.set()
+
+        if not task.done():
+            task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=3.0)
+
+    assert exited.is_set()
+    assert workspace_closed.is_set()
+    assert not paths[0].exists()
+
+
+def test_remote_worker_routes_thread_calls_through_joining_helper() -> None:
+    source = Path(remote_worker_module.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    helper = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_to_thread_joined"
+    )
+    direct_thread_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "asyncio"
+        and node.func.attr == "to_thread"
+    ]
+    helper_node_ids = {id(node) for node in ast.walk(helper)}
+
+    assert len(direct_thread_calls) == 1
+    assert all(id(node) in helper_node_ids for node in direct_thread_calls)
