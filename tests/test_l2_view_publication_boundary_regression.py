@@ -24,8 +24,7 @@ def test_publication_boundary_discards_viewport_only_for_new_source(
     publishers = [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_publish"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_publish"
     ]
     assert len(publishers) == 1
 

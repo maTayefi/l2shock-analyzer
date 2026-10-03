@@ -62,9 +62,7 @@ def test_quarantine_error_retains_completed_move_destination(
     assert moved.read_bytes() == b"corrupt-source"
     assert moved.is_relative_to(quarantine_root)
     assert not list(quarantine_root.rglob("*.tmp"))
-    assert not moved.with_suffix(
-        moved.suffix + ".quarantine.json"
-    ).exists()
+    assert not moved.with_suffix(moved.suffix + ".quarantine.json").exists()
 
 
 def test_quarantine_post_move_stat_failure_retains_destination(

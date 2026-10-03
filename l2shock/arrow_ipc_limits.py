@@ -14,7 +14,6 @@ import struct
 
 import pyarrow as pa
 
-
 _MAX_METADATA_BYTES = 64 * 1024
 _MAX_BATCHES = 4_096
 _MAX_DECODED_BYTES = 8 * 1024 * 1024
@@ -97,9 +96,7 @@ class _Flatbuffer:
     ) -> int:
         position = self.field(table, index, struct.calcsize(format_string))
         return (
-            default
-            if position is None
-            else _read(self.data, position, format_string)
+            default if position is None else _read(self.data, position, format_string)
         )
 
     def indirect(self, position: int) -> int:
@@ -341,7 +338,9 @@ def preflight_hourly_ipc(
 
                 if compressed:
                     if stored_length < 8:
-                        raise IPCLayoutError("Hourly IPC compression prefix is truncated")
+                        raise IPCLayoutError(
+                            "Hourly IPC compression prefix is truncated"
+                        )
 
                     declared_length = _read(body, offset, "<q")
 

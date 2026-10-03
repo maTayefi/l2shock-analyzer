@@ -463,9 +463,7 @@ def checkpoint_storage_diagnostics(
     reference_graph_error: str | None = None
 
     try:
-        referenced_checkpoint_hashes = collect_referenced_checkpoint_sha256s(
-            session
-        )
+        referenced_checkpoint_hashes = collect_referenced_checkpoint_sha256s(session)
     except CheckpointReferenceError as exc:
         # Destructive maintenance keeps using the strict collector and
         # therefore still fails closed. A read-only inventory can continue,

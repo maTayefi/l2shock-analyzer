@@ -198,11 +198,7 @@ def test_complete_graph_preserves_existing_orphan_classification(
     cache_root = tmp_path / "cache"
     artifact = CheckpointStore(cache_root).publish(_checkpoint())
     digest = artifact.encoding_info.content_sha256
-    quality = (
-        {"output_checkpoint_content_sha256": digest}
-        if referenced
-        else {}
-    )
+    quality = {"output_checkpoint_content_sha256": digest} if referenced else {}
 
     with _session(monkeypatch, qualities=(quality,)) as session:
         report = diagnostics.checkpoint_storage_diagnostics(

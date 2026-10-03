@@ -9,9 +9,7 @@ for directory, heading in (
     ("l2shock", "# Global production-module inventory"),
     ("tests", "# Global test inventory"),
 ):
-    heading_pattern = re.compile(
-        r"(?m)^" + re.escape(heading) + r"[ \t]*\r?$"
-    )
+    heading_pattern = re.compile(r"(?m)^" + re.escape(heading) + r"[ \t]*\r?$")
     matches = list(heading_pattern.finditer(text))
     if len(matches) != 1:
         raise SystemExit(f"Expected one heading: {heading}")
@@ -19,14 +17,12 @@ for directory, heading in (
     heading_match = matches[0]
     section_end = re.search(
         r"(?m)^# ",
-        text[heading_match.end():],
+        text[heading_match.end() :],
     )
     stop = (
-        len(text)
-        if section_end is None
-        else heading_match.end() + section_end.start()
+        len(text) if section_end is None else heading_match.end() + section_end.start()
     )
-    section = text[heading_match.end():stop]
+    section = text[heading_match.end() : stop]
     block = re.search(
         r"```text[ \t]*\r?\n(?P<body>.*?)\r?\n```",
         section,

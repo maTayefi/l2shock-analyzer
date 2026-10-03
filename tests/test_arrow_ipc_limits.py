@@ -38,9 +38,7 @@ def _payload(
                 )
                 for field in schema
             ]
-            writer.write_batch(
-                pa.RecordBatch.from_arrays(columns, schema=schema)
-            )
+            writer.write_batch(pa.RecordBatch.from_arrays(columns, schema=schema))
 
     return sink.getvalue().to_pybytes()
 
@@ -140,10 +138,7 @@ def test_forged_expansion_prefix_is_rejected_before_open_stream(
     assert header_field is not None
     batch = flat.indirect(header_field)
 
-    buffer_count = sum(
-        3 if pa.types.is_string(field.type) else 2
-        for field in schema
-    )
+    buffer_count = sum(3 if pa.types.is_string(field.type) else 2 for field in schema)
     buffers = flat.vector(
         batch,
         2,
@@ -197,9 +192,7 @@ def test_individual_string_length_is_checked_before_python_materialization(
         schema,
         options=ipc.IpcWriteOptions(compression="zstd"),
     ) as writer:
-        writer.write_batch(
-            pa.RecordBatch.from_arrays(columns, schema=schema)
-        )
+        writer.write_batch(pa.RecordBatch.from_arrays(columns, schema=schema))
 
     with pytest.raises(limit_error, match="string exceeds"):
         _decode(family, sink.getvalue().to_pybytes(), channel)

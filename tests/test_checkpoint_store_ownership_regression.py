@@ -57,7 +57,7 @@ def _symlink(
 ) -> None:
     try:
         link.symlink_to(target, target_is_directory=directory)
-    except (OSError, NotImplementedError):
+    except OSError, NotImplementedError:
         pytest.skip("Symbolic links are unavailable on this platform")
 
 
@@ -110,11 +110,7 @@ def test_identity_directory_alias_is_rejected_for_read_and_publish(
     identity = CheckpointIdentity.from_checkpoint(checkpoint)
 
     store.root.mkdir(parents=True)
-    target = (
-        store.root / "different-owner"
-        if inside
-        else tmp_path / "external-owner"
-    )
+    target = store.root / "different-owner" if inside else tmp_path / "external-owner"
     target.mkdir()
     sentinel = target / "sentinel"
     sentinel.write_bytes(b"unchanged")

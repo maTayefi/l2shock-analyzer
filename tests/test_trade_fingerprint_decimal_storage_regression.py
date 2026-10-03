@@ -43,9 +43,7 @@ def test_fingerprint_storage_does_not_expand_decimal_exponents(
     quantity_text: str,
 ) -> None:
     def forbidden_fixed_point_format(*_args, **_kwargs):
-        raise AssertionError(
-            "Fingerprint storage must not use fixed-point formatting"
-        )
+        raise AssertionError("Fingerprint storage must not use fixed-point formatting")
 
     # The original implementation resolves format() through module globals.
     # Make accidental restoration of that implementation fail immediately,
@@ -115,16 +113,8 @@ def test_fingerprint_storage_still_rejects_conflicting_decimal_values(
         quantity=Decimal("2"),
     )
     conflicting = _fingerprint(
-        price=(
-            Decimal("101")
-            if changed_field == "price"
-            else Decimal("100")
-        ),
-        quantity=(
-            Decimal("3")
-            if changed_field == "quantity"
-            else Decimal("2")
-        ),
+        price=(Decimal("101") if changed_field == "price" else Decimal("100")),
+        quantity=(Decimal("3") if changed_field == "quantity" else Decimal("2")),
     )
     store = hourly_module._TradeIdFingerprintStore()
 
