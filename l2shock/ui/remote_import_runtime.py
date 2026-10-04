@@ -1,17 +1,20 @@
 # l2shock/ui/remote_import_runtime.py
-"""Application-owned runtime for pinned Hugging Face range imports.
+"""Application-owned runtime for verified HF and staged B2 range imports.
 
 One operation:
 
 1. validates an exact UTC range and selected BTC/ETH bases;
 2. constructs the exact component L2 and Binance price artifact keys;
-3. resolves one immutable Hugging Face commit SHA;
-4. downloads every artifact and manifest from that same revision;
+3. pins one HF commit or pins each B2 publication independently;
+4. downloads and verifies the selected immutable artifact ownership;
 5. delegates PostgreSQL writes to the existing verified importer;
 6. exposes immutable progress and terminal snapshots.
 
+B2 does not provide a repository-wide range snapshot or synthetic revision.
+The existing Fetch UI singleton remains on HF until its integration batch.
+
 The runtime does not replay order books, calculate liquidity, reconstruct price
-OHLC, publish to Hugging Face, or implement another analytical codec.
+OHLC, publish artifacts, or implement another analytical codec.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from enum import StrEnum
 from typing import Protocol
 from uuid import UUID, uuid4
 
-from l2shock.config import get_settings
+from l2shock.config import B2Config, get_settings
 from l2shock.db.engine import session_scope
 from l2shock.presets import (
     build_binance_futures_data_preset,
@@ -48,6 +51,21 @@ from l2shock.remote.importer import (
     RemoteArtifactImportError,
     RemoteArtifactImportResult,
     import_downloaded_huggingface_artifact,
+    import_verified_remote_artifact,
+)
+from l2shock.remote.b2_repository import (
+    B2ProcessedArtifactRepository,
+    B2RepositoryError,
+)
+from l2shock.remote.b2_transport import (
+    B2ObjectStore,
+    B2TransportError,
+)
+from l2shock.remote.import_contracts import (
+    B2_STORAGE_BACKEND,
+    HF_STORAGE_BACKEND,
+    RemoteImportStorageIdentity,
+    VerifiedRemoteImportArtifact,
 )
 from l2shock.timeutils import (
     now_utc,
@@ -82,10 +100,28 @@ class RemoteImportItemResult:
     key: RemoteArtifactKey
     disposition: RemoteImportItemDisposition
     diagnostic: str | None = None
+    storage_identity: RemoteImportStorageIdentity | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, RemoteArtifactKey):
             raise TypeError("key must be a RemoteArtifactKey")
+
+        identity = self.storage_identity
+
+        if identity is not None:
+            if not isinstance(identity, RemoteImportStorageIdentity):
+                raise TypeError(
+                    "storage_identity must be RemoteImportStorageIdentity or null"
+                )
+
+            if identity.backend == B2_STORAGE_BACKEND:
+                reference = identity.publication_reference
+                assert reference is not None
+
+                if reference.publication.key != self.key:
+                    raise RemoteImportRuntimeError(
+                        "Item storage ownership belongs to a different artifact"
+                    )
 
         object.__setattr__(
             self,
@@ -109,7 +145,7 @@ class RemoteImportRangeResult:
     requested_start_utc: datetime
     requested_end_utc: datetime
     selected_bases: tuple[str, ...]
-    pinned_revision: str
+    pinned_revision: str | None
     started_at: datetime
     ended_at: datetime
     status: str
@@ -120,6 +156,7 @@ class RemoteImportRangeResult:
     missing_count: int
     failed_count: int
     stopped: bool
+    storage_backend: str = HF_STORAGE_BACKEND
 
     def __post_init__(self) -> None:
         operation_id = self.operation_id
@@ -157,7 +194,25 @@ class RemoteImportRangeResult:
             raise ValueError("ended_at cannot precede started_at")
 
         bases = _normalized_bases(self.selected_bases)
-        revision = _full_commit_sha(self.pinned_revision)
+
+        if self.storage_backend == B2_STORAGE_BACKEND:
+            if self.pinned_revision is not None:
+                raise RemoteImportRuntimeError(
+                    "B2 range results must not fabricate a repository revision"
+                )
+
+            revision = None
+
+        elif self.storage_backend == HF_STORAGE_BACKEND:
+            if self.pinned_revision is None and self.stopped is True and not self.items:
+                # A stop before the first worker boundary performs no HF
+                # revision lookup and therefore owns no pinned revision.
+                revision = None
+            else:
+                revision = _full_commit_sha(self.pinned_revision)
+
+        else:
+            raise RemoteImportRuntimeError("Unsupported remote range storage backend")
 
         if self.status not in {
             "ok",
@@ -195,6 +250,30 @@ class RemoteImportRangeResult:
 
         if not isinstance(self.stopped, bool):
             raise TypeError("stopped must be bool")
+
+        for item in self.items:
+            if not isinstance(item, RemoteImportItemResult):
+                raise TypeError("items must contain RemoteImportItemResult objects")
+
+            identity = item.storage_identity
+
+            if identity is not None and identity.backend != self.storage_backend:
+                raise RemoteImportRuntimeError(
+                    "Item storage backend disagrees with the range backend"
+                )
+
+            if (
+                self.storage_backend == B2_STORAGE_BACKEND
+                and item.disposition
+                in {
+                    RemoteImportItemDisposition.IMPORTED,
+                    RemoteImportItemDisposition.REUSED,
+                }
+                and identity is None
+            ):
+                raise RemoteImportRuntimeError(
+                    "Successful B2 items require exact storage ownership"
+                )
 
         object.__setattr__(
             self,
@@ -234,7 +313,7 @@ class RemoteImportRuntimeProgress:
 
     operation_id: UUID
     message: str
-    pinned_revision: str
+    pinned_revision: str | None
     artifacts_selected: int
     artifacts_completed: int
     imported_count: int
@@ -242,6 +321,7 @@ class RemoteImportRuntimeProgress:
     missing_count: int
     failed_count: int
     current_key: RemoteArtifactKey | None
+    storage_backend: str = HF_STORAGE_BACKEND
 
     @property
     def fraction_complete(self) -> float:
@@ -264,23 +344,120 @@ class RemoteImportRuntimeSnapshot:
     last_result: RemoteImportRangeResult | None
     last_error: str | None
     completion_sequence: int
+    storage_backend: str = HF_STORAGE_BACKEND
 
 
 class RemoteImportRepositoryProtocol(Protocol):
-    def current_revision(self) -> str: ...
+    def current_revision(self) -> str | None: ...
 
     def download_artifact(
         self,
         key: RemoteArtifactKey,
         *,
         revision: str | None = None,
-    ) -> DownloadedHuggingFaceArtifact | None: ...
+    ) -> DownloadedHuggingFaceArtifact | VerifiedRemoteImportArtifact | None: ...
 
 
 RemoteArtifactImporter = Callable[
-    [DownloadedHuggingFaceArtifact],
+    [DownloadedHuggingFaceArtifact | VerifiedRemoteImportArtifact],
     RemoteArtifactImportResult,
 ]
+
+
+class B2RangeImportRepository:
+    """Read-only range adapter with per-artifact publication pinning.
+
+    B2 has no repository-wide commit revision. Each download resolves one
+    completion descriptor and consumes exactly that reference.
+
+    The store is created and closed inside the synchronous download boundary.
+    No SDK client survives a completed or failed artifact download.
+    """
+
+    storage_backend = B2_STORAGE_BACKEND
+
+    def __init__(
+        self,
+        settings: B2Config,
+        *,
+        store_factory: Callable[[B2Config], B2ObjectStore] = B2ObjectStore,
+    ) -> None:
+        if not isinstance(settings, B2Config):
+            raise TypeError("settings must be B2Config")
+
+        if not settings.configured:
+            raise RemoteImportRuntimeError(
+                "Remote B2 Import requires endpoint, bucket, and credentials"
+            )
+
+        if not callable(store_factory):
+            raise TypeError("store_factory must be callable")
+
+        # Take a private settings copy. Later mutation of the caller's
+        # configuration must not change this adapter's storage location.
+        self._settings = settings.model_copy(deep=True)
+        self._store_factory = store_factory
+
+    def __repr__(self) -> str:
+        return "B2RangeImportRepository()"
+
+    @property
+    def endpoint_url(self) -> str:
+        return self._settings.endpoint_url
+
+    @property
+    def bucket(self) -> str:
+        return self._settings.bucket
+
+    def current_revision(self) -> None:
+        """Return no revision without contacting B2."""
+        return None
+
+    def download_artifact(
+        self,
+        key: RemoteArtifactKey,
+        *,
+        revision: str | None = None,
+    ) -> VerifiedRemoteImportArtifact | None:
+        if not isinstance(key, RemoteArtifactKey):
+            raise TypeError("key must be RemoteArtifactKey")
+
+        if revision is not None:
+            raise RemoteImportRuntimeError(
+                "B2 range downloads do not accept an HF revision"
+            )
+
+        with self._store_factory(self._settings) as store:
+            repository = B2ProcessedArtifactRepository(store)
+
+            if (
+                repository.endpoint_url != self.endpoint_url
+                or repository.bucket != self.bucket
+            ):
+                raise RemoteImportRuntimeError(
+                    "B2 transport location disagrees with configured ownership"
+                )
+
+            reference = repository.resolve_publication(key)
+
+            if reference is None:
+                return None
+
+            downloaded = repository.require_artifact(
+                key,
+                reference=reference,
+            )
+
+            if downloaded.reference != reference:
+                raise RemoteImportRuntimeError(
+                    "B2 download changed the pinned publication reference"
+                )
+
+            return VerifiedRemoteImportArtifact.from_b2(
+                downloaded,
+                endpoint_url=repository.endpoint_url,
+                bucket=repository.bucket,
+            )
 
 
 def _require_aware_utc(
@@ -448,6 +625,8 @@ _SURFACED_ITEM_ERRORS: tuple[type[BaseException], ...] = (
     RemoteImportRuntimeError,
     RemoteArtifactImportError,
     HuggingFaceRepositoryError,
+    B2RepositoryError,
+    B2TransportError,
     AnalyticalRepositoryError,
 )
 
@@ -467,9 +646,17 @@ def _item_diagnostic(exc: BaseException) -> str:
 
 
 def _production_artifact_importer(
-    downloaded: DownloadedHuggingFaceArtifact,
+    downloaded: DownloadedHuggingFaceArtifact | VerifiedRemoteImportArtifact,
 ) -> RemoteArtifactImportResult:
+    # Downloads and transport cleanup have already completed before this
+    # function opens the PostgreSQL session.
     with session_scope() as session:
+        if isinstance(downloaded, VerifiedRemoteImportArtifact):
+            return import_verified_remote_artifact(
+                session,
+                downloaded,
+            )
+
         return import_downloaded_huggingface_artifact(
             session,
             downloaded,
@@ -494,8 +681,34 @@ class RemoteImportRuntime:
         if not callable(artifact_importer):
             raise TypeError("artifact_importer must be callable")
 
+        storage_backend = getattr(
+            repository,
+            "storage_backend",
+            HF_STORAGE_BACKEND,
+        )
+
+        if storage_backend not in {
+            HF_STORAGE_BACKEND,
+            B2_STORAGE_BACKEND,
+        }:
+            raise RemoteImportRuntimeError(
+                "Repository declares an unsupported storage backend"
+            )
+
+        if storage_backend == B2_STORAGE_BACKEND and not isinstance(
+            repository,
+            B2RangeImportRepository,
+        ):
+            raise TypeError("B2 runtime requires B2RangeImportRepository")
+
         self._repository = repository
         self._artifact_importer = artifact_importer
+        self._storage_backend = storage_backend
+        self._operation_name = (
+            "remote_b2_import"
+            if storage_backend == B2_STORAGE_BACKEND
+            else "remote_hf_import"
+        )
 
         self._task: asyncio.Task[RemoteImportRangeResult] | None = None
         self._cancellation_event: threading.Event | None = None
@@ -536,6 +749,7 @@ class RemoteImportRuntime:
                 last_result=self._last_result,
                 last_error=self._last_error,
                 completion_sequence=self._completion_sequence,
+                storage_backend=self._storage_backend,
             )
 
     def start(
@@ -591,6 +805,17 @@ class RemoteImportRuntime:
         cancellation_event = threading.Event()
 
         with self._state_lock:
+            previous_runtime_state = (
+                self._operation_id,
+                self._started_at,
+                self._stop_requested,
+                self._pinned_revision,
+                self._latest_progress,
+                self._last_result,
+                self._last_error,
+                self._cancellation_event,
+            )
+
             self._operation_id = operation_id
             self._started_at = started_at
             self._stop_requested = False
@@ -600,34 +825,50 @@ class RemoteImportRuntime:
             self._last_error = None
             self._cancellation_event = cancellation_event
 
-        state.active_operation_name = "remote_hf_import"
+        state.active_operation_name = self._operation_name
         state.active_operation_started_at = started_at
 
-        coroutine = self._run(
-            operation_id=operation_id,
-            started_at=started_at,
-            requested_start_utc=start,
-            requested_end_utc=end,
-            selected_bases=selected_bases,
-            keys=keys,
-            cancellation_event=cancellation_event,
-        )
+        async def run_owned() -> RemoteImportRangeResult:
+            # An eager task factory must not enter repository work before
+            # start() has installed task ownership and returned to its caller.
+            # Cancellation at this barrier is handled by the existing
+            # reservation-finalization callback.
+            await asyncio.sleep(0)
+
+            return await self._run(
+                operation_id=operation_id,
+                started_at=started_at,
+                requested_start_utc=start,
+                requested_end_utc=end,
+                selected_bases=selected_bases,
+                keys=keys,
+                cancellation_event=cancellation_event,
+            )
+
+        coroutine = run_owned()
 
         try:
             task = loop.create_task(
                 coroutine,
-                name="l2shock-remote-hf-import",
+                name=f"l2shock-{self._operation_name}",
             )
         except BaseException:
             coroutine.close()
 
             with self._state_lock:
-                self._operation_id = None
-                self._started_at = None
-                self._cancellation_event = None
+                (
+                    self._operation_id,
+                    self._started_at,
+                    self._stop_requested,
+                    self._pinned_revision,
+                    self._latest_progress,
+                    self._last_result,
+                    self._last_error,
+                    self._cancellation_event,
+                ) = previous_runtime_state
 
             if (
-                state.active_operation_name == "remote_hf_import"
+                state.active_operation_name == self._operation_name
                 and state.active_operation_started_at == started_at
             ):
                 state.active_operation_name = ""
@@ -667,7 +908,7 @@ class RemoteImportRuntime:
 
             if (
                 owns_unfinalized_reservation
-                and state.active_operation_name == "remote_hf_import"
+                and state.active_operation_name == self._operation_name
                 and state.active_operation_started_at == started_at
             ):
                 state.active_operation_name = ""
@@ -757,7 +998,7 @@ class RemoteImportRuntime:
         *,
         operation_id: UUID,
         message: str,
-        pinned_revision: str,
+        pinned_revision: str | None,
         artifacts_selected: int,
         items: list[RemoteImportItemResult],
         current_key: RemoteArtifactKey | None,
@@ -786,6 +1027,7 @@ class RemoteImportRuntime:
                     for item in items
                 ),
                 current_key=current_key,
+                storage_backend=self._storage_backend,
             )
 
     async def _run_thread_boundary(
@@ -847,35 +1089,58 @@ class RemoteImportRuntime:
         state = get_state()
         current_task = asyncio.current_task()
         items: list[RemoteImportItemResult] = []
-        pinned_revision = ""
+        pinned_revision: str | None = None
         stopped = False
         acquired_operation_lock = False
 
         try:
             operation_lock = state.operation_lock
 
-            if operation_lock.locked():
-                raise RemoteImportRuntimeBusyError(
-                    "Another application operation owns " "the process lock"
-                )
+            if state.shutdown_started:
+                cancellation_event.set()
 
-            await operation_lock.acquire()
-            acquired_operation_lock = True
+            if not cancellation_event.is_set():
+                if operation_lock.locked():
+                    raise RemoteImportRuntimeBusyError(
+                        "Another application operation owns the process lock"
+                    )
 
-            pinned_revision = _full_commit_sha(
-                await self._run_thread_boundary(
-                    self._repository.current_revision,
-                    task_name="l2shock-hf-pin-revision",
-                    cancellation_event=cancellation_event,
-                )
-            )
+                await operation_lock.acquire()
+                acquired_operation_lock = True
+
+                # Recheck immediately before admitting synchronous work.
+                if state.shutdown_started:
+                    cancellation_event.set()
+
+                if not cancellation_event.is_set():
+                    resolved_revision = await self._run_thread_boundary(
+                        self._repository.current_revision,
+                        task_name=f"l2shock-{self._operation_name}-pin",
+                        cancellation_event=cancellation_event,
+                    )
+
+                    if self._storage_backend == HF_STORAGE_BACKEND:
+                        pinned_revision = _full_commit_sha(resolved_revision)
+                    elif resolved_revision is not None:
+                        raise RemoteImportRuntimeError(
+                            "B2 repository must not return a synthetic revision"
+                        )
 
             with self._state_lock:
                 self._pinned_revision = pinned_revision
 
             self._set_progress(
                 operation_id=operation_id,
-                message=(f"Pinned revision and selected " f"{len(keys)} artifact(s)."),
+                message=(
+                    f"Selected {len(keys)} artifact(s); "
+                    + (
+                        "B2 publications are pinned per artifact."
+                        if self._storage_backend == B2_STORAGE_BACKEND
+                        else "HF revision pinning completed."
+                    )
+                    if not cancellation_event.is_set()
+                    else "Stopped before further remote work."
+                ),
                 pinned_revision=pinned_revision,
                 artifacts_selected=len(keys),
                 items=items,
@@ -896,6 +1161,8 @@ class RemoteImportRuntime:
                     current_key=key,
                 )
 
+                downloaded = None
+
                 try:
                     downloaded = await self._run_thread_boundary(
                         lambda key=key: (
@@ -904,7 +1171,7 @@ class RemoteImportRuntime:
                                 revision=pinned_revision,
                             )
                         ),
-                        task_name="l2shock-hf-artifact-download",
+                        task_name=f"l2shock-{self._operation_name}-download",
                         cancellation_event=cancellation_event,
                     )
 
@@ -913,24 +1180,51 @@ class RemoteImportRuntime:
                             key=key,
                             disposition=(RemoteImportItemDisposition.MISSING),
                             diagnostic=(
-                                "Artifact and manifest are absent "
-                                "from the pinned revision"
+                                "No completed B2 publication exists"
+                                if self._storage_backend == B2_STORAGE_BACKEND
+                                else (
+                                    "Artifact and manifest are absent "
+                                    "from the pinned revision"
+                                )
                             ),
                         )
                     else:
-                        if not isinstance(
-                            downloaded,
-                            DownloadedHuggingFaceArtifact,
-                        ):
-                            raise RemoteImportRuntimeError(
-                                "Repository returned an unsupported " "download result"
-                            )
+                        if self._storage_backend == B2_STORAGE_BACKEND:
+                            if not isinstance(
+                                downloaded,
+                                VerifiedRemoteImportArtifact,
+                            ):
+                                raise RemoteImportRuntimeError(
+                                    "B2 repository returned an unsupported download"
+                                )
 
-                        if downloaded.revision != pinned_revision:
-                            raise RemoteImportRuntimeError(
-                                "Downloaded artifact does not belong "
-                                "to the operation's pinned revision"
-                            )
+                            identity = downloaded.storage_identity
+
+                            if (
+                                identity.backend != B2_STORAGE_BACKEND
+                                or downloaded.revision is not None
+                                or identity.endpoint_url
+                                != self._repository.endpoint_url
+                                or identity.bucket != self._repository.bucket
+                            ):
+                                raise RemoteImportRuntimeError(
+                                    "B2 download has incorrect storage ownership"
+                                )
+
+                        else:
+                            if not isinstance(
+                                downloaded,
+                                DownloadedHuggingFaceArtifact,
+                            ):
+                                raise RemoteImportRuntimeError(
+                                    "HF repository returned an unsupported download"
+                                )
+
+                            if downloaded.revision != pinned_revision:
+                                raise RemoteImportRuntimeError(
+                                    "Downloaded artifact does not belong "
+                                    "to the operation's pinned revision"
+                                )
 
                         if downloaded.artifact.manifest.key != key:
                             raise RemoteImportRuntimeError(
@@ -942,7 +1236,7 @@ class RemoteImportRuntime:
                             lambda downloaded=downloaded: (
                                 self._artifact_importer(downloaded)
                             ),
-                            task_name="l2shock-hf-artifact-import",
+                            task_name=f"l2shock-{self._operation_name}-import",
                             cancellation_event=cancellation_event,
                         )
 
@@ -954,7 +1248,17 @@ class RemoteImportRuntime:
                                 "Artifact importer returned an " "unsupported result"
                             )
 
-                        if imported.revision != pinned_revision:
+                        if self._storage_backend == B2_STORAGE_BACKEND:
+                            if (
+                                imported.revision is not None
+                                or imported.storage_identity
+                                != downloaded.storage_identity
+                            ):
+                                raise RemoteImportRuntimeError(
+                                    "Imported B2 storage ownership changed"
+                                )
+
+                        elif imported.revision != pinned_revision:
                             raise RemoteImportRuntimeError(
                                 "Imported artifact revision does not "
                                 "match the pinned revision"
@@ -975,6 +1279,14 @@ class RemoteImportRuntime:
                         item = RemoteImportItemResult(
                             key=key,
                             disposition=disposition,
+                            storage_identity=(
+                                downloaded.storage_identity
+                                if isinstance(
+                                    downloaded,
+                                    VerifiedRemoteImportArtifact,
+                                )
+                                else None
+                            ),
                         )
 
                 except asyncio.CancelledError:
@@ -986,6 +1298,19 @@ class RemoteImportRuntime:
                         key=key,
                         disposition=RemoteImportItemDisposition.ERROR,
                         diagnostic=_item_diagnostic(exc),
+                        storage_identity=(
+                            downloaded.storage_identity
+                            if (
+                                isinstance(
+                                    downloaded,
+                                    VerifiedRemoteImportArtifact,
+                                )
+                                and downloaded.artifact.manifest.key == key
+                                and downloaded.storage_identity.backend
+                                == self._storage_backend
+                            )
+                            else None
+                        ),
                     )
                     log.exception(
                         "Remote import failed for %s.",
@@ -1057,6 +1382,7 @@ class RemoteImportRuntime:
                 missing_count=missing_count,
                 failed_count=failed_count,
                 stopped=stopped,
+                storage_backend=self._storage_backend,
             )
 
             with self._state_lock:
@@ -1097,7 +1423,7 @@ class RemoteImportRuntime:
                 self._started_at = None
 
             if (
-                state.active_operation_name == "remote_hf_import"
+                state.active_operation_name == self._operation_name
                 and state.active_operation_started_at == started_at
             ):
                 state.active_operation_name = ""
@@ -1145,35 +1471,149 @@ def create_production_remote_import_repository() -> HuggingFaceDatasetRepository
     )
 
 
+def create_production_b2_remote_import_runtime() -> RemoteImportRuntime:
+    """Build an explicit B2 runtime without switching the HF UI singleton.
+
+    This staged factory is suitable for controlled range-import verification.
+    Fetch UI selection and application singleton integration follow in the
+    next migration batch.
+    """
+    return RemoteImportRuntime(
+        repository=B2RangeImportRepository(
+            get_settings().remote.b2,
+        ),
+    )
+
+
 def get_remote_import_runtime(
     *,
-    repository: HuggingFaceDatasetRepository | None = None,
+    repository: RemoteImportRepositoryProtocol | None = None,
+    storage_backend: str | None = None,
 ) -> RemoteImportRuntime:
-    """Return the singleton runtime bound to the current event loop."""
+    """Return the application-owned remote runtime for an explicit backend.
+
+    With no arguments, an existing runtime is returned unchanged. Initial
+    construction uses the configured default remote workflow.
+
+    An explicit backend change is allowed only while the previous runtime
+    and shared application admission are idle. Construction must succeed
+    before the previous singleton is replaced.
+
+    This getter does not perform artifact downloads or database imports.
+    """
 
     global _runtime, _runtime_loop
 
     loop = asyncio.get_running_loop()
+    current = _runtime
 
-    if _runtime is None:
-        selected_repository = (
-            repository
-            if repository is not None
-            else create_production_remote_import_repository()
-        )
-
-        _runtime = RemoteImportRuntime(
-            repository=selected_repository,
-        )
-        _runtime_loop = loop
-        return _runtime
-
-    if _runtime_loop is not loop:
+    if current is not None and _runtime_loop is not loop:
         raise RuntimeError(
-            "Remote import runtime belongs to another " "asyncio event loop"
+            "Remote import runtime belongs to another asyncio event loop"
         )
 
-    return _runtime
+    if current is not None and repository is None and storage_backend is None:
+        return current
+
+    if storage_backend is not None and storage_backend not in {
+        HF_STORAGE_BACKEND,
+        B2_STORAGE_BACKEND,
+    }:
+        raise RemoteImportRuntimeError("Unsupported remote import storage backend")
+
+    if repository is not None:
+        repository_backend = getattr(
+            repository,
+            "storage_backend",
+            HF_STORAGE_BACKEND,
+        )
+
+        if repository_backend not in {
+            HF_STORAGE_BACKEND,
+            B2_STORAGE_BACKEND,
+        }:
+            raise RemoteImportRuntimeError(
+                "Repository declares an unsupported storage backend"
+            )
+
+        if storage_backend is not None and storage_backend != repository_backend:
+            raise RemoteImportRuntimeError(
+                "Requested backend disagrees with the supplied repository"
+            )
+
+        selected_backend = repository_backend
+
+    elif storage_backend is not None:
+        selected_backend = storage_backend
+
+    else:
+        selected_backend = (
+            B2_STORAGE_BACKEND
+            if get_settings().remote.default_workflow == "remote_b2_import"
+            else HF_STORAGE_BACKEND
+        )
+
+    if current is not None and current.snapshot().storage_backend == selected_backend:
+        if repository is not None and repository is not current._repository:
+            raise RemoteImportRuntimeError(
+                "The existing remote runtime owns a different repository; "
+                "restart before changing its storage location"
+            )
+
+        return current
+
+    state = get_state()
+
+    if state.shutdown_started:
+        raise RemoteImportRuntimeBusyError(
+            "Application shutdown has started; remote runtime construction "
+            "and backend changes are blocked"
+        )
+
+    # A done task can still have a pending reservation-finalization callback.
+    # task is not None is therefore deliberately stricter than is_running.
+    if current is not None and current.task is not None:
+        raise RemoteImportRuntimeBusyError(
+            "The current remote runtime is still active or finalizing"
+        )
+
+    if state.active_operation_name:
+        raise RemoteImportRuntimeBusyError(
+            f"Another operation is active: {state.active_operation_name}"
+        )
+
+    if state.operation_lock.locked():
+        raise RemoteImportRuntimeBusyError(
+            "Another application operation owns the process lock"
+        )
+
+    if repository is not None:
+        selected_repository = repository
+    elif selected_backend == B2_STORAGE_BACKEND:
+        selected_repository = B2RangeImportRepository(
+            get_settings().remote.b2,
+        )
+    else:
+        selected_repository = create_production_remote_import_repository()
+
+    # Keep the previous singleton intact if configuration/construction fails.
+    replacement = RemoteImportRuntime(
+        repository=selected_repository,
+    )
+
+    if replacement.snapshot().storage_backend != selected_backend:
+        raise RemoteImportRuntimeError(
+            "Constructed runtime disagrees with the requested storage backend"
+        )
+
+    if current is not None:
+        # Polling clients use this process-level sequence to detect completion.
+        # Do not reset it merely because an idle backend was changed.
+        replacement._completion_sequence = current.snapshot().completion_sequence
+
+    _runtime = replacement
+    _runtime_loop = loop
+    return replacement
 
 
 def peek_remote_import_runtime() -> RemoteImportRuntime | None:
@@ -1188,6 +1628,7 @@ def reset_remote_import_runtime_for_tests() -> None:
 
 
 __all__ = [
+    "B2RangeImportRepository",
     "RemoteImportItemDisposition",
     "RemoteImportItemResult",
     "RemoteImportRangeResult",
@@ -1196,6 +1637,7 @@ __all__ = [
     "RemoteImportRuntimeError",
     "RemoteImportRuntimeProgress",
     "RemoteImportRuntimeSnapshot",
+    "create_production_b2_remote_import_runtime",
     "create_production_remote_import_repository",
     "get_remote_import_runtime",
     "peek_remote_import_runtime",

@@ -1112,3 +1112,52 @@ async def test_automatic_fetch_admission_is_safe_with_eager_task_factory(
     assert runtime.enabled is False
     assert runtime._stop_event is None
     assert get_state().tracked_tasks == set()
+
+
+def test_b2_imported_processed_source_is_complete_without_local_raw(
+    tmp_path: Path,
+) -> None:
+    assert _source_row_counts_as_complete(
+        venue="binance_futures",
+        instrument="BTCUSDT",
+        data_kind="orderbook",
+        hour_utc=_utc(12, 0),
+        status="processed",
+        local_path=None,
+        file_size_bytes=None,
+        content_sha256="a" * 64,
+        raw_root=tmp_path,
+        quality_json={
+            "schema": "l2shock.remote_imported_source_hour_quality",
+            "schema_version": 1,
+            "processing_origin": "backblaze_b2_remote_import_v1",
+        },
+    )
+
+
+def test_b2_import_marker_does_not_bypass_claimed_missing_local_raw(
+    tmp_path: Path,
+) -> None:
+    from l2shock.acquisition import SourceFileSpec
+
+    spec = SourceFileSpec(
+        venue="binance_futures",
+        symbol="BTCUSDT",
+        data_kind="orderbook",
+        hour_utc=_utc(12, 0),
+    )
+
+    assert not _source_row_counts_as_complete(
+        venue=spec.venue,
+        instrument=spec.symbol,
+        data_kind=spec.data_kind.value,
+        hour_utc=spec.hour_utc,
+        status="processed",
+        local_path=str(spec.local_path(tmp_path)),
+        file_size_bytes=123,
+        content_sha256="a" * 64,
+        raw_root=tmp_path,
+        quality_json={
+            "processing_origin": "backblaze_b2_remote_import_v1",
+        },
+    )

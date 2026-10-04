@@ -501,3 +501,53 @@ async def test_runtime_item_diagnostics_are_typed_and_secret_safe() -> None:
         item.diagnostic == "Unexpected RuntimeError" for item in result.items[1:]
     )
     assert all("do-not-show" not in (item.diagnostic or "") for item in result.items)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop_mode", ("stop", "shutdown"))
+async def test_preworker_stop_does_not_resolve_remote_revision(
+    stop_mode: str,
+) -> None:
+    reset_state_for_tests()
+    state = get_state()
+    calls: list[str] = []
+
+    class Repository:
+        def current_revision(self):
+            calls.append("pin")
+            raise AssertionError("Repository work must not start")
+
+        def download_artifact(self, key, *, revision=None):
+            del key, revision
+            calls.append("download")
+            raise AssertionError("Repository work must not start")
+
+    runtime = RemoteImportRuntime(repository=Repository())
+    task = runtime.start(
+        requested_start_utc=_hour(12),
+        requested_end_utc=_hour(13),
+        bases=("BTC",),
+        lower_depth_fraction=Decimal("0"),
+        upper_depth_fraction=Decimal("0.01"),
+    )
+
+    if stop_mode == "stop":
+        assert runtime.request_stop() is True
+    else:
+        state.shutdown_started = True
+
+    try:
+        result = await task
+        await asyncio.sleep(0)
+
+        assert calls == []
+        assert result.status == "stopped"
+        assert result.stopped is True
+        assert result.pinned_revision is None
+        assert result.items == ()
+        assert result.artifacts_selected == 4
+        assert state.active_operation_name == ""
+        assert state.operation_lock.locked() is False
+        assert state.tracked_tasks == set()
+    finally:
+        reset_state_for_tests()

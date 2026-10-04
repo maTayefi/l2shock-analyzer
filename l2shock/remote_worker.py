@@ -34,6 +34,7 @@ import json
 import os
 import sys
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -51,7 +52,7 @@ from l2shock.acquisition import (
     RemoteFileNotFoundError,
     latest_release_eligible_hour,
 )
-from l2shock.config import CryptoHFTConfig
+from l2shock.config import B2Config, CryptoHFTConfig
 from l2shock.presets import (
     LiquidityDataPreset,
     build_binance_futures_data_preset,
@@ -77,6 +78,21 @@ from l2shock.remote import (
     process_l2_archive_headlessly,
     process_price_archives_headlessly,
     temporary_remote_worker_workspace,
+)
+from l2shock.remote.b2_repository import (
+    B2ArtifactNotFoundError,
+    B2PublicationResult,
+    B2RepositoryError,
+)
+from l2shock.remote.b2_transport import (
+    B2ObjectStore,
+    B2TransportError,
+)
+from l2shock.remote.b2_worker_repository import B2WorkerRepository
+from l2shock.remote.import_contracts import (
+    B2_STORAGE_BACKEND,
+    HF_STORAGE_BACKEND,
+    RemoteImportStorageIdentity,
 )
 from l2shock.timeutils import now_utc, require_utc_hour
 import logging
@@ -195,6 +211,7 @@ class RemoteWorkerExitStatus(IntEnum):
     SOURCE_UNAVAILABLE = 3
     CHECKPOINT_CHAIN_BLOCKED = 4
     HUGGING_FACE_ERROR = 5
+    B2_STORAGE_ERROR = 6
     INTERRUPTED = 130
 
 
@@ -213,7 +230,7 @@ class RemoteWorkerResult:
     venue: str
     instrument: str
     hour_utc: datetime
-    pinned_input_revision: str
+    pinned_input_revision: str | None
 
     l2_created: bool
     l2_revision: str | None
@@ -226,6 +243,9 @@ class RemoteWorkerResult:
 
     source_downloaded_count: int
     source_reused_count: int
+
+    storage_backend: str = HF_STORAGE_BACKEND
+    b2_publications: tuple[RemoteImportStorageIdentity, ...] = ()
 
     def __post_init__(self) -> None:
         venue = str(self.venue or "").strip().lower()
@@ -240,12 +260,81 @@ class RemoteWorkerResult:
                 "Remote worker result identity cannot contain blank fields"
             )
 
-        revision = str(self.pinned_input_revision or "").strip().lower()
+        publications = tuple(self.b2_publications)
 
-        if len(revision) not in {40, 64} or any(
-            character not in "0123456789abcdef" for character in revision
-        ):
-            raise RemoteWorkerError("pinned_input_revision must be a full commit SHA")
+        if self.storage_backend == HF_STORAGE_BACKEND:
+            revision = str(self.pinned_input_revision or "").strip().lower()
+
+            if len(revision) not in {40, 64} or any(
+                character not in "0123456789abcdef" for character in revision
+            ):
+                raise RemoteWorkerError(
+                    "pinned_input_revision must be a full commit SHA"
+                )
+
+            if publications:
+                raise RemoteWorkerError("HF results cannot contain B2 publications")
+
+        elif self.storage_backend == B2_STORAGE_BACKEND:
+            if (
+                self.pinned_input_revision is not None
+                or self.l2_revision is not None
+                or self.price_revision is not None
+            ):
+                raise RemoteWorkerError(
+                    "B2 worker results must not fabricate HF revisions"
+                )
+
+            revision = None
+            seen_keys: set[RemoteArtifactKey] = set()
+            locations: set[tuple[str | None, str | None]] = set()
+
+            for identity in publications:
+                if (
+                    not isinstance(identity, RemoteImportStorageIdentity)
+                    or identity.backend != B2_STORAGE_BACKEND
+                ):
+                    raise RemoteWorkerError(
+                        "B2 results require typed B2 storage ownership"
+                    )
+
+                reference = identity.publication_reference
+                assert reference is not None
+                key = reference.publication.key
+
+                if (
+                    key.venue != venue
+                    or key.instrument != instrument
+                    or key in seen_keys
+                ):
+                    raise RemoteWorkerError(
+                        "B2 result contains wrong-chain or duplicate ownership"
+                    )
+
+                seen_keys.add(key)
+                locations.add((identity.endpoint_url, identity.bucket))
+
+            if len(locations) != 1:
+                raise RemoteWorkerError(
+                    "B2 result requires one actual storage location"
+                )
+
+            target_kinds = {key.kind for key in seen_keys if key.hour_utc == hour}
+
+            if RemoteArtifactKind.L2 not in target_kinds:
+                raise RemoteWorkerError(
+                    "B2 result lacks target L2 publication ownership"
+                )
+
+            if self.price_required and RemoteArtifactKind.PRICE not in target_kinds:
+                raise RemoteWorkerError(
+                    "B2 result lacks required target price ownership"
+                )
+
+        else:
+            raise RemoteWorkerError("Unsupported worker storage backend")
+
+        object.__setattr__(self, "b2_publications", publications)
 
         for field_name in (
             "l2_created",
@@ -276,7 +365,7 @@ class RemoteWorkerResult:
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "schema": "l2shock.remote_worker_result",
             "schema_version": 1,
             "venue": self.venue,
@@ -299,6 +388,20 @@ class RemoteWorkerResult:
                 "reused_count": self.source_reused_count,
             },
         }
+
+        if self.storage_backend == B2_STORAGE_BACKEND:
+            payload.update(
+                {
+                    "schema_version": 2,
+                    "storage_backend": self.storage_backend,
+                    "b2_publications": [
+                        identity.to_canonical_dict()
+                        for identity in self.b2_publications
+                    ],
+                }
+            )
+
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -468,9 +571,22 @@ class RemoteCatchUpRunResult:
         return result
 
 
+def _worker_storage_fields(
+    repository: HuggingFaceDatasetRepository | B2WorkerRepository,
+) -> dict[str, object]:
+    """Retain real B2 references without altering legacy HF ownership."""
+    if isinstance(repository, B2WorkerRepository):
+        return {
+            "storage_backend": B2_STORAGE_BACKEND,
+            "b2_publications": repository.observed_storage_identities(),
+        }
+
+    return {}
+
+
 @dataclass(frozen=True, slots=True)
 class _ExistingRemoteState:
-    pinned_revision: str
+    pinned_revision: str | None
     l2_artifact: RemoteL2ProcessedArtifact | None
     price_artifact: RemotePriceProcessedArtifact | None
 
@@ -919,7 +1035,7 @@ def _catch_up_target_from_observations(
 
 async def select_remote_catch_up_hour(
     *,
-    repository: HuggingFaceDatasetRepository,
+    repository: HuggingFaceDatasetRepository | B2WorkerRepository,
     venue: str,
     instrument: str,
     latest_eligible_hour_utc: datetime,
@@ -927,13 +1043,15 @@ async def select_remote_catch_up_hour(
     upper_fraction: Decimal,
     search_hours: int,
 ) -> datetime:
-    """Find one safe processable hour from one pinned HF repository revision."""
+    """Find a safe hour using one HF revision or per-key B2 publications."""
 
     if not isinstance(
         repository,
-        HuggingFaceDatasetRepository,
+        (HuggingFaceDatasetRepository, B2WorkerRepository),
     ):
-        raise TypeError("repository must be HuggingFaceDatasetRepository")
+        raise TypeError(
+            "repository must be HuggingFaceDatasetRepository " "or B2WorkerRepository"
+        )
 
     if (
         isinstance(search_hours, bool)
@@ -1054,7 +1172,7 @@ async def select_remote_catch_up_hour(
 
 async def process_remote_catch_up(
     *,
-    repository: HuggingFaceDatasetRepository,
+    repository: HuggingFaceDatasetRepository | B2WorkerRepository,
     cryptohft: CryptoHFTConfig,
     workspace: RemoteWorkerWorkspace,
     venue: str,
@@ -1272,7 +1390,7 @@ async def process_remote_catch_up(
 
 
 async def _inspect_existing_state(
-    repository: HuggingFaceDatasetRepository,
+    repository: HuggingFaceDatasetRepository | B2WorkerRepository,
     *,
     l2_key: RemoteArtifactKey,
     price_key: RemoteArtifactKey | None,
@@ -1328,10 +1446,10 @@ async def _inspect_existing_state(
 
 
 async def _predecessor_artifact_exists(
-    repository: HuggingFaceDatasetRepository,
+    repository: HuggingFaceDatasetRepository | B2WorkerRepository,
     *,
     target_key: RemoteArtifactKey,
-    pinned_revision: str,
+    pinned_revision: str | None,
 ) -> bool:
     """Return whether the immediately preceding L2 artifact exists at all.
 
@@ -1345,17 +1463,17 @@ async def _predecessor_artifact_exists(
             target_key,
             revision=pinned_revision,
         )
-    except HuggingFaceArtifactNotFoundError:
+    except HuggingFaceArtifactNotFoundError, B2ArtifactNotFoundError:
         return False
 
     return True
 
 
 async def _predecessor_checkpoint(
-    repository: HuggingFaceDatasetRepository,
+    repository: HuggingFaceDatasetRepository | B2WorkerRepository,
     *,
     target_key: RemoteArtifactKey,
-    pinned_revision: str,
+    pinned_revision: str | None,
     predecessor_required: bool,
 ) -> bytes | None:
     try:
@@ -1364,11 +1482,11 @@ async def _predecessor_checkpoint(
             target_key,
             revision=pinned_revision,
         )
-    except HuggingFaceArtifactNotFoundError as exc:
+    except (HuggingFaceArtifactNotFoundError, B2ArtifactNotFoundError) as exc:
         if predecessor_required:
             raise RemoteWorkerCheckpointBlockedError(
                 "The required immediately preceding L2 artifact does not "
-                "exist at the pinned Hugging Face revision"
+                "exist at the selected remote storage ownership"
             ) from exc
 
         return None
@@ -1448,7 +1566,7 @@ def _l2_artifact_for_publication(
 
 async def process_remote_hour(
     *,
-    repository: HuggingFaceDatasetRepository,
+    repository: HuggingFaceDatasetRepository | B2WorkerRepository,
     cryptohft: CryptoHFTConfig,
     workspace: RemoteWorkerWorkspace,
     venue: str,
@@ -1474,9 +1592,11 @@ async def process_remote_hour(
 
     if not isinstance(
         repository,
-        HuggingFaceDatasetRepository,
+        (HuggingFaceDatasetRepository, B2WorkerRepository),
     ):
-        raise TypeError("repository must be HuggingFaceDatasetRepository")
+        raise TypeError(
+            "repository must be HuggingFaceDatasetRepository " "or B2WorkerRepository"
+        )
 
     if not isinstance(cryptohft, CryptoHFTConfig):
         raise TypeError("cryptohft must be CryptoHFTConfig")
@@ -1580,6 +1700,7 @@ async def process_remote_hour(
             price_reused=price_required,
             source_downloaded_count=0,
             source_reused_count=0,
+            **_worker_storage_fields(repository),
         )
 
     checkpoint_bytes: bytes | None = None
@@ -1780,10 +1901,17 @@ async def process_remote_hour(
             batch_size=batch_size,
         )
 
-    l2_publication: HuggingFacePublicationResult | None = None
-    price_publication: HuggingFacePublicationResult | None = None
+    l2_publication: HuggingFacePublicationResult | B2PublicationResult | None = None
+    price_publication: HuggingFacePublicationResult | B2PublicationResult | None = None
+
+    storage_backend = (
+        B2_STORAGE_BACKEND
+        if isinstance(repository, B2WorkerRepository)
+        else HF_STORAGE_BACKEND
+    )
 
     if l2_output is not None:
+        # Retain the historical timing identifier for existing log tooling.
         _timer.begin("hf_publish_l2")
         l2_publication = await _to_thread_joined(
             repository.publish_artifact,
@@ -1791,15 +1919,16 @@ async def process_remote_hour(
         )
         _timer.begin("log_hf_l2_pub")
         log.info(
-            "REMOTE HF L2 PUBLICATION: venue=%s instrument=%s hour=%s "
-            "created=%s revision=%s concurrent_commit_observed=%s "
+            "REMOTE L2 PUBLICATION: backend=%s venue=%s instrument=%s hour=%s "
+            "created=%s hf_revision=%s concurrent_hf_commit_observed=%s "
             "artifact_path=%s manifest_path=%s",
+            storage_backend,
             normalized_venue,
             normalized_instrument,
             target_hour.isoformat(),
             l2_publication.created,
-            l2_publication.revision,
-            l2_publication.concurrent_commit_observed,
+            getattr(l2_publication, "revision", None),
+            getattr(l2_publication, "concurrent_commit_observed", None),
             l2_output.artifact.manifest.key.relative_path,
             l2_output.artifact.manifest.key.manifest_relative_path,
         )
@@ -1811,14 +1940,15 @@ async def process_remote_hour(
         )
 
         log.info(
-            "REMOTE HF PRICE PUBLICATION: instrument=%s hour=%s "
-            "created=%s revision=%s concurrent_commit_observed=%s "
+            "REMOTE PRICE PUBLICATION: backend=%s instrument=%s hour=%s "
+            "created=%s hf_revision=%s concurrent_hf_commit_observed=%s "
             "artifact_path=%s manifest_path=%s",
+            storage_backend,
             normalized_instrument,
             target_hour.isoformat(),
             price_publication.created,
-            price_publication.revision,
-            price_publication.concurrent_commit_observed,
+            getattr(price_publication, "revision", None),
+            getattr(price_publication, "concurrent_commit_observed", None),
             price_output.artifact.manifest.key.relative_path,
             price_output.artifact.manifest.key.manifest_relative_path,
         )
@@ -1855,7 +1985,7 @@ async def process_remote_hour(
         pinned_input_revision=existing.pinned_revision,
         l2_created=(l2_publication.created if l2_publication is not None else False),
         l2_revision=(
-            l2_publication.revision
+            getattr(l2_publication, "revision", None)
             if l2_publication is not None
             else existing.pinned_revision
         ),
@@ -1868,7 +1998,7 @@ async def process_remote_hour(
             price_publication.created if price_publication is not None else False
         ),
         price_revision=(
-            price_publication.revision
+            getattr(price_publication, "revision", None)
             if price_publication is not None
             else (
                 existing.pinned_revision
@@ -1885,6 +2015,7 @@ async def process_remote_hour(
         ),
         source_downloaded_count=acquisition.downloaded_count,
         source_reused_count=acquisition.reused_count,
+        **_worker_storage_fields(repository),
     )
     _timer.end()
     log.info(
@@ -1975,6 +2106,35 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
     parser.add_argument(
+        "--storage-backend",
+        choices=(HF_STORAGE_BACKEND, B2_STORAGE_BACKEND),
+        default=HF_STORAGE_BACKEND,
+        help="Explicit remote storage backend; scheduled HF behavior is unchanged.",
+    )
+    parser.add_argument(
+        "--b2-endpoint-url",
+        default=os.environ.get(
+            "L2SHOCK__REMOTE__B2__ENDPOINT_URL",
+            "",
+        ),
+    )
+    parser.add_argument(
+        "--b2-bucket",
+        default=os.environ.get(
+            "L2SHOCK__REMOTE__B2__BUCKET",
+            "",
+        ),
+    )
+    parser.add_argument(
+        "--b2-single-writer-confirmed",
+        action="store_true",
+        help=(
+            "Acknowledge externally enforced exclusive writer ownership "
+            "of this chain and preset. This flag does not acquire a lock."
+        ),
+    )
+
+    parser.add_argument(
         "--hf-repo-id",
         default=os.environ.get(
             "L2SHOCK_HF_REPO_ID",
@@ -2018,13 +2178,10 @@ def _required_environment_secret(name: str) -> SecretStr:
 async def _run_from_arguments(
     args: argparse.Namespace,
 ) -> RemoteWorkerResult | RemoteCatchUpRunResult:
-    repo_id = str(args.hf_repo_id or "").strip()
+    backend = getattr(args, "storage_backend", HF_STORAGE_BACKEND)
 
-    if not repo_id:
-        raise RemoteWorkerError(
-            "Hugging Face dataset repo ID is required through "
-            "--hf-repo-id or L2SHOCK_HF_REPO_ID"
-        )
+    if backend not in {HF_STORAGE_BACKEND, B2_STORAGE_BACKEND}:
+        raise RemoteWorkerError("Unsupported remote worker storage backend")
 
     current = now_utc()
     latest_eligible = latest_release_eligible_hour(
@@ -2032,7 +2189,11 @@ async def _run_from_arguments(
         release_delay_minutes=args.release_delay_minutes,
     )
 
-    hf_token = _required_environment_secret("HF_TOKEN")
+    # Reject an ineligible explicit target before constructing storage clients.
+    if args.hour is not None and args.hour > latest_eligible:
+        raise RemoteWorkerError(
+            "Requested target hour is newer than the release-eligible boundary"
+        )
 
     crypto_api_key = str(
         os.environ.get(
@@ -2044,27 +2205,76 @@ async def _run_from_arguments(
 
     cryptohft = CryptoHFTConfig(
         api_key=SecretStr(crypto_api_key),
-        expected_release_delay_minutes=(args.release_delay_minutes),
-    )
-
-    repository = HuggingFaceDatasetRepository(
-        repo_id=repo_id,
-        revision=args.hf_revision,
-        token=hf_token,
+        expected_release_delay_minutes=args.release_delay_minutes,
     )
 
     producer_git_commit = str(os.environ.get("GITHUB_SHA", "") or "").strip() or None
 
-    with temporary_remote_worker_workspace(
-        parent=args.workspace_parent,
-    ) as workspace:
-        if args.hour is not None:
-            if args.hour > latest_eligible:
+    with ExitStack() as resources:
+        if backend == B2_STORAGE_BACKEND:
+            if getattr(args, "b2_single_writer_confirmed", False) is not True:
                 raise RemoteWorkerError(
-                    "Requested target hour is newer than the "
-                    "release-eligible boundary"
+                    "B2 worker execution requires externally enforced "
+                    "single-writer ownership and "
+                    "--b2-single-writer-confirmed"
                 )
 
+            normalized_venue, normalized_instrument, _ = _normalized_chain(
+                args.venue,
+                args.instrument,
+            )
+            preset = _preset_for_chain(
+                venue=normalized_venue,
+                instrument=normalized_instrument,
+                lower_fraction=args.depth_lower,
+                upper_fraction=args.depth_upper,
+            )
+
+            b2_settings = B2Config(
+                endpoint_url=getattr(args, "b2_endpoint_url", ""),
+                bucket=getattr(args, "b2_bucket", ""),
+                key_id=_required_environment_secret(
+                    "L2SHOCK__REMOTE__B2__KEY_ID",
+                ),
+                application_key=_required_environment_secret(
+                    "L2SHOCK__REMOTE__B2__APPLICATION_KEY",
+                ),
+            )
+
+            if not b2_settings.configured:
+                raise RemoteWorkerError(
+                    "B2 worker requires endpoint, bucket, and credentials"
+                )
+
+            store = resources.enter_context(B2ObjectStore(b2_settings))
+            repository = B2WorkerRepository(
+                store,
+                preset=preset,
+                single_writer_confirmed=True,
+            )
+
+        else:
+            repo_id = str(args.hf_repo_id or "").strip()
+
+            if not repo_id:
+                raise RemoteWorkerError(
+                    "Hugging Face dataset repo ID is required through "
+                    "--hf-repo-id or L2SHOCK_HF_REPO_ID"
+                )
+
+            repository = HuggingFaceDatasetRepository(
+                repo_id=repo_id,
+                revision=args.hf_revision,
+                token=_required_environment_secret("HF_TOKEN"),
+            )
+
+        workspace = resources.enter_context(
+            temporary_remote_worker_workspace(
+                parent=args.workspace_parent,
+            )
+        )
+
+        if args.hour is not None:
             return await process_remote_hour(
                 repository=repository,
                 cryptohft=cryptohft,
@@ -2080,7 +2290,7 @@ async def _run_from_arguments(
                 batch_size=args.batch_size,
             )
 
-        catch_up_result = await process_remote_catch_up(
+        return await process_remote_catch_up(
             repository=repository,
             cryptohft=cryptohft,
             workspace=workspace,
@@ -2096,7 +2306,6 @@ async def _run_from_arguments(
             use_api_key=bool(args.use_api_key),
             batch_size=args.batch_size,
         )
-        return catch_up_result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2145,6 +2354,13 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return int(RemoteWorkerExitStatus.HUGGING_FACE_ERROR)
+
+    except (B2RepositoryError, B2TransportError) as exc:
+        print(
+            f"B2 storage operation failed: {exc}",
+            file=sys.stderr,
+        )
+        return int(RemoteWorkerExitStatus.B2_STORAGE_ERROR)
 
     except (
         AcquisitionError,

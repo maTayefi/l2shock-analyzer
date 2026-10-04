@@ -85,9 +85,23 @@ from l2shock.remote.hf_repository import (
     DownloadedHuggingFaceArtifact,
     HuggingFaceDatasetRepository,
 )
+from l2shock.remote.b2_publication import B2PublicationReference
+from l2shock.remote.b2_repository import (
+    B2ArtifactNotFoundError,
+    B2ProcessedArtifactRepository,
+    DownloadedB2Artifact,
+)
+from l2shock.remote.import_contracts import (
+    B2_STORAGE_BACKEND,
+    HF_STORAGE_BACKEND,
+    RemoteImportStorageIdentity,
+    VerifiedRemoteImportArtifact,
+)
 from l2shock.timeutils import now_utc
 
+# Preserve the existing HF marker and its rollback/test contracts.
 REMOTE_IMPORT_ORIGIN = "hugging_face_remote_import_v1"
+REMOTE_B2_IMPORT_ORIGIN = "backblaze_b2_remote_import_v1"
 
 
 class RemoteArtifactImportError(RuntimeError):
@@ -100,27 +114,65 @@ class RemoteImportSessionScopeFactory(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class RemoteArtifactImportResult:
-    """Primitive immutable result of one local remote-artifact import."""
+    """Immutable outcome with truthful backend-specific storage ownership.
 
-    revision: str
+    Existing HF callers may retain their legacy revision-only construction.
+    B2 results require structured ownership and must have revision=None.
+    """
+
+    revision: str | None
     key: RemoteArtifactKey
     analytical_inserted: bool
     preset_inserted: bool | None
     source_metadata_updated: bool
     imported_at_utc: datetime
+    storage_identity: RemoteImportStorageIdentity | None = None
 
     def __post_init__(self) -> None:
-        revision = str(self.revision or "").strip().lower()
-
-        if len(revision) not in {40, 64} or any(
-            character not in "0123456789abcdef" for character in revision
-        ):
-            raise RemoteArtifactImportError(
-                "revision must be a full canonical commit SHA"
-            )
-
         if not isinstance(self.key, RemoteArtifactKey):
             raise TypeError("key must be RemoteArtifactKey")
+
+        identity = self.storage_identity
+
+        if identity is not None and not isinstance(
+            identity,
+            RemoteImportStorageIdentity,
+        ):
+            raise TypeError(
+                "storage_identity must be RemoteImportStorageIdentity or null"
+            )
+
+        if identity is not None and identity.backend == B2_STORAGE_BACKEND:
+            if self.revision is not None:
+                raise RemoteArtifactImportError(
+                    "B2 import results must not fabricate an HF revision"
+                )
+
+            reference = identity.publication_reference
+            assert reference is not None
+
+            if reference.publication.key != self.key:
+                raise RemoteArtifactImportError(
+                    "B2 result storage ownership belongs to a different artifact"
+                )
+
+            revision = None
+        else:
+            revision = str(self.revision or "").strip().lower()
+
+            if len(revision) not in {40, 64} or any(
+                character not in "0123456789abcdef" for character in revision
+            ):
+                raise RemoteArtifactImportError(
+                    "HF revision must be a full canonical commit SHA"
+                )
+
+            if identity is not None and (
+                identity.backend != HF_STORAGE_BACKEND or identity.revision != revision
+            ):
+                raise RemoteArtifactImportError(
+                    "HF result revision disagrees with storage ownership"
+                )
 
         if not isinstance(self.analytical_inserted, bool):
             raise TypeError("analytical_inserted must be bool")
@@ -249,7 +301,7 @@ def _processing_quality_state(
 
 
 def _current_source_reference(
-    downloaded: DownloadedHuggingFaceArtifact,
+    downloaded: VerifiedRemoteImportArtifact,
 ) -> RemoteSourceHourReference:
     manifest = downloaded.artifact.manifest
     current = tuple(
@@ -419,7 +471,7 @@ def _verify_existing_local_source_attachment(
 
 def _update_remote_source_metadata(
     session: Session,
-    downloaded: DownloadedHuggingFaceArtifact,
+    downloaded: VerifiedRemoteImportArtifact,
     *,
     quality_summary: Mapping[str, object],
 ) -> None:
@@ -471,10 +523,25 @@ def _update_remote_source_metadata(
 
     previous_quality = _source_quality_mapping(row.quality_json)
     updated_quality = dict(previous_quality)
+    identity = downloaded.storage_identity
+
+    if identity.backend == B2_STORAGE_BACKEND:
+        # Do not leave a previous HF revision looking like the current
+        # B2 import's repository revision. Preserve it under an explicitly
+        # HF-specific legacy audit field instead.
+        previous_hf_revision = previous_quality.get("remote_repository_revision")
+        if previous_hf_revision is not None:
+            updated_quality["remote_hf_repository_revision"] = previous_hf_revision
+
+        origin = REMOTE_B2_IMPORT_ORIGIN
+    else:
+        origin = REMOTE_IMPORT_ORIGIN
 
     common_remote_metadata = {
-        "processing_origin": REMOTE_IMPORT_ORIGIN,
+        "processing_origin": origin,
+        # This legacy HF-only field is explicitly null for B2.
         "remote_repository_revision": downloaded.revision,
+        "remote_storage_identity": identity.to_canonical_dict(),
         "remote_artifact_path": manifest.key.relative_path,
         "remote_manifest_sha256": manifest.manifest_sha256,
         "remote_analytical_content_sha256": manifest.content_sha256,
@@ -564,7 +631,7 @@ def _update_remote_source_metadata(
 
 def _import_l2(
     session: Session,
-    downloaded: DownloadedHuggingFaceArtifact,
+    downloaded: VerifiedRemoteImportArtifact,
     artifact: RemoteL2ProcessedArtifact,
     *,
     checkpoint_store: CheckpointStore,
@@ -668,16 +735,28 @@ def _import_l2(
         preset_inserted=preset_result.inserted,
         source_metadata_updated=True,
         imported_at_utc=imported_at,
+        storage_identity=downloaded.storage_identity,
     )
 
 
 def _import_price(
     session: Session,
-    downloaded: DownloadedHuggingFaceArtifact,
+    downloaded: VerifiedRemoteImportArtifact,
     artifact: RemotePriceProcessedArtifact,
 ) -> RemoteArtifactImportResult:
     manifest = artifact.manifest
     key = manifest.key
+
+    # Reject overlapping source work before decoding or analytical persistence.
+    # Local price processing already takes source locks before writing its
+    # analytical row. Remote imports must use the same admission ordering.
+    current_source = _current_source_reference(downloaded)
+    current_source_spec = _source_spec(current_source)
+
+    acquire_source_hour_transaction_lock(
+        session,
+        current_source_spec,
+    )
 
     provenance = PriceHourlyProvenance(
         source_hours=tuple(
@@ -719,30 +798,27 @@ def _import_price(
         preset_inserted=None,
         source_metadata_updated=True,
         imported_at_utc=imported_at,
+        storage_identity=downloaded.storage_identity,
     )
 
 
-def import_downloaded_huggingface_artifact(
+def import_verified_remote_artifact(
     session: Session,
-    downloaded: DownloadedHuggingFaceArtifact,
+    downloaded: VerifiedRemoteImportArtifact,
     *,
     checkpoint_store: CheckpointStore | None = None,
 ) -> RemoteArtifactImportResult:
-    """Import one already downloaded and verified HF artifact.
+    """Import one verified artifact through the existing persistence engine.
 
-    Transaction ownership belongs to the caller.
+    Transaction ownership belongs to the caller. This function neither
+    commits nor rolls back the caller's session.
     """
 
     if not isinstance(session, Session):
-        raise TypeError(
-            "import_downloaded_huggingface_artifact requires a SQLAlchemy Session"
-        )
+        raise TypeError("import_verified_remote_artifact requires a SQLAlchemy Session")
 
-    if not isinstance(
-        downloaded,
-        DownloadedHuggingFaceArtifact,
-    ):
-        raise TypeError("downloaded must be DownloadedHuggingFaceArtifact")
+    if not isinstance(downloaded, VerifiedRemoteImportArtifact):
+        raise TypeError("downloaded must be VerifiedRemoteImportArtifact")
 
     artifact = downloaded.artifact
 
@@ -776,6 +852,123 @@ def import_downloaded_huggingface_artifact(
         downloaded,
         artifact,
     )
+
+
+def import_downloaded_huggingface_artifact(
+    session: Session,
+    downloaded: DownloadedHuggingFaceArtifact,
+    *,
+    checkpoint_store: CheckpointStore | None = None,
+) -> RemoteArtifactImportResult:
+    """Retained HF entry point using the shared persistence engine."""
+
+    if not isinstance(session, Session):
+        raise TypeError(
+            "import_downloaded_huggingface_artifact requires a SQLAlchemy Session"
+        )
+
+    verified = VerifiedRemoteImportArtifact.from_huggingface(downloaded)
+
+    return import_verified_remote_artifact(
+        session,
+        verified,
+        checkpoint_store=checkpoint_store,
+    )
+
+
+def import_downloaded_b2_artifact(
+    session: Session,
+    downloaded: DownloadedB2Artifact,
+    *,
+    endpoint_url: str,
+    bucket: str,
+    checkpoint_store: CheckpointStore | None = None,
+) -> RemoteArtifactImportResult:
+    """Import already-verified B2 content with explicit storage location.
+
+    Prefer download_and_import_b2_artifact() when this function's caller
+    does not already own a verified download and its actual location.
+    """
+
+    if not isinstance(session, Session):
+        raise TypeError("import_downloaded_b2_artifact requires a SQLAlchemy Session")
+
+    verified = VerifiedRemoteImportArtifact.from_b2(
+        downloaded,
+        endpoint_url=endpoint_url,
+        bucket=bucket,
+    )
+
+    return import_verified_remote_artifact(
+        session,
+        verified,
+        checkpoint_store=checkpoint_store,
+    )
+
+
+def download_and_import_b2_artifact(
+    repository: B2ProcessedArtifactRepository,
+    key: RemoteArtifactKey,
+    *,
+    reference: B2PublicationReference | None = None,
+    session_scope_factory: RemoteImportSessionScopeFactory = session_scope,
+    checkpoint_store: CheckpointStore | None = None,
+) -> RemoteArtifactImportResult:
+    """Pin, download, verify, then transactionally import one B2 artifact.
+
+    All network/codec verification finishes before a database session opens.
+    The caller continues to own the repository's object-store lifetime.
+
+    A supplied reference is never replaced with a newer current descriptor.
+    """
+
+    if not isinstance(repository, B2ProcessedArtifactRepository):
+        raise TypeError("repository must be B2ProcessedArtifactRepository")
+
+    if not isinstance(key, RemoteArtifactKey):
+        raise TypeError("key must be RemoteArtifactKey")
+
+    if not callable(session_scope_factory):
+        raise TypeError("session_scope_factory must be callable")
+
+    if reference is None:
+        selected_reference = repository.resolve_publication(key)
+        if selected_reference is None:
+            raise B2ArtifactNotFoundError(
+                "No completed B2 publication exists for this artifact"
+            )
+    else:
+        if not isinstance(reference, B2PublicationReference):
+            raise TypeError("reference must be B2PublicationReference")
+        selected_reference = reference
+
+    if selected_reference.publication.key != key:
+        raise RemoteArtifactImportError(
+            "B2 import reference belongs to a different artifact"
+        )
+
+    downloaded = repository.require_artifact(
+        key,
+        reference=selected_reference,
+    )
+
+    if downloaded.reference != selected_reference:
+        raise RemoteArtifactImportError(
+            "B2 download does not belong to the pinned publication"
+        )
+
+    verified = VerifiedRemoteImportArtifact.from_b2(
+        downloaded,
+        endpoint_url=repository.endpoint_url,
+        bucket=repository.bucket,
+    )
+
+    with session_scope_factory() as session:
+        return import_verified_remote_artifact(
+            session,
+            verified,
+            checkpoint_store=checkpoint_store,
+        )
 
 
 def download_and_import_huggingface_artifact(
@@ -816,10 +1009,14 @@ def download_and_import_huggingface_artifact(
 
 
 __all__ = [
+    "REMOTE_B2_IMPORT_ORIGIN",
     "REMOTE_IMPORT_ORIGIN",
     "RemoteArtifactImportError",
     "RemoteArtifactImportResult",
     "RemoteImportSessionScopeFactory",
+    "download_and_import_b2_artifact",
     "download_and_import_huggingface_artifact",
+    "import_downloaded_b2_artifact",
     "import_downloaded_huggingface_artifact",
+    "import_verified_remote_artifact",
 ]

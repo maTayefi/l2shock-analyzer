@@ -16,6 +16,7 @@ from __future__ import annotations
 import ipaddress
 import math
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -443,6 +444,148 @@ class ProcessingConfig(StrictConfigModel):
         return result
 
 
+class B2Config(StrictConfigModel):
+    """B2 S3 transport configuration; credentials belong in process secrets.
+
+    Empty defaults permit the existing HF workflow during staged migration.
+    A B2 transport refuses to start until all required fields are configured.
+
+    Endpoint validation intentionally accepts only regional Backblaze HTTPS
+    endpoints. Custom proxies and other S3 providers are outside this contract.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        hide_input_in_errors=True,
+    )
+
+    endpoint_url: str = ""
+    bucket: str = ""
+    key_id: SecretStr = Field(
+        default_factory=lambda: SecretStr(""),
+        repr=False,
+        exclude=True,
+    )
+    application_key: SecretStr = Field(
+        default_factory=lambda: SecretStr(""),
+        repr=False,
+        exclude=True,
+    )
+
+    total_max_attempts: int = 6
+    connect_timeout_seconds: int = 15
+    read_timeout_seconds: int = 120
+    maximum_retry_after_seconds: int = 300
+
+    @field_validator("endpoint_url", mode="before")
+    @classmethod
+    def _endpoint_url(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("remote.b2.endpoint_url must be a string")
+
+        result = value.strip()
+
+        if not result:
+            return ""
+
+        if (
+            re.fullmatch(
+                r"https://s3\.([a-z0-9]+(?:-[a-z0-9]+)+)" r"\.backblazeb2\.com/?",
+                result,
+            )
+            is None
+        ):
+            raise ValueError(
+                "remote.b2.endpoint_url must be a regional Backblaze "
+                "HTTPS S3 endpoint without credentials, query, or bucket path"
+            )
+
+        return result.rstrip("/")
+
+    @field_validator("bucket", mode="before")
+    @classmethod
+    def _bucket(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("remote.b2.bucket must be a string")
+
+        result = value.strip()
+
+        if not result:
+            return ""
+
+        # Project policy: use a lowercase, DNS-safe bucket name.
+        if re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", result) is None:
+            raise ValueError(
+                "remote.b2.bucket must be a 3-63 character lowercase "
+                "bucket name containing only letters, digits, and hyphens"
+            )
+
+        return result
+
+    @field_validator("key_id", "application_key", mode="before")
+    @classmethod
+    def _credential(cls, value: Any) -> SecretStr:
+        if isinstance(value, SecretStr):
+            raw = value.get_secret_value()
+        elif isinstance(value, str):
+            raw = value
+        else:
+            raise ValueError("B2 credentials must be strings")
+
+        if any(ord(character) < 32 or ord(character) == 127 for character in raw):
+            raise ValueError("B2 credentials must not contain control characters")
+
+        return SecretStr(raw.strip())
+
+    @field_validator(
+        "total_max_attempts",
+        "connect_timeout_seconds",
+        "read_timeout_seconds",
+        "maximum_retry_after_seconds",
+        mode="before",
+    )
+    @classmethod
+    def _positive_integer(cls, value: Any) -> int:
+        return _strict_positive_int(
+            value,
+            field_name="remote.b2 integer setting",
+        )
+
+    @model_validator(mode="after")
+    def _bounded_settings(self) -> B2Config:
+        if self.total_max_attempts > 12:
+            raise ValueError("remote.b2.total_max_attempts must be <= 12")
+
+        if self.connect_timeout_seconds > 300:
+            raise ValueError("remote.b2.connect_timeout_seconds must be <= 300")
+
+        if self.read_timeout_seconds > 600:
+            raise ValueError("remote.b2.read_timeout_seconds must be <= 600")
+
+        if self.maximum_retry_after_seconds > 3600:
+            raise ValueError("remote.b2.maximum_retry_after_seconds must be <= 3600")
+
+        return self
+
+    @property
+    def region(self) -> str:
+        if not self.endpoint_url:
+            return ""
+
+        return self.endpoint_url.removeprefix("https://s3.").removesuffix(
+            ".backblazeb2.com"
+        )
+
+    @property
+    def configured(self) -> bool:
+        return bool(
+            self.endpoint_url
+            and self.bucket
+            and self.key_id.get_secret_value()
+            and self.application_key.get_secret_value()
+        )
+
+
 class RemoteConfig(StrictConfigModel):
     """Local private-Hugging-Face import configuration.
 
@@ -457,6 +600,7 @@ class RemoteConfig(StrictConfigModel):
         repr=False,
     )
     default_workflow: str = "remote_hf_import"
+    b2: B2Config = Field(default_factory=B2Config)
 
     @field_validator("hf_repo_id")
     @classmethod
@@ -514,19 +658,22 @@ class RemoteConfig(StrictConfigModel):
 
         allowed = {
             "remote_hf_import",
+            "remote_b2_import",
             "local_fetch_processing",
         }
 
         if result not in allowed:
             raise ValueError(
-                "remote.default_workflow must be remote_hf_import "
-                "or local_fetch_processing"
+                "remote.default_workflow must be remote_hf_import, "
+                "remote_b2_import, or local_fetch_processing"
             )
 
         return result
 
     @property
     def configured(self) -> bool:
+        # Retained compatibility: this property still means HF readiness.
+        # B2 readiness belongs to self.b2.configured.
         return bool(self.hf_repo_id and self.hf_token.get_secret_value().strip())
 
 

@@ -13,7 +13,11 @@ from decimal import Decimal, InvalidOperation
 from nicegui import ui
 
 from l2shock.acquisition import FetchOperationBusyError
-from l2shock.config import get_settings
+from l2shock.config import RemoteConfig, get_settings
+from l2shock.remote.import_contracts import (
+    B2_STORAGE_BACKEND,
+    HF_STORAGE_BACKEND,
+)
 from l2shock.timeutils import (
     floor_to_hour,
     local_to_utc,
@@ -49,10 +53,105 @@ from l2shock.ui.remote_import_runtime import (
     RemoteImportRuntime,
     RemoteImportRuntimeBusyError,
     get_remote_import_runtime,
+    peek_remote_import_runtime,
 )
 from l2shock.ui.state import get_state
 
 log = logging.getLogger(__name__)
+
+
+def _remote_backend_for_profile(profile: object) -> str | None:
+    """Map an explicit workflow profile without silently selecting a backend."""
+    value = str(profile or "").strip()
+
+    if value == "remote_hf_import":
+        return HF_STORAGE_BACKEND
+
+    if value == "remote_b2_import":
+        return B2_STORAGE_BACKEND
+
+    if value == "local_fetch_processing":
+        return None
+
+    raise ValueError("Unsupported Fetch workflow profile")
+
+
+def _remote_backend_title(backend: str) -> str:
+    if backend == B2_STORAGE_BACKEND:
+        return "Remote Backblaze B2 Import"
+
+    if backend == HF_STORAGE_BACKEND:
+        return "Remote Hugging Face Import"
+
+    raise ValueError("Unsupported remote import storage backend")
+
+
+def _remote_backend_description(backend: str) -> str:
+    prefix = (
+        "Import verified Binance, Bybit, and OKX component L2 "
+        "artifacts plus Binance real-trade price artifacts "
+    )
+
+    if backend == B2_STORAGE_BACKEND:
+        return (
+            prefix + "from Backblaze B2. Each artifact pins its own completion "
+            "descriptor and exact object versions; the range is not a "
+            "repository-wide atomic snapshot."
+        )
+
+    if backend == HF_STORAGE_BACKEND:
+        return prefix + "from one pinned private Hugging Face dataset revision."
+
+    raise ValueError("Unsupported remote import storage backend")
+
+
+def _remote_configuration_message(
+    config: RemoteConfig,
+    profile: object,
+) -> str:
+    """Return a credential-free readiness message; never construct a client."""
+    backend = _remote_backend_for_profile(profile)
+
+    if backend is None:
+        return ""
+
+    if backend == B2_STORAGE_BACKEND:
+        if config.b2.configured:
+            return ""
+
+        return (
+            "Remote B2 Import is not configured. Set remote.b2.endpoint_url "
+            "and remote.b2.bucket in config.yaml, and "
+            "L2SHOCK__REMOTE__B2__KEY_ID and "
+            "L2SHOCK__REMOTE__B2__APPLICATION_KEY in .env, then restart."
+        )
+
+    if config.configured:
+        return ""
+
+    return (
+        "Remote HF Import is not configured. Set remote.hf_repo_id "
+        "in config.yaml and L2SHOCK__REMOTE__HF_TOKEN in .env, then restart."
+    )
+
+
+def _remote_storage_label(
+    backend: str,
+    pinned_revision: str | None,
+) -> str:
+    """Describe actual storage ownership, including pre-pin stopped HF runs."""
+    if backend == B2_STORAGE_BACKEND:
+        if pinned_revision is not None:
+            raise ValueError("B2 must not display a synthetic repository revision")
+
+        return "Backblaze B2: publication and object versions pinned per artifact"
+
+    if backend == HF_STORAGE_BACKEND:
+        return "Pinned revision: " + (
+            pinned_revision if pinned_revision is not None else "none"
+        )
+
+    raise ValueError("Unsupported remote import storage backend")
 
 
 def _local_input_values(value_utc: datetime) -> tuple[str, str]:
@@ -154,18 +253,10 @@ def build_fetch_tab(
     automatic_runtime = get_automatic_fetch_runtime()
     processing_runtime = get_manual_processing_runtime()
 
-    remote_runtime: RemoteImportRuntime | None = None
-    remote_runtime_configuration_error: str | None = None
-
-    try:
-        remote_runtime = get_remote_import_runtime()
-    except Exception as exc:
-        # Configuration failures must not remove the existing local fallback.
-        remote_runtime_configuration_error = f"Unexpected {type(exc).__name__}"
-        log.warning(
-            "Remote HF Import is unavailable: %s.",
-            type(exc).__name__,
-        )
+    # Building the UI must not construct the wrong storage backend or open
+    # a transport. Start selects the backend explicitly; polling follows
+    # whichever application-owned remote runtime is current.
+    remote_runtime: RemoteImportRuntime | None = peek_remote_import_runtime()
 
     default_end_utc = floor_to_hour(now_utc())
     default_start_utc = default_end_utc - timedelta(hours=1)
@@ -204,6 +295,7 @@ def build_fetch_tab(
             workflow_profile = ui.select(
                 options={
                     "remote_hf_import": "Remote HF Import (default)",
+                    "remote_b2_import": "Remote Backblaze B2 Import",
                     "local_fetch_processing": (
                         "Local CryptoHFTData Fetch + Processing"
                     ),
@@ -213,31 +305,19 @@ def build_fetch_tab(
             ).classes("w-[32rem] max-w-full")
 
             ui.label(
-                "Remote HF Import downloads verified compact processed "
-                "artifacts into local PostgreSQL. The existing local Fetch "
-                "and Processing workflow remains available as a fallback."
+                "Remote imports download verified compact processed "
+                "artifacts into local PostgreSQL. Select HF or B2 explicitly; "
+                "a backend failure never silently selects the other service. "
+                "The existing local Fetch and Processing workflow remains "
+                "available as a fallback."
             ).classes("text-sm text-gray-600")
 
         with ui.card().classes("w-full") as remote_import_card:
-            ui.label("Remote Hugging Face Import").classes("text-lg font-semibold")
+            remote_heading = ui.label("Remote Import").classes("text-lg font-semibold")
 
-            ui.label(
-                "Import verified Binance, Bybit, and OKX component L2 "
-                "artifacts plus Binance real-trade price artifacts from one "
-                "pinned private Hugging Face dataset revision."
-            ).classes("text-sm text-gray-600")
+            remote_description = ui.label("").classes("text-sm text-gray-600")
 
-            if remote_runtime is None:
-                ui.label(
-                    "Remote HF Import is not configured. Set "
-                    "remote.hf_repo_id in config.yaml and "
-                    "L2SHOCK__REMOTE__HF_TOKEN in .env, then restart."
-                ).classes("text-sm text-red-600")
-
-                if remote_runtime_configuration_error is not None:
-                    ui.label(
-                        "Configuration state: " + remote_runtime_configuration_error
-                    ).classes("text-xs font-mono text-gray-500")
+            remote_configuration_label = ui.label("").classes("text-sm text-red-600")
 
             with ui.row().classes("w-full gap-3 flex-wrap mt-3"):
                 remote_start_date = (
@@ -336,7 +416,7 @@ def build_fetch_tab(
                 "Completed 0 / 0 | imported=0 | reused=0 | " "missing=0 | failed=0"
             ).classes("text-xs font-mono")
             remote_result_label = ui.label(
-                "No remote HF import has completed in this process."
+                "No remote import result is available for this runtime."
             ).classes("text-sm text-gray-600")
 
         with ui.card().classes("w-full") as local_fetch_card:
@@ -621,54 +701,100 @@ def build_fetch_tab(
             ).classes("text-xs text-orange-700")
 
     def _sync_workflow_profile() -> None:
-        remote_selected = (
-            str(workflow_profile.value or "").strip() == "remote_hf_import"
-        )
+        selected_backend = _remote_backend_for_profile(workflow_profile.value)
+        remote_selected = selected_backend is not None
 
         remote_import_card.set_visibility(remote_selected)
         local_fetch_card.set_visibility(not remote_selected)
         local_processing_card.set_visibility(not remote_selected)
         local_transport_card.set_visibility(not remote_selected)
 
-    async def _start_remote_import() -> None:
-        runtime = remote_runtime
-
-        if runtime is None:
-            persistent_notify(
-                "Remote HF Import is not configured. Set "
-                "remote.hf_repo_id in config.yaml and "
-                "L2SHOCK__REMOTE__HF_TOKEN in .env, then restart.",
-                title="Remote HF Import",
-                notification_type="negative",
-            )
-            return
-
-        if state.shutdown_started:
-            persistent_notify(
-                "Application shutdown has started; new operations are blocked.",
-                title="Remote HF Import",
-                notification_type="negative",
-            )
-            return
-
-        selected_bases = tuple(
-            base
-            for base, selected in (
-                ("BTC", bool(remote_btc.value)),
-                ("ETH", bool(remote_eth.value)),
-            )
-            if selected
+        current_runtime = peek_remote_import_runtime()
+        current_snapshot = (
+            current_runtime.snapshot() if current_runtime is not None else None
         )
 
-        if not selected_bases:
-            persistent_notify(
-                "Select at least one base: BTC or ETH.",
-                title="Remote HF Import",
-                notification_type="negative",
+        # Another connected client may have started a different remote
+        # backend. An active operation's description must name its actual
+        # backend, not merely this client's previous selector value.
+        displayed_backend = (
+            current_snapshot.storage_backend
+            if current_snapshot is not None and current_snapshot.is_running
+            else selected_backend
+        )
+
+        if displayed_backend is not None:
+            remote_heading.text = _remote_backend_title(displayed_backend)
+            remote_description.text = _remote_backend_description(displayed_backend)
+
+        configuration_message = (
+            _remote_configuration_message(
+                settings.remote,
+                workflow_profile.value,
             )
-            return
+            if displayed_backend == selected_backend
+            else ""
+        )
+
+        remote_configuration_label.text = configuration_message
+        remote_configuration_label.set_visibility(bool(configuration_message))
+
+    async def _start_remote_import() -> None:
+        nonlocal remote_runtime
+
+        title = "Remote Import"
 
         try:
+            backend = _remote_backend_for_profile(workflow_profile.value)
+
+            if backend is None:
+                persistent_notify(
+                    "Select an explicit remote workflow before starting an import.",
+                    title=title,
+                    notification_type="negative",
+                )
+                return
+
+            title = _remote_backend_title(backend)
+
+            if state.shutdown_started:
+                persistent_notify(
+                    "Application shutdown has started; new operations are blocked.",
+                    title=title,
+                    notification_type="negative",
+                )
+                return
+
+            configuration_message = _remote_configuration_message(
+                settings.remote,
+                workflow_profile.value,
+            )
+
+            if configuration_message:
+                persistent_notify(
+                    configuration_message,
+                    title=title,
+                    notification_type="negative",
+                )
+                return
+
+            selected_bases = tuple(
+                base
+                for base, selected in (
+                    ("BTC", bool(remote_btc.value)),
+                    ("ETH", bool(remote_eth.value)),
+                )
+                if selected
+            )
+
+            if not selected_bases:
+                persistent_notify(
+                    "Select at least one base: BTC or ETH.",
+                    title=title,
+                    notification_type="negative",
+                )
+                return
+
             requested_start_utc = _parse_local_datetime(
                 remote_start_date.value,
                 remote_start_time.value,
@@ -684,6 +810,10 @@ def build_fetch_tab(
                 remote_depth_upper.value,
             )
 
+            runtime = get_remote_import_runtime(
+                storage_backend=backend,
+            )
+
             runtime.start(
                 requested_start_utc=requested_start_utc,
                 requested_end_utc=requested_end_utc,
@@ -691,6 +821,13 @@ def build_fetch_tab(
                 lower_depth_fraction=lower_fraction,
                 upper_depth_fraction=upper_fraction,
             )
+
+            remote_runtime = runtime
+            remote_result_label.text = (
+                "No completed result is available for the current operation."
+            )
+            remote_revision_label.text = _remote_storage_label(backend, None)
+            remote_current_artifact_label.text = "Current artifact: preparing"
 
         except (
             RemoteImportRuntimeBusyError,
@@ -700,12 +837,12 @@ def build_fetch_tab(
         ) as exc:
             persistent_notify(
                 str(exc),
-                title="Remote HF Import",
+                title=title,
                 notification_type="negative",
             )
 
     def _stop_remote_import() -> None:
-        runtime = remote_runtime
+        runtime = peek_remote_import_runtime()
 
         if runtime is not None and runtime.request_stop():
             ui.notify(
@@ -1165,16 +1302,39 @@ def build_fetch_tab(
         nonlocal observed_processing_completion_sequence
         nonlocal observed_automatic_completion_sequence
         nonlocal observed_remote_completion_sequence
+        nonlocal remote_runtime
 
         fetch_snapshot = fetch_runtime.snapshot()
         processing_snapshot = processing_runtime.snapshot()
         automatic_snapshot = automatic_runtime.snapshot()
+
+        previous_remote_runtime = remote_runtime
+        remote_runtime = peek_remote_import_runtime()
         remote_snapshot = (
             remote_runtime.snapshot() if remote_runtime is not None else None
         )
 
+        if remote_runtime is not previous_remote_runtime:
+            remote_progress_bar.value = 0.0
+            remote_result_label.text = (
+                "No remote import result is available for this runtime."
+            )
+            remote_counter_label.text = (
+                "Completed 0 / 0 | imported=0 | reused=0 | missing=0 | failed=0"
+            )
+            remote_revision_label.text = (
+                _remote_storage_label(
+                    remote_snapshot.storage_backend,
+                    remote_snapshot.pinned_revision,
+                )
+                if remote_snapshot is not None
+                else "Pinned revision: none"
+            )
+
+        _sync_workflow_profile()
+
         profile_is_remote = (
-            str(workflow_profile.value or "").strip() == "remote_hf_import"
+            _remote_backend_for_profile(workflow_profile.value) is not None
         )
 
         if not state.shutdown_started and not state.active_operation_name:
@@ -1195,11 +1355,15 @@ def build_fetch_tab(
 
         remote_start_allowed = bool(
             profile_is_remote
-            and remote_runtime is not None
-            and remote_snapshot is not None
-            and not remote_snapshot.is_running
+            and not _remote_configuration_message(
+                settings.remote,
+                workflow_profile.value,
+            )
+            and (remote_snapshot is None or not remote_snapshot.is_running)
+            and (remote_runtime is None or remote_runtime.task is None)
             and not state.active_operation_name
             and not state.shutdown_started
+            and not state.operation_lock.locked()
         )
 
         for element in remote_inputs:
@@ -1228,8 +1392,9 @@ def build_fetch_tab(
             if remote_progress is not None:
                 remote_progress_bar.value = remote_progress.fraction_complete
                 remote_status_label.text = remote_progress.message
-                remote_revision_label.text = (
-                    "Pinned revision: " + remote_progress.pinned_revision
+                remote_revision_label.text = _remote_storage_label(
+                    remote_progress.storage_backend,
+                    remote_progress.pinned_revision,
                 )
                 remote_counter_label.text = (
                     f"Completed {remote_progress.artifacts_completed} / "
@@ -1247,7 +1412,13 @@ def build_fetch_tab(
             elif remote_snapshot.is_running:
                 remote_progress_bar.value = 0.0
                 remote_status_label.text = (
-                    "Resolving one immutable Hugging Face revision..."
+                    "Preparing version-pinned B2 publications..."
+                    if remote_snapshot.storage_backend == B2_STORAGE_BACKEND
+                    else "Resolving one immutable Hugging Face revision..."
+                )
+                remote_revision_label.text = _remote_storage_label(
+                    remote_snapshot.storage_backend,
+                    remote_snapshot.pinned_revision,
                 )
                 remote_current_artifact_label.text = "Current artifact: preparing"
             else:
@@ -1275,8 +1446,9 @@ def build_fetch_tab(
                         if result.artifacts_selected == 0
                         else len(result.items) / result.artifacts_selected
                     )
-                    remote_revision_label.text = (
-                        "Pinned revision: " + result.pinned_revision
+                    remote_revision_label.text = _remote_storage_label(
+                        result.storage_backend,
+                        result.pinned_revision,
                     )
                     remote_result_label.text = (
                         f"Last result: {result.status}; "
@@ -1300,7 +1472,9 @@ def build_fetch_tab(
 
                     persistent_notify(
                         remote_result_label.text,
-                        title="Remote HF Import completed",
+                        title=(
+                            _remote_backend_title(result.storage_backend) + " completed"
+                        ),
                         notification_type=notification_type,
                     )
 
@@ -1310,7 +1484,10 @@ def build_fetch_tab(
                     )
                     persistent_notify(
                         remote_snapshot.last_error,
-                        title="Remote HF Import failed",
+                        title=(
+                            _remote_backend_title(remote_snapshot.storage_backend)
+                            + " failed"
+                        ),
                         notification_type="negative",
                     )
 

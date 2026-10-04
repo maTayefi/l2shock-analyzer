@@ -108,9 +108,15 @@ l2shock/processing/source_repository.py
 l2shock/processing/target_planning.py
 l2shock/remote/__init__.py
 l2shock/remote/artifact_codec.py
+l2shock/remote/b2_migration.py
+l2shock/remote/b2_publication.py
+l2shock/remote/b2_repository.py
+l2shock/remote/b2_transport.py
+l2shock/remote/b2_worker_repository.py
 l2shock/remote/contracts.py
 l2shock/remote/headless_processing.py
 l2shock/remote/hf_repository.py
+l2shock/remote/import_contracts.py
 l2shock/remote/importer.py
 l2shock/remote/source_acquisition.py
 l2shock/remote_cli.py
@@ -167,6 +173,7 @@ tests/test_automatic_fetch_retry_cursor_cancellation.py
 tests/test_automatic_fetch_runtime.py
 tests/test_availability_calendar.py
 tests/test_availability_filesystem.py
+tests/test_b2_config.py
 tests/test_block_decimal_preflight_regression.py
 tests/test_bootstrap_creation_race.py
 tests/test_bybit_contract_diagnostics.py
@@ -241,6 +248,13 @@ tests/test_readme_analysis_doc02.py
 tests/test_readme_analysis_transition.py
 tests/test_readme_contract.py
 tests/test_remote_artifact_codec.py
+tests/test_remote_b2_range_runtime.py
+tests/test_remote_b2_repository.py
+tests/test_remote_b2_sdk_protocol.py
+tests/test_remote_b2_stream_download.py
+tests/test_remote_b2_transport.py
+tests/test_remote_b2_ui_integration.py
+tests/test_remote_b2_worker.py
 tests/test_remote_bybit_processing.py
 tests/test_remote_cli.py
 tests/test_remote_contracts.py
@@ -249,8 +263,10 @@ tests/test_remote_hf_repository.py
 tests/test_remote_import_admission_regression.py
 tests/test_remote_import_checkpoint_reconciliation.py
 tests/test_remote_import_runtime.py
+tests/test_remote_import_storage_identity.py
 tests/test_remote_importer.py
 tests/test_remote_importer_postgresql.py
+tests/test_remote_price_import_lock_order.py
 tests/test_remote_source_acquisition.py
 tests/test_remote_worker.py
 tests/test_remote_workflow_contract.py
@@ -742,6 +758,7 @@ tests/test_ui_localization.py
 tests/test_ui_processing_runtime.py
 tests/test_ui_shutdown.py
 tests/test_l2_view_percentage_precision_regression.py
+tests/test_remote_b2_ui_integration.py
 ```
 
 ## Focus areas
@@ -872,6 +889,8 @@ tests/test_ui_shutdown.py
 ```text
 l2shock/remote/__init__.py
 l2shock/remote/artifact_codec.py
+l2shock/remote/b2_transport.py
+l2shock/remote/b2_worker_repository.py
 l2shock/remote/contracts.py
 l2shock/remote/headless_processing.py
 l2shock/remote/hf_repository.py
@@ -881,6 +900,10 @@ l2shock/remote_worker.py
 l2shock/remote_cli.py
 l2shock/ui/remote_import_runtime.py
 l2shock/filesystem.py
+l2shock/remote/b2_publication.py
+l2shock/remote/b2_repository.py
+l2shock/remote/import_contracts.py
+l2shock/remote/b2_migration.py
 ```
 
 ## Important dependencies
@@ -907,7 +930,12 @@ l2shock/acquisition/repository.py
 ## Primary tests
 
 ```text
+tests/test_b2_config.py
 tests/test_remote_artifact_codec.py
+tests/test_remote_b2_sdk_protocol.py
+tests/test_remote_b2_stream_download.py
+tests/test_remote_b2_transport.py
+ tests/test_remote_b2_worker.py
 tests/test_remote_bybit_processing.py
 tests/test_remote_cli.py
 tests/test_remote_contracts.py
@@ -920,6 +948,11 @@ tests/test_remote_source_acquisition.py
 tests/test_remote_worker.py
 tests/test_remote_workflow_contract.py
 tests/test_processing_post_stream_integrity.py
+tests/test_remote_b2_repository.py
+tests/test_remote_import_storage_identity.py
+tests/test_remote_price_import_lock_order.py
+tests/test_remote_b2_range_runtime.py
+tests/test_remote_b2_ui_integration.py
 ```
 
 ## Workflow files
@@ -973,6 +1006,167 @@ tests/test_processing_post_stream_integrity.py
 40. CLI exit statuses matching actual failure classification.
 
 ---
+
+<!-- l2shock:b2-transport-status -->
+## B2 migration status
+
+The staged Backblaze B2 transport and verified processed-artifact repository
+are implemented separately from the active Hugging Face production path.
+The transport uses explicit credentials and endpoint configuration,
+bounded standard SDK retries, a Retry-After supplement, pre-sign
+Expect-header removal, version-pinned reads, SHA-256 verification, and
+streaming downloads.
+
+The SDK owns HTTP retries and upload-stream rewinding. The transport must
+not add a second whole-operation retry loop or expose raw SDK exception
+arguments and server error messages.
+
+The shared PostgreSQL importer has backend-neutral storage ownership and
+explicit B2 import entry points. B2 imports retain endpoint, bucket, and
+exact publication/object versions; they never fabricate an HF commit.
+
+The local Fetch UI supports explicit HF and B2 range imports through one
+application-owned runtime. HF remains the configured default unless changed.
+The scheduled worker remains on HF. Explicit B2 worker/checkpoint-frontier
+execution is implemented separately. Verified seed/history migration,
+production writer coordination, and controlled live cutover remain required.
+Local importer tests do not establish completed cutover.
+
+<!-- l2shock:b2-publication-foundation:start -->
+### Staged B2 publication foundation
+
+- `l2shock/remote/b2_publication.py`
+  - Canonical version-pinned completion descriptors.
+  - Separate transport identity; existing analytical manifests are unchanged.
+- `l2shock/remote/b2_repository.py`
+  - Verified publication/download and compatible interrupted-publication recovery.
+  - No PostgreSQL/UI dependency.
+  - External single-writer ownership remains mandatory.
+- `tests/test_remote_b2_repository.py`
+  - Publication ordering, idempotence, conflicts, recovery, pinned reads,
+    corruption, and canonical descriptor validation.
+
+Production worker/importer cutover and checkpoint-seed migration remain pending.
+<!-- l2shock:b2-publication-foundation:end -->
+
+<!-- l2shock:b2-import-boundary:start -->
+### Staged B2 local import boundary
+
+The shared importer accepts verified backend-neutral storage ownership.
+B2 imports retain the actual endpoint, bucket, completion descriptor,
+publication identity, and version-pinned artifact/manifest references.
+Their legacy HF repository-revision field is null. A previous HF revision
+is retained under explicitly HF-specific legacy metadata.
+
+Verified downloads finish before the transactional download/import helper
+opens its PostgreSQL session. Existing analytical channels are persisted
+unchanged through the shared repositories.
+
+Remote price imports acquire source-hour admission before quality decoding
+and analytical persistence. Source-metadata reconciliation retains its own
+transaction-lock requirement.
+
+The importer boundary alone does not switch production storage.
+Explicit local B2 range-runtime and Fetch UI integration are documented below.
+The scheduled worker remains on HF. Explicit B2 worker/checkpoint-frontier
+execution is implemented separately. Verified seed/history migration,
+production writer coordination, and controlled live cutover remain required.
+Local importer tests do not establish completed cutover.
+<!-- l2shock:b2-import-boundary:end -->
+
+<!-- l2shock:b2-range-runtime:start -->
+### Explicit B2 Fetch UI and range-runtime integration
+
+The shared remote-import runtime supports explicit HF and B2 execution.
+The Fetch workflow selector exposes remote_hf_import, remote_b2_import,
+and local_fetch_processing. HF remains the default unless explicitly
+configured otherwise.
+
+One application-owned remote runtime is visible to polling and shutdown.
+An idle backend may be changed only while shared admission is free.
+Active or finalizing work cannot be replaced. Configuration failure leaves
+the previous singleton intact and never silently selects another backend.
+
+B2 has no repository-wide commit revision. Each artifact resolves one
+completion descriptor and downloads its exact version-pinned publication.
+Successful items retain endpoint, bucket, publication, and object-version
+ownership. Missing completion descriptors remain missing; broken pinned
+publications and transport failures remain errors.
+
+Transport cleanup finishes before PostgreSQL import begins. Repeated task
+cancellation retains operation ownership until the synchronous worker exits.
+Stop or shutdown before execution does not start repository work.
+UI revision labels also support HF operations stopped before revision pinning.
+
+The scheduled worker and workflow remain on HF. Explicit B2 worker/frontier
+execution is documented below. Verified seed/history migration and live
+end-to-end cutover gates remain pending. Explicit local B2 import support is
+not completed production cutover.
+<!-- l2shock:b2-range-runtime:end -->
+<!-- l2shock:b2-worker-integration:start -->
+### Explicit B2 worker execution and frontier integration
+
+The shared remote worker supports explicit hugging_face and backblaze_b2
+selection. HF remains the CLI default and the scheduled workflow remains
+unchanged.
+
+l2shock/remote/b2_worker_repository.py scopes B2 access to one component
+chain and preset. Each inspection generation retains one completion
+reference, or absence, per key. Pinned publication failures remain errors;
+reads never fall back to a newer current object.
+
+The existing frontier, immediate-predecessor checkpoint, acquisition,
+headless processing, invalid-hour, and price-repair policies are shared.
+B2 worker results retain real endpoint, bucket, descriptor, and object
+version ownership and contain no fabricated HF revisions.
+
+B2 execution requires externally enforced single-writer ownership.
+--b2-single-writer-confirmed acknowledges that ownership; it is not a lock.
+Migration tools and production publishers must not race for the same chain.
+
+The caller owns the object-store lifetime. Joined synchronous work finishes
+before cancellation can close the transport or temporary workspace.
+
+Verified seed/history migration, production writer coordination, workflow
+cutover, and live end-to-end gates remain pending. Explicit worker support
+is not completed production cutover.
+<!-- l2shock:b2-worker-integration:end -->
+
+<!-- l2shock:b2-seed-migration:start -->
+### Verified B2 seed/history migration tooling
+
+l2shock/remote/b2_migration.py migrates an explicit bounded processed-artifact
+plan from one pinned immutable HF commit, or from canonical verified local
+artifact/manifest pairs, through the existing B2 processed-artifact repository.
+
+Canonical manifests, analytical encoded channels, analytical hashes,
+checkpoint bytes and identities, presets, and producer metadata are preserved.
+The B2 transport container receives its own transport hash and object versions.
+
+The tool verifies terminal L2 checkpoints before destination writes unless
+--history-only is explicitly selected. History-only copying does not establish
+checkpoint-chain readiness. Missing artifacts remain explicit and produce a
+non-success CLI result. Conflicts and broken pinned publications stop the run.
+
+Each successful item is recorded only after exact version-pinned B2 read-back.
+The exclusive JSONL journal is flushed and fsynced. An incomplete journal or
+publication intent alone is not proof of success. Recovery reruns the same
+pinned source plan and verifies idempotent existing publications.
+
+External destination single-writer ownership remains mandatory.
+--b2-single-writer-confirmed acknowledges that exclusion; it is not a lock.
+Migration and production publishers must not write overlapping B2 keys.
+
+tests/test_remote_b2_worker.py also exercises new-hour acquisition-boundary,
+real headless replay, predecessor continuation, invalid-hour checkpoint
+suppression, Binance price repair, and interrupted completion-publication
+recovery against a version-retaining in-memory transport.
+
+These offline tests are not live service verification. The scheduled workflow
+and default production path remain on HF. Executed and audited seed migration,
+final writer handoff, live worker/import/Analysis gates, and workflow cutover
+remain deployment requirements. HF history and rollback credentials are retained.
+<!-- l2shock:b2-seed-migration:end -->
 
 # Ranked single-core bug-finding rounds
 

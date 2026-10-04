@@ -504,9 +504,10 @@ def _source_row_counts_as_complete(
         return False
 
     quality = quality_json if isinstance(quality_json, Mapping) else {}
-    remote_imported = (
-        quality.get("processing_origin") == "hugging_face_remote_import_v1"
-    )
+    remote_imported = quality.get("processing_origin") in {
+        "hugging_face_remote_import_v1",
+        "backblaze_b2_remote_import_v1",
+    }
 
     path_text = str(local_path or "").strip()
 
