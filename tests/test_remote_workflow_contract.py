@@ -105,14 +105,12 @@ def test_remote_workflow_uses_extended_bootstrap_search_bound() -> None:
 def test_remote_workflow_uses_b2_without_hf_publication_stagger() -> None:
     source = _workflow_text()
 
-    assert '"--storage-backend" "backblaze_b2"' in source
-    assert '"--b2-endpoint-url" "${L2SHOCK_B2_ENDPOINT_URL}"' in source
-    assert '"--b2-bucket" "${L2SHOCK_B2_BUCKET}"' in source
-    assert '"--b2-single-writer-confirmed"' in source
-
+    assert "--storage-backend backblaze_b2" in source
+    assert '--b2-endpoint-url "${L2SHOCK_B2_ENDPOINT_URL}"' in source
+    assert '--b2-bucket "${L2SHOCK_B2_BUCKET}"' in source
+    assert "--b2-single-writer-confirmed" in source
     assert "publication_delay_seconds" not in source
     assert "Stagger shared Hugging Face publication writers" not in source
-
     assert "group: l2shock-remote-${{ matrix.chain }}" in source
     assert "cancel-in-progress: false" in source
     assert "queue: single" in source

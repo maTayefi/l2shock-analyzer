@@ -273,13 +273,15 @@ class ManualFetchCoordinator:
         awaitable: Awaitable[T],
         *,
         name: str,
+        on_cancellation: Callable[[asyncio.CancelledError], None] | None = None,
     ) -> T:
-        """Await one persistence write and keep ownership until it settles.
+        """Join a write without abandoning it or losing its settled outcome.
 
-        The production adapter commits inside a worker thread. A plain await
-        lets task cancellation abandon that thread mid-transaction. Repeated
-        cancellations are absorbed until the write settles; the first one is
-        then re-raised.
+        By default, remembered owner cancellation is re-raised after joining.
+
+        Terminal-write callers may supply on_cancellation to retain that
+        cancellation themselves. Those callers receive the actual write result
+        or failure, reconcile it, and propagate cancellation after finalization.
         """
         task = asyncio.ensure_future(awaitable)
 
@@ -298,15 +300,23 @@ class ManualFetchCoordinator:
                 break
 
         if cancelled is not None:
-            if not task.cancelled() and task.exception() is not None:
-                log.warning(
-                    "Persistence write %s failed while its owner was being "
-                    "cancelled: %s",
-                    name,
-                    type(task.exception()).__name__,
-                )
+            if on_cancellation is not None:
+                # Preserve cancellation before retrieving the settled result:
+                # task.result() may itself raise a persistence failure.
+                on_cancellation(cancelled)
+            else:
+                if not task.cancelled():
+                    failure = task.exception()
 
-            raise cancelled
+                    if failure is not None:
+                        log.warning(
+                            "Persistence write %s failed while its owner was "
+                            "being cancelled: %s",
+                            name,
+                            type(failure).__name__,
+                        )
+
+                raise cancelled
 
         return task.result()
 
@@ -416,6 +426,26 @@ class ManualFetchCoordinator:
         )
 
         native_cancellation: asyncio.CancelledError | None = None
+
+        def remember_terminal_cancellation(exc: asyncio.CancelledError) -> None:
+            nonlocal native_cancellation, stopped
+
+            if native_cancellation is None:
+                native_cancellation = exc
+
+            cancel_event.set()
+            stopped = True
+
+        async def settle_terminal_write[T](
+            awaitable: Awaitable[T],
+            *,
+            name: str,
+        ) -> T:
+            return await self._join_persistence(
+                awaitable,
+                name=name,
+                on_cancellation=remember_terminal_cancellation,
+            )
 
         creation_task = asyncio.create_task(
             self._persistence.create_fetch_run(
@@ -589,7 +619,7 @@ class ManualFetchCoordinator:
                         )
 
                         if not already_processed:
-                            await self._join_persistence(
+                            await settle_terminal_write(
                                 self._persistence.record_missing(
                                     spec,
                                     message=diagnostic,
@@ -622,7 +652,7 @@ class ManualFetchCoordinator:
                         diagnostic = _safe_unexpected_error(exc)
 
                         if not already_processed:
-                            await self._join_persistence(
+                            await settle_terminal_write(
                                 self._persistence.record_error(
                                     spec,
                                     message=diagnostic,
@@ -664,7 +694,7 @@ class ManualFetchCoordinator:
                         diagnostic = _safe_unexpected_error(exc)
 
                         if not already_processed:
-                            await self._join_persistence(
+                            await settle_terminal_write(
                                 self._persistence.record_error(
                                     spec,
                                     message=diagnostic,
@@ -700,7 +730,7 @@ class ManualFetchCoordinator:
                         )
                     else:
                         try:
-                            await self._join_persistence(
+                            await settle_terminal_write(
                                 self._persistence.record_artifact(artifact),
                                 name=f"persist-fetch-artifact-{spec.symbol}",
                             )
@@ -721,7 +751,7 @@ class ManualFetchCoordinator:
 
                             if not already_processed:
                                 try:
-                                    await self._join_persistence(
+                                    await settle_terminal_write(
                                         self._persistence.record_error(
                                             spec,
                                             message=diagnostic,

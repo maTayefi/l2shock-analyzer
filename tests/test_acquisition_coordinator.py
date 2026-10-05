@@ -1259,3 +1259,302 @@ async def test_missing_write_is_joined_through_cancellation() -> None:
         await asyncio.wait_for(task, timeout=2.0)
 
     assert persistence.missing_finished is True
+
+
+@pytest.mark.asyncio
+async def test_fetch_adapter_routes_failures_to_guarded_repository(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import contextmanager
+
+    import l2shock.acquisition.fetch_persistence as module
+
+    session_marker = object()
+    events: list[tuple[str, SourceFileSpec, object]] = []
+
+    @contextmanager
+    def scope():
+        yield session_marker
+
+    class Repository:
+        def record_fetch_failure(self, spec, *, target, message):
+            events.append((target, spec, message))
+
+        def record_missing(self, *_args, **_kwargs):
+            raise AssertionError("Unguarded missing persistence was called")
+
+        def record_error(self, *_args, **_kwargs):
+            raise AssertionError("Unguarded error persistence was called")
+
+    adapter = module.SQLAlchemyFetchPersistence()
+
+    def repository_for(actual_session):
+        assert actual_session is session_marker
+        return Repository()
+
+    monkeypatch.setattr(module, "session_scope", scope)
+    monkeypatch.setattr(adapter, "_repository", repository_for)
+
+    spec = SourceFileSpec(
+        venue="binance_futures",
+        symbol="BTCUSDT",
+        data_kind="orderbook",
+        hour_utc=_utc(12),
+    )
+
+    await adapter.record_missing(spec, message="missing diagnostic")
+    await adapter.record_error(spec, message="error diagnostic")
+
+    assert events == [
+        ("missing", spec, "missing diagnostic"),
+        ("error", spec, "error diagnostic"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome",
+    (
+        "downloaded",
+        "reused",
+        "missing",
+        "error",
+        "unexpected",
+        "artifact_failure",
+        "artifact_failure_cleanup",
+    ),
+)
+async def test_terminal_fetch_write_reconciles_outcome_before_cancellation(
+    tmp_path: Path,
+    outcome: str,
+) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    settled = asyncio.Event()
+
+    class TerminalPersistence(FakePersistence):
+        async def pause(self) -> None:
+            entered.set()
+            await release.wait()
+            settled.set()
+
+        async def record_artifact(self, artifact: DownloadArtifact) -> None:
+            if outcome in {
+                "downloaded",
+                "reused",
+                "artifact_failure",
+            }:
+                await self.pause()
+
+            if outcome in {
+                "artifact_failure",
+                "artifact_failure_cleanup",
+            }:
+                raise RuntimeError("Simulated artifact transaction failure")
+
+            await super().record_artifact(artifact)
+
+        async def record_missing(
+            self,
+            spec: SourceFileSpec,
+            *,
+            message: object,
+        ) -> None:
+            await self.pause()
+            await super().record_missing(spec, message=message)
+
+        async def record_error(
+            self,
+            spec: SourceFileSpec,
+            *,
+            message: object,
+        ) -> None:
+            if outcome in {
+                "error",
+                "unexpected",
+                "artifact_failure_cleanup",
+            }:
+                await self.pause()
+
+            await super().record_error(spec, message=message)
+
+    persistence = TerminalPersistence()
+    progress: list[FetchProgress] = []
+
+    async def handler(
+        spec: SourceFileSpec,
+        _cancel_event: asyncio.Event | None,
+    ) -> DownloadArtifact:
+        if outcome == "missing":
+            raise RemoteFileNotFoundError("Remote hourly archive is unavailable")
+
+        if outcome == "error":
+            raise RemoteRequestError("Remote request failed")
+
+        if outcome == "unexpected":
+            raise RuntimeError("Simulated unexpected downloader failure")
+
+        disposition = (
+            DownloadDisposition.REUSED
+            if outcome == "reused"
+            else DownloadDisposition.DOWNLOADED
+        )
+
+        return _artifact(
+            tmp_path,
+            spec,
+            disposition=disposition,
+        )
+
+    lock = asyncio.Lock()
+    downloader = FakeDownloader(handler)
+    coordinator = ManualFetchCoordinator(
+        operation_lock=lock,
+        persistence=persistence,
+        downloader_factory=_factory(downloader),
+        progress_sink=progress.append,
+    )
+    task = asyncio.create_task(
+        coordinator.run(
+            requested_start_utc=_utc(12),
+            requested_end_utc=_utc(13),
+        )
+    )
+
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+
+        assert lock.locked()
+        assert coordinator.is_running
+        assert not task.done()
+        assert not settled.is_set()
+        assert persistence.completions == []
+    finally:
+        release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=3.0,
+            )
+
+    assert settled.is_set()
+    assert not lock.locked()
+    assert not coordinator.is_running
+    assert len(downloader.calls) == 1
+    assert len(persistence.completions) == 1
+
+    completion = persistence.completions[0]
+    details = completion["details"]
+
+    assert completion["status"] is FetchRunStatus.STOPPED
+    assert details["stopped"] is True
+    assert details["fatal_error"] is None
+    assert details["files_attempted"] == 1
+    assert details["files_unattempted"] == 3
+
+    successful = outcome in {"downloaded", "reused"}
+    assert completion["files_downloaded"] == int(successful)
+    assert completion["files_failed"] == int(not successful)
+
+    assert details["files_available"] == int(successful)
+    assert details["files_downloaded"] == int(outcome == "downloaded")
+    assert details["files_reused"] == int(outcome == "reused")
+    assert details["files_missing"] == int(outcome == "missing")
+    assert details["files_failed"] == int(
+        outcome
+        in {
+            "error",
+            "unexpected",
+            "artifact_failure",
+            "artifact_failure_cleanup",
+        }
+    )
+
+    if successful:
+        assert len(persistence.artifacts) == 1
+        assert persistence.errors == []
+        assert persistence.missing == []
+    elif outcome == "missing":
+        assert len(persistence.missing) == 1
+        assert persistence.errors == []
+    else:
+        assert len(persistence.errors) == 1
+        assert persistence.artifacts == []
+
+    completed_events = [
+        event for event in progress if event.phase is FetchProgressPhase.COMPLETED
+    ]
+    assert len(completed_events) == 1
+    assert completed_events[0].files_completed == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("defer_to_caller", (False, True))
+@pytest.mark.parametrize("write_fails", (False, True))
+async def test_persistence_join_preserves_default_and_deferred_cancellation(
+    defer_to_caller: bool,
+    write_fails: bool,
+) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    exited = asyncio.Event()
+    remembered: list[asyncio.CancelledError] = []
+    expected_failure = RuntimeError("Simulated settled write failure")
+
+    async def write() -> int:
+        entered.set()
+
+        try:
+            await release.wait()
+
+            if write_fails:
+                raise expected_failure
+
+            return 17
+        finally:
+            exited.set()
+
+    coordinator = object.__new__(ManualFetchCoordinator)
+    task = asyncio.create_task(
+        coordinator._join_persistence(
+            write(),
+            name="test-settled-persistence-outcome",
+            on_cancellation=remembered.append if defer_to_caller else None,
+        )
+    )
+
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+
+        assert not task.done()
+        assert not exited.is_set()
+    finally:
+        release.set()
+
+    if not defer_to_caller:
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(task), timeout=3.0)
+
+        assert remembered == []
+    elif write_fails:
+        with pytest.raises(RuntimeError) as captured:
+            await asyncio.wait_for(asyncio.shield(task), timeout=3.0)
+
+        assert captured.value is expected_failure
+        assert len(remembered) == 1
+    else:
+        assert await asyncio.wait_for(asyncio.shield(task), timeout=3.0) == 17
+        assert len(remembered) == 1
+
+    assert exited.is_set()

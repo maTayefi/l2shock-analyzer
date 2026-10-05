@@ -804,3 +804,211 @@ def test_referenced_preset_cannot_be_deleted(
         )
 
     assert repository.get_preset(preset.preset_hash) is not None
+
+
+@pytest.mark.parametrize(
+    ("venue", "instrument"),
+    (
+        ("binance_futures", "ETHUSDT"),
+        ("okx_futures", "BTC-USDT-SWAP"),
+    ),
+)
+def test_l2_write_rejects_other_market_provenance(
+    database_session: Session,
+    venue: str,
+    instrument: str,
+) -> None:
+    repository = AnalyticalRepository(database_session)
+    preset = _preset()
+    repository.ensure_preset(preset)
+    _block_value, encoded, summary = _encoded_inputs()
+
+    wrong = L2HourlyProvenance(
+        source_hours=(
+            SourceHourReference(
+                provider="cryptohftdata",
+                venue=venue,
+                instrument=instrument,
+                hour_utc=_hour(),
+                content_sha256="a" * 64,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="component preset"):
+        repository.write_l2_hour(
+            preset=preset,
+            hour_utc=_hour(),
+            encoded=encoded,
+            quality_summary_json=summary,
+            provenance=wrong,
+        )
+
+    assert (
+        repository.get_l2_hour(
+            base="BTC",
+            hour_utc=_hour(),
+            preset_hash=preset.preset_hash,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("read_kind", ("single", "range"))
+def test_verified_l2_read_rejects_other_market_provenance(
+    database_session: Session,
+    read_kind: str,
+) -> None:
+    from datetime import timedelta
+
+    from l2shock.db import AnalyticalRowCorruptionError
+    from l2shock.db.models import L2HourlySeries
+
+    repository = AnalyticalRepository(database_session)
+    preset = _preset()
+    repository.ensure_preset(preset)
+    _block_value, encoded, summary = _encoded_inputs()
+
+    repository.write_l2_hour(
+        preset=preset,
+        hour_utc=_hour(),
+        encoded=encoded,
+        quality_summary_json=summary,
+        provenance=_provenance(),
+    )
+
+    model = database_session.get(
+        L2HourlySeries,
+        ("BTC", _hour(), preset.preset_hash),
+    )
+    assert model is not None
+
+    model.provenance_json = L2HourlyProvenance(
+        source_hours=(
+            SourceHourReference(
+                provider="cryptohftdata",
+                venue="binance_futures",
+                instrument="ETHUSDT",
+                hour_utc=_hour(),
+                content_sha256="a" * 64,
+            ),
+        ),
+    ).to_dict()
+    database_session.flush()
+
+    with pytest.raises(AnalyticalRowCorruptionError, match="verification"):
+        if read_kind == "single":
+            repository.get_l2_hour(
+                base="BTC",
+                hour_utc=_hour(),
+                preset_hash=preset.preset_hash,
+                verify_codec=True,
+            )
+        else:
+            repository.list_l2_hours(
+                base="BTC",
+                preset_hash=preset.preset_hash,
+                start_utc=_hour(),
+                end_utc=_hour() + timedelta(hours=1),
+                verify_codec=True,
+            )
+
+
+def test_verified_l2_read_rejects_corrupt_preset_metadata(
+    database_session: Session,
+) -> None:
+    from l2shock.db import AnalyticalRowCorruptionError
+
+    repository = AnalyticalRepository(database_session)
+    preset = _preset()
+    repository.ensure_preset(preset)
+    _block_value, encoded, summary = _encoded_inputs()
+
+    repository.write_l2_hour(
+        preset=preset,
+        hour_utc=_hour(),
+        encoded=encoded,
+        quality_summary_json=summary,
+        provenance=_provenance(),
+    )
+
+    model = (
+        database_session.query(DataPreset)
+        .filter_by(preset_hash=preset.preset_hash)
+        .one()
+    )
+    model.algorithm_version = "corrupt-metadata-v1"
+    database_session.flush()
+
+    with pytest.raises(AnalyticalRowCorruptionError, match="immutable identity"):
+        repository.get_l2_hour(
+            base="BTC",
+            hour_utc=_hour(),
+            preset_hash=preset.preset_hash,
+            verify_codec=True,
+        )
+
+
+def test_l2_write_rejects_materialized_aggregate_preset(
+    database_session: Session,
+) -> None:
+    from l2shock.presets import build_binance_okx_futures_data_preset
+
+    repository = AnalyticalRepository(database_session)
+    aggregate = build_binance_okx_futures_data_preset(
+        base="BTC",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+
+    repository.ensure_preset(aggregate)
+    _block_value, encoded, summary = _encoded_inputs()
+
+    with pytest.raises(ValueError, match="exactly one component market"):
+        repository.write_l2_hour(
+            preset=aggregate,
+            hour_utc=_hour(),
+            encoded=encoded,
+            quality_summary_json=summary,
+            provenance=_provenance(),
+        )
+
+
+def test_verified_l2_model_conversion_requires_preset_context(
+    database_session: Session,
+) -> None:
+    from l2shock.db import AnalyticalRowCorruptionError
+    from l2shock.db.analytical_repository import PersistedL2HourlySeries
+    from l2shock.db.models import L2HourlySeries
+
+    repository = AnalyticalRepository(database_session)
+    preset = _preset()
+    repository.ensure_preset(preset)
+    _block_value, encoded, summary = _encoded_inputs()
+
+    repository.write_l2_hour(
+        preset=preset,
+        hour_utc=_hour(),
+        encoded=encoded,
+        quality_summary_json=summary,
+        provenance=_provenance(),
+    )
+
+    model = database_session.get(
+        L2HourlySeries,
+        ("BTC", _hour(), preset.preset_hash),
+    )
+    assert model is not None
+
+    with pytest.raises(AnalyticalRowCorruptionError, match="verification"):
+        PersistedL2HourlySeries.from_model(
+            model,
+            verify_codec=True,
+        )
+
+    verified = PersistedL2HourlySeries.from_model(
+        model,
+        verify_codec=True,
+        preset=preset,
+    )
+    assert verified.encoded == encoded

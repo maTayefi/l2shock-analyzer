@@ -167,8 +167,9 @@ class SQLAlchemyFetchPersistence:
     ) -> None:
         def _write() -> None:
             with session_scope() as session:
-                self._repository(session).record_missing(
+                self._repository(session).record_fetch_failure(
                     spec,
+                    target="missing",
                     message=message,
                 )
 
@@ -182,8 +183,9 @@ class SQLAlchemyFetchPersistence:
     ) -> None:
         def _write() -> None:
             with session_scope() as session:
-                self._repository(session).record_error(
+                self._repository(session).record_fetch_failure(
                     spec,
+                    target="error",
                     message=message,
                 )
 

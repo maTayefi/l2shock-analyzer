@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 from collections.abc import Mapping, Sequence
 
 from sqlalchemy import Select, select
@@ -28,6 +28,9 @@ from l2shock.db.checkpoint_reference_locks import (
 )
 from l2shock.db.models import DataPreset, L2HourlySeries
 from l2shock.timeutils import require_utc_hour
+
+if TYPE_CHECKING:
+    from l2shock.presets import LiquidityDataPreset
 
 L2_PROVENANCE_SCHEMA: Final[str] = "l2shock.l2_hourly_series_provenance"
 L2_PROVENANCE_SCHEMA_VERSION: Final[int] = 1
@@ -424,6 +427,45 @@ class L2HourlyProvenance:
                 "source for the persisted analytical hour"
             )
 
+    def validate_for_preset(
+        self,
+        *,
+        preset: LiquidityDataPreset,
+        hour_utc: datetime,
+    ) -> None:
+        """Bind every replay source to one materialized component market."""
+        from l2shock.presets import LiquidityDataPreset
+
+        if not isinstance(preset, LiquidityDataPreset):
+            raise TypeError("preset must be LiquidityDataPreset")
+
+        self.validate_for_hour(hour_utc)
+
+        if len(preset.eligible_markets) != 1:
+            raise ValueError(
+                "Persisted L2 hourly rows require exactly one component market; "
+                "aggregate presets do not own materialized L2 rows"
+            )
+
+        market = preset.eligible_markets[0]
+        expected_market = (
+            market.provider,
+            market.venue,
+            market.instrument,
+        )
+
+        for source in self.source_hours:
+            actual_market = (
+                source.provider,
+                source.venue,
+                source.instrument,
+            )
+
+            if actual_market != expected_market:
+                raise ValueError(
+                    "L2 provenance source market does not match " "the component preset"
+                )
+
     @classmethod
     def from_dict(
         cls,
@@ -701,6 +743,7 @@ class PersistedL2HourlySeries:
         model: L2HourlySeries,
         *,
         verify_codec: bool = True,
+        preset: LiquidityDataPreset | None = None,
     ) -> PersistedL2HourlySeries:
         from l2shock.liquidity import EncodedHourlyLiquidityBlocks
 
@@ -742,16 +785,34 @@ class PersistedL2HourlySeries:
 
         if verify_codec:
             try:
+                from l2shock.presets import LiquidityDataPreset
+
+                if not isinstance(preset, LiquidityDataPreset):
+                    raise ValueError(
+                        "Verified L2 model conversion requires its component preset"
+                    )
+
+                if (
+                    str(model.preset_hash) != preset.preset_hash
+                    or str(model.base) != preset.base
+                ):
+                    raise ValueError(
+                        "Stored L2 row identity does not match its verified preset"
+                    )
+
                 quality = _verified_l2_quality_summary(
                     dict(model.quality_summary_json),
                     encoded=encoded,
                 )
                 provenance = L2HourlyProvenance.from_dict(dict(model.provenance_json))
-                provenance.validate_for_hour(hour_utc)
+                provenance.validate_for_preset(
+                    preset=preset,
+                    hour_utc=hour_utc,
+                )
             except Exception as exc:
                 raise AnalyticalRowCorruptionError(
                     "Stored L2 hourly row failed codec, quality-summary, "
-                    "or provenance verification"
+                    "preset, or provenance verification"
                 ) from exc
         else:
             quality = dict(model.quality_summary_json)
@@ -1119,7 +1180,10 @@ class AnalyticalRepository:
             "hour_utc",
             hour_utc,
         )
-        provenance.validate_for_hour(normalized_hour)
+        provenance.validate_for_preset(
+            preset=preset,
+            hour_utc=normalized_hour,
+        )
 
         acquire_checkpoint_reference_transaction_locks(
             self._session,
@@ -1225,9 +1289,48 @@ class AnalyticalRepository:
             series=PersistedL2HourlySeries.from_model(
                 model,
                 verify_codec=True,
+                preset=preset,
             ),
             inserted=inserted_hash is not None,
         )
+
+    def _preset_for_verified_l2_read(
+        self,
+        *,
+        base: str,
+        preset_hash: str,
+    ) -> LiquidityDataPreset:
+        """Verify the stored immutable preset before binding an L2 row."""
+        from l2shock.presets import liquidity_data_preset_from_canonical_dict
+
+        model = self._session.scalar(
+            select(DataPreset).where(
+                DataPreset.preset_hash == preset_hash,
+            )
+        )
+
+        if model is None:
+            raise AnalyticalRowCorruptionError(
+                "Stored L2 hourly row references a missing data preset"
+            )
+
+        try:
+            preset = liquidity_data_preset_from_canonical_dict(dict(model.config_json))
+            _assert_preset_identity_matches(model, preset)
+
+            if preset.preset_hash != preset_hash or preset.base != base:
+                raise ValueError(
+                    "Stored L2 preset does not match the requested row identity"
+                )
+
+            if len(preset.eligible_markets) != 1:
+                raise ValueError("Aggregate presets do not own materialized L2 rows")
+        except Exception as exc:
+            raise AnalyticalRowCorruptionError(
+                "Stored L2 data preset failed immutable identity verification"
+            ) from exc
+
+        return preset
 
     def get_l2_hour(
         self,
@@ -1266,9 +1369,19 @@ class AnalyticalRepository:
         if model is None:
             return None
 
+        preset = (
+            self._preset_for_verified_l2_read(
+                base=normalized_base,
+                preset_hash=normalized_hash,
+            )
+            if verify_codec
+            else None
+        )
+
         return PersistedL2HourlySeries.from_model(
             model,
             verify_codec=verify_codec,
+            preset=preset,
         )
 
     def list_l2_hours(
@@ -1321,10 +1434,20 @@ class AnalyticalRepository:
             .all()
         )
 
+        preset = (
+            self._preset_for_verified_l2_read(
+                base=normalized_base,
+                preset_hash=normalized_hash,
+            )
+            if verify_codec and models
+            else None
+        )
+
         return tuple(
             PersistedL2HourlySeries.from_model(
                 model,
                 verify_codec=verify_codec,
+                preset=preset,
             )
             for model in models
         )

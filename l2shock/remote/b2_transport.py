@@ -396,12 +396,10 @@ class B2ObjectStore:
                 and code in {"404", "NotFound", "NoSuchKey", "NoSuchVersion"}
             ):
                 return None
-            # B2/S3 returns 403 AccessDenied instead of 404 NoSuchKey when
-            # the key lacks s3:ListBucket permission and the object is absent.
-            # Treat this as "missing" for artifact lookups.
-            if allow_missing and status == 403 and code in {"403", "AccessDenied"}:
-                return None
-
+            # A 403 may hide an absent key when listing permission is missing,
+            # but it may also deny access to an existing object. It is not
+            # evidence of absence. Fail closed through the sanitized error
+            # boundary below rather than reporting missing content.
             safe_status = (
                 str(status)
                 if isinstance(status, int) and not isinstance(status, bool)

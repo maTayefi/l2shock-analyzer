@@ -306,6 +306,47 @@ class AcquisitionRepository:
         self._session.flush()
         return row
 
+    def record_fetch_failure(
+        self,
+        spec: SourceFileSpec,
+        *,
+        target: SourceHourStatus | str,
+        message: object,
+    ) -> SourceHour:
+        """Record a fetch failure only while acquisition is still in progress.
+
+        Admission-time state is not authority to withdraw newer downloaded,
+        processing, or processed ownership. Explicit recovery continues to use
+        the general record_error()/transition boundaries.
+        """
+        target_status = SourceHourStatus(target)
+
+        if target_status not in {
+            SourceHourStatus.MISSING,
+            SourceHourStatus.ERROR,
+        }:
+            raise ValueError("Fetch failure target must be missing or error")
+
+        acquire_source_hour_transaction_lock(self._session, spec)
+        row = self.upsert_discovered(spec)
+
+        if row.status != SourceHourStatus.DOWNLOADING.value:
+            return row
+
+        validate_source_hour_transition(
+            row.status,
+            target_status,
+        )
+
+        row.status = target_status.value
+        row.error_text = bounded_diagnostic_text(
+            message,
+            secrets=self._diagnostic_secrets,
+        )
+
+        self._session.flush()
+        return row
+
     def record_missing(
         self,
         spec: SourceFileSpec,

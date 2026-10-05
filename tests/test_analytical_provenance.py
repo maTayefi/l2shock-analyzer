@@ -221,3 +221,113 @@ def test_l2_provenance_decoder_rejects_unexpected_fields() -> None:
         match="fields do not match",
     ):
         L2HourlyProvenance.from_dict(payload)
+
+
+def test_l2_provenance_requires_exact_component_market() -> None:
+    from decimal import Decimal
+
+    from l2shock.presets import build_binance_futures_data_preset
+
+    preset = build_binance_futures_data_preset(
+        base="BTC",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+
+    wrong_markets = (
+        ("cryptohftdata", "binance_futures", "ETHUSDT"),
+        ("cryptohftdata", "okx_futures", "BTC-USDT-SWAP"),
+        ("another_provider", "binance_futures", "BTCUSDT"),
+    )
+
+    for provider, venue, instrument in wrong_markets:
+        provenance = L2HourlyProvenance(
+            source_hours=(
+                SourceHourReference(
+                    provider=provider,
+                    venue=venue,
+                    instrument=instrument,
+                    hour_utc=_hour(),
+                    content_sha256="a" * 64,
+                ),
+            ),
+        )
+
+        with pytest.raises(ValueError, match="component preset"):
+            provenance.validate_for_preset(
+                preset=preset,
+                hour_utc=_hour(),
+            )
+
+
+def test_l2_provenance_checks_predecessor_market_too() -> None:
+    from decimal import Decimal
+
+    from l2shock.presets import build_binance_futures_data_preset
+
+    preset = build_binance_futures_data_preset(
+        base="BTC",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+    provenance = L2HourlyProvenance(
+        source_hours=(
+            _source(
+                venue="okx_futures",
+                instrument="BTC-USDT-SWAP",
+                hour=_hour(11),
+            ),
+            _source(
+                hour=_hour(12),
+                digest="b" * 64,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="component preset"):
+        provenance.validate_for_preset(
+            preset=preset,
+            hour_utc=_hour(12),
+        )
+
+
+def test_l2_component_provenance_allows_same_market_replay_history() -> None:
+    from decimal import Decimal
+
+    from l2shock.presets import build_binance_futures_data_preset
+
+    preset = build_binance_futures_data_preset(
+        base="BTC",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+    provenance = L2HourlyProvenance(
+        source_hours=(
+            _source(hour=_hour(11)),
+            _source(hour=_hour(12), digest="b" * 64),
+        ),
+    )
+
+    provenance.validate_for_preset(
+        preset=preset,
+        hour_utc=_hour(12),
+    )
+
+
+def test_l2_provenance_cannot_authorize_materialized_aggregate_row() -> None:
+    from decimal import Decimal
+
+    from l2shock.presets import build_binance_okx_futures_data_preset
+
+    aggregate = build_binance_okx_futures_data_preset(
+        base="BTC",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+    provenance = L2HourlyProvenance(source_hours=(_source(),))
+
+    with pytest.raises(ValueError, match="exactly one component market"):
+        provenance.validate_for_preset(
+            preset=aggregate,
+            hour_utc=_hour(),
+        )

@@ -613,3 +613,55 @@ def test_transport_does_not_echo_arbitrary_server_error_codes() -> None:
     assert "error category Unclassified" in message
     assert private_code not in message
     assert "private-server-message" not in message
+
+
+@pytest.mark.parametrize("error_code", ("403", "AccessDenied"))
+@pytest.mark.parametrize("method", ("head", "get_bytes", "get_file"))
+def test_b2_permission_denial_never_becomes_object_absence(
+    tmp_path: Path,
+    error_code: str,
+    method: str,
+) -> None:
+    client = _FakeClient()
+    sdk_operation = "head_object" if method == "head" else "get_object"
+    sdk_name = "HeadObject" if method == "head" else "GetObject"
+
+    client.queue(
+        sdk_operation,
+        _client_error(error_code, 403, sdk_name),
+    )
+
+    root = tmp_path / "cache"
+    destination = root / "artifact.parquet"
+
+    with B2ObjectStore(_settings(), client=client) as store:
+        with pytest.raises(B2TransportError) as captured:
+            if method == "head":
+                store.head(
+                    "processed/test/object",
+                    version_id="pinned-version",
+                )
+            elif method == "get_bytes":
+                store.get_bytes(
+                    "processed/test/object",
+                    maximum_bytes=1024,
+                    version_id="pinned-version",
+                )
+            else:
+                store.get_file(
+                    "processed/test/object",
+                    destination,
+                    owned_root=root,
+                    maximum_bytes=1024,
+                    version_id="pinned-version",
+                )
+
+    assert "403" in str(captured.value)
+    assert "private-server-message" not in str(captured.value)
+    assert "test-application-key" not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__suppress_context__ is True
+    assert not destination.exists()
+    assert not list(root.rglob("*.part"))
+    assert len(client.calls) == 1
+    assert client.closed is True

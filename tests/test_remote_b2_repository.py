@@ -524,3 +524,35 @@ def test_completion_reference_rejects_wrong_descriptor_size() -> None:
             publication=result.reference.publication,
             descriptor=malformed,
         )
+
+
+def test_b2_publication_does_not_write_after_access_denied_lookup() -> None:
+    from l2shock.remote.b2_transport import B2TransportError
+
+    class DeniedStore(MemoryStore):
+        def get_bytes(
+            self,
+            key,
+            *,
+            maximum_bytes,
+            version_id=None,
+            expected_sha256=None,
+        ):
+            del key, maximum_bytes, version_id, expected_sha256
+            raise B2TransportError(
+                "B2 get_object failed with HTTP status "
+                "403; error category AccessDenied"
+            )
+
+    store = DeniedStore()
+    repository = B2ProcessedArtifactRepository(store)
+
+    with pytest.raises(B2TransportError, match="AccessDenied"):
+        repository.publish_artifact(
+            _artifact(),
+            single_writer_confirmed=True,
+        )
+
+    assert store.writes == []
+    assert store.current == {}
+    assert store.versions == {}

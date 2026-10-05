@@ -711,3 +711,108 @@ def test_processing_repository_accepts_canonical_regular_file(
     assert archive.spec == spec
     assert archive.local_path == canonical
     assert archive.content_sha256 == row.content_sha256
+
+
+@pytest.mark.parametrize("target", ("missing", "error"))
+@pytest.mark.parametrize(
+    "newer_status",
+    ("downloaded", "processing", "processed"),
+)
+def test_late_fetch_failure_preserves_newer_successful_source_state(
+    database_session: Session,
+    tmp_path: Path,
+    target: str,
+    newer_status: str,
+) -> None:
+    repository = AcquisitionRepository(database_session)
+    spec = _spec(day=20, hour=12)
+
+    # Two independent fetch admissions precede the newer successful outcome.
+    repository.mark_downloading(spec)
+    repository.mark_downloading(spec)
+
+    row = repository.record_artifact(_artifact(tmp_path, spec))
+    row.status = newer_status
+    row.error_text = None
+    row.quality_state = "VALID"
+    row.quality_json = {
+        "analytical_content_sha256": "b" * 64,
+        "output_checkpoint_content_sha256": "c" * 64,
+        "test_newer_owner": True,
+    }
+    row.processed_at = _hour(20, 13) if newer_status == "processed" else None
+    database_session.flush()
+
+    before = {
+        "status": row.status,
+        "local_path": row.local_path,
+        "file_size_bytes": row.file_size_bytes,
+        "content_sha256": row.content_sha256,
+        "downloaded_at": row.downloaded_at,
+        "processed_at": row.processed_at,
+        "quality_state": row.quality_state,
+        "quality_json": dict(row.quality_json),
+        "error_text": row.error_text,
+    }
+
+    returned = repository.record_fetch_failure(
+        spec,
+        target=target,
+        message="Obsolete fetch failed after newer completion",
+    )
+    database_session.refresh(row)
+
+    after = {
+        "status": row.status,
+        "local_path": row.local_path,
+        "file_size_bytes": row.file_size_bytes,
+        "content_sha256": row.content_sha256,
+        "downloaded_at": row.downloaded_at,
+        "processed_at": row.processed_at,
+        "quality_state": row.quality_state,
+        "quality_json": dict(row.quality_json),
+        "error_text": row.error_text,
+    }
+
+    assert returned.id == row.id
+    assert after == before
+
+
+@pytest.mark.parametrize("target", ("missing", "error"))
+def test_current_downloading_source_accepts_fetch_failure(
+    database_session: Session,
+    target: str,
+) -> None:
+    repository = AcquisitionRepository(database_session)
+    spec = _spec(day=21, hour=12)
+    repository.mark_downloading(spec)
+
+    row = repository.record_fetch_failure(
+        spec,
+        target=target,
+        message="Application-owned fetch failure",
+    )
+
+    assert row.status == target
+    assert row.error_text == "Application-owned fetch failure"
+
+
+def test_explicit_recovery_can_still_mark_processed_source_error(
+    database_session: Session,
+    tmp_path: Path,
+) -> None:
+    repository = AcquisitionRepository(database_session)
+    spec = _spec(day=22, hour=12)
+    row = repository.record_artifact(_artifact(tmp_path, spec))
+
+    row.status = "processed"
+    row.processed_at = _hour(22, 13)
+    database_session.flush()
+
+    recovered = repository.record_error(
+        spec,
+        message="Explicitly authorized corruption recovery",
+    )
+
+    assert recovered.status == "error"
+    assert recovered.error_text == "Explicitly authorized corruption recovery"
