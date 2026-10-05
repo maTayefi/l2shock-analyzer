@@ -202,3 +202,110 @@ def test_wrong_base_is_not_recognized_as_editor_profile() -> None:
         )
         is None
     )
+
+
+def test_preset_management_fraction_accepts_numeric_zero() -> None:
+    from decimal import Decimal
+
+    from l2shock.presets.management import _fraction
+
+    for value in (0, 0.0, Decimal("0"), Decimal("0.000"), "0", " 0 "):
+        assert _fraction("Depth lower fraction", value) == Decimal("0")
+
+
+def test_preset_management_fraction_still_rejects_missing_bool_and_nonfinite() -> None:
+    import pytest
+
+    from l2shock.presets.management import PresetManagementError, _fraction
+
+    for value in (None, "", " ", False, True, "NaN", "Infinity", "-Infinity"):
+        with pytest.raises(PresetManagementError):
+            _fraction("Depth lower fraction", value)
+
+
+def test_preset_management_numeric_zero_matches_textual_preset_identity() -> None:
+    from decimal import Decimal
+
+    from l2shock.presets.management import _preset
+
+    textual = _preset(
+        base="BTC",
+        lower_fraction="0",
+        upper_fraction="0.01",
+    )
+
+    for lower in (0, Decimal("0")):
+        numerical = _preset(
+            base="BTC",
+            lower_fraction=lower,
+            upper_fraction=Decimal("0.01"),
+        )
+        assert numerical.to_canonical_dict() == textual.to_canonical_dict()
+        assert numerical.preset_hash == textual.preset_hash
+
+    zero_width = _preset(
+        base="BTC",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0"),
+    )
+    assert zero_width.band.lower_fraction == Decimal("0")
+    assert zero_width.band.upper_fraction == Decimal("0")
+
+
+def test_preset_editor_recognizes_all_current_default_profiles() -> None:
+    from decimal import Decimal
+
+    from l2shock.presets.management import (
+        PresetMarketProfile,
+        _market_profile_from_config,
+        _preset,
+    )
+
+    for base in ("BTC", "ETH"):
+        for profile in PresetMarketProfile:
+            preset = _preset(
+                base=base,
+                lower_fraction=Decimal("0"),
+                upper_fraction=Decimal("0.01"),
+                market_profile=profile,
+            )
+
+            assert (
+                _market_profile_from_config(
+                    preset.to_canonical_dict(),
+                    base=base,
+                )
+                is profile
+            )
+
+
+def test_preset_editor_rejects_unsupported_algorithm_semantics() -> None:
+    from dataclasses import replace
+    from decimal import Decimal
+
+    from l2shock.presets.management import (
+        PresetMarketProfile,
+        _market_profile_from_config,
+        _preset,
+    )
+
+    for profile in PresetMarketProfile:
+        ordinary = _preset(
+            base="BTC",
+            lower_fraction=Decimal("0"),
+            upper_fraction=Decimal("0.01"),
+            market_profile=profile,
+        )
+        unsupported = replace(
+            ordinary,
+            algorithm_version="l2-liquidity-v2",
+        )
+
+        assert unsupported.preset_hash != ordinary.preset_hash
+        assert (
+            _market_profile_from_config(
+                unsupported.to_canonical_dict(),
+                base="BTC",
+            )
+            is None
+        )

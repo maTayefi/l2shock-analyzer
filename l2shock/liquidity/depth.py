@@ -215,6 +215,12 @@ def _decimal_coefficient_and_exponent(
     if not isinstance(value, Decimal) or not value.is_finite():
         raise DepthLiquidityError(f"{field_name} must be a finite Decimal")
 
+    # Zero has no numerically meaningful scale. Preserving its exponent
+    # here can expand an ordinary operation such as 1 - 0E-5000 into a
+    # thousands-of-digits intermediate coefficient.
+    if value.is_zero():
+        return 0, 0
+
     parts = value.as_tuple()
     coefficient = 0
 
@@ -248,10 +254,14 @@ def _decimal_from_coefficient(
             )
         )
 
+    # Decimal(int) is exact, independent of ambient precision, and does
+    # not require Python's bounded decimal integer-to-string conversion.
+    digits = Decimal(abs(coefficient)).as_tuple().digits
+
     return Decimal(
         (
             int(coefficient < 0),
-            tuple(int(character) for character in str(abs(coefficient))),
+            digits,
             exponent,
         )
     )

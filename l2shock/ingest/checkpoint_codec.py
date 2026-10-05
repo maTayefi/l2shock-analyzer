@@ -166,31 +166,40 @@ def _canonical_decimal_text(
     if not value.is_finite() or value <= 0:
         raise CheckpointCodecError(f"{field_name} must be finite and positive")
 
-    try:
-        text = format(value, "f")
-    except (ValueError, OverflowError) as exc:
-        raise CheckpointCodecError(
-            f"{field_name} cannot be represented canonically"
-        ) from exc
+    parts = value.as_tuple()
+    exponent = int(parts.exponent)
+    stop = len(parts.digits)
 
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
+    # Canonicalize insignificant coefficient zeros without Decimal-context
+    # rounding and without expanding exponent-implied zeros.
+    while stop > 1 and parts.digits[stop - 1] == 0:
+        stop -= 1
+        exponent += 1
 
-    if text in {"", "-0", "+0"}:
-        text = "0"
+    point = stop + exponent
 
-    if len(text) > MAX_DECIMAL_TEXT_LENGTH:
+    if exponent >= 0:
+        text_length = point
+    elif point > 0:
+        text_length = stop + 1
+    else:
+        text_length = 2 - point + stop
+
+    if text_length > MAX_DECIMAL_TEXT_LENGTH:
         raise CheckpointLimitError(
             f"{field_name} exceeds the maximum canonical decimal "
             f"length of {MAX_DECIMAL_TEXT_LENGTH}"
         )
 
-    if "e" in text.lower():
-        raise CheckpointCodecError(
-            f"{field_name} canonical text must not use exponent notation"
-        )
+    coefficient = "".join(str(parts.digits[index]) for index in range(stop))
 
-    return text
+    if exponent >= 0:
+        return coefficient + "0" * exponent
+
+    if point > 0:
+        return coefficient[:point] + "." + coefficient[point:]
+
+    return "0." + "0" * (-point) + coefficient
 
 
 def _parse_canonical_decimal(
@@ -203,6 +212,9 @@ def _parse_canonical_decimal(
 
     if not value or len(value) > MAX_DECIMAL_TEXT_LENGTH:
         raise CheckpointLimitError(f"{field_name} has an invalid encoded length")
+
+    if "e" in value.lower():
+        raise CheckpointCodecError(f"{field_name} is not in canonical decimal form")
 
     try:
         parsed = Decimal(value)

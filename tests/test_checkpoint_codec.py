@@ -496,3 +496,70 @@ def test_decoded_checkpoint_keeps_immediate_hour_ownership() -> None:
         match="immediately following",
     ):
         decoded.validate_for_source(nonadjacent)
+
+
+def test_checkpoint_decimal_preflight_preserves_canonical_values() -> None:
+    from decimal import Context, Decimal, localcontext
+
+    import l2shock.ingest.checkpoint_codec as codec
+
+    cases = (
+        ("1", "1"),
+        ("1.2300", "1.23"),
+        ("1.2300E+3", "1230"),
+        ("100.00", "100"),
+        ("0.0012300", "0.00123"),
+        ("1E-126", "0." + "0" * 125 + "1"),
+        ("1E+127", "1" + "0" * 127),
+    )
+
+    with localcontext(Context(prec=2)):
+        for raw, expected in cases:
+            actual = codec._canonical_decimal_text(
+                Decimal(raw),
+                field_name="price",
+            )
+            assert actual == expected
+            assert codec._parse_canonical_decimal(
+                actual,
+                field_name="price",
+            ) == Decimal(raw)
+
+
+def test_checkpoint_decimal_preflight_rejects_large_expansion() -> None:
+    from decimal import Decimal
+
+    import pytest
+
+    import l2shock.ingest.checkpoint_codec as codec
+
+    for raw in ("1E+10000", "1E-10000", "1E+128", "1E-127"):
+        with pytest.raises(codec.CheckpointLimitError):
+            codec._canonical_decimal_text(
+                Decimal(raw),
+                field_name="price",
+            )
+
+
+def test_checkpoint_decimal_decoder_rejects_exponents_before_canonicalizing(
+    monkeypatch,
+) -> None:
+    import pytest
+
+    import l2shock.ingest.checkpoint_codec as codec
+
+    def forbidden_canonicalization(*_args, **_kwargs):
+        raise AssertionError("Exponent-form input reached canonicalization")
+
+    monkeypatch.setattr(
+        codec,
+        "_canonical_decimal_text",
+        forbidden_canonicalization,
+    )
+
+    for raw in ("1E+10000", "1e-10000"):
+        with pytest.raises(codec.CheckpointCodecError, match="canonical decimal"):
+            codec._parse_canonical_decimal(
+                raw,
+                field_name="price",
+            )

@@ -621,3 +621,79 @@ def test_exact_subtraction_ignores_low_ambient_decimal_precision() -> None:
         )
 
     assert observed == expected
+
+
+def test_depth_intervals_ignore_insignificant_zero_scale() -> None:
+    from decimal import Context, Decimal, localcontext
+
+    from l2shock.liquidity.depth import DepthBand, depth_price_intervals
+
+    ordinary = depth_price_intervals(
+        best_bid=Decimal("100"),
+        best_ask=Decimal("101"),
+        band=DepthBand(
+            lower_fraction=Decimal("0"),
+            upper_fraction=Decimal("0.01"),
+        ),
+    )
+
+    with localcontext(Context(prec=2)):
+        for zero in (
+            Decimal("0E-5000"),
+            Decimal("-0E-5000"),
+            Decimal("0E+5000"),
+        ):
+            actual = depth_price_intervals(
+                best_bid=Decimal("100"),
+                best_ask=Decimal("101"),
+                band=DepthBand(
+                    lower_fraction=zero,
+                    upper_fraction=Decimal("0.01"),
+                ),
+            )
+            assert actual == ordinary
+
+    assert ordinary.bid_lower == Decimal("99")
+    assert ordinary.bid_upper == Decimal("100")
+    assert ordinary.ask_lower == Decimal("101")
+    assert ordinary.ask_upper == Decimal("102.01")
+
+
+def test_depth_integer_reconstruction_does_not_use_decimal_text_conversion() -> None:
+    from decimal import Context, Decimal, localcontext
+
+    from l2shock.liquidity.depth import _decimal_from_coefficient
+
+    with localcontext(Context(prec=2)):
+        assert _decimal_from_coefficient(10**5000, -5000) == Decimal("1")
+        assert _decimal_from_coefficient(-(10**5000), -5000) == Decimal("-1")
+
+
+def test_scaled_zero_depth_has_same_preset_identity_and_execution() -> None:
+    from decimal import Decimal
+
+    from l2shock.liquidity.depth import depth_price_intervals
+    from l2shock.presets import build_binance_futures_data_preset
+
+    ordinary = build_binance_futures_data_preset(
+        base="BTC",
+        lower_fraction=Decimal("0"),
+        upper_fraction=Decimal("0.01"),
+    )
+    scaled = build_binance_futures_data_preset(
+        base="BTC",
+        lower_fraction=Decimal("0E-5000"),
+        upper_fraction=Decimal("0.01"),
+    )
+
+    assert scaled.preset_hash == ordinary.preset_hash
+
+    assert depth_price_intervals(
+        best_bid=Decimal("100"),
+        best_ask=Decimal("101"),
+        band=scaled.band,
+    ) == depth_price_intervals(
+        best_bid=Decimal("100"),
+        best_ask=Decimal("101"),
+        band=ordinary.band,
+    )

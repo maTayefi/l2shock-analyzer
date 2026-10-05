@@ -388,7 +388,6 @@ class B2ObjectStore:
             response = exc.response
             status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
             code = response.get("Error", {}).get("Code", "")
-
             # Missing buckets and permission failures must not be treated as
             # evidence that a particular artifact is absent.
             if (
@@ -396,6 +395,11 @@ class B2ObjectStore:
                 and status == 404
                 and code in {"404", "NotFound", "NoSuchKey", "NoSuchVersion"}
             ):
+                return None
+            # B2/S3 returns 403 AccessDenied instead of 404 NoSuchKey when
+            # the key lacks s3:ListBucket permission and the object is absent.
+            # Treat this as "missing" for artifact lookups.
+            if allow_missing and status == 403 and code in {"403", "AccessDenied"}:
                 return None
 
             safe_status = (

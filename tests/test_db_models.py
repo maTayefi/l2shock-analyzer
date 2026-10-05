@@ -65,3 +65,90 @@ def test_price_storage_is_real_trade_ohlc_storage() -> None:
     assert "source_venue" in columns
     assert "source_symbol" in columns
     assert "midpoint_block" not in columns
+
+
+def test_engine_timezone_listener_uses_temporary_autocommit(
+    monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import pytest
+
+    import l2shock.db.engine as engine_module
+
+    listeners = []
+    fake_engine = object()
+
+    settings = SimpleNamespace(
+        database=SimpleNamespace(
+            sqlalchemy_url="postgresql+psycopg://unused",
+            pool_size=1,
+            max_overflow=0,
+            pool_timeout_seconds=1,
+        )
+    )
+
+    def register_listener(target, event_name):
+        assert target is fake_engine
+        assert event_name == "connect"
+
+        def register(function):
+            listeners.append(function)
+            return function
+
+        return register
+
+    monkeypatch.setattr(engine_module, "_engine", None)
+    monkeypatch.setattr(engine_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        engine_module,
+        "create_engine",
+        lambda *_args, **_kwargs: fake_engine,
+    )
+    monkeypatch.setattr(
+        engine_module.event,
+        "listens_for",
+        register_listener,
+    )
+
+    assert engine_module.get_engine() is fake_engine
+    assert len(listeners) == 1
+
+    class Connection:
+        def __init__(self, initial_autocommit, fail):
+            self.autocommit = initial_autocommit
+            self.fail = fail
+            self.statements = []
+
+        def cursor(self):
+            return Cursor(self)
+
+    class Cursor:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, statement):
+            assert self.connection.autocommit is True
+            self.connection.statements.append(statement)
+
+            if self.connection.fail:
+                raise RuntimeError("simulated timezone initialization failure")
+
+    for initial_autocommit in (False, True):
+        for fail in (False, True):
+            connection = Connection(initial_autocommit, fail)
+
+            if fail:
+                with pytest.raises(RuntimeError, match="timezone initialization"):
+                    listeners[0](connection, None)
+            else:
+                listeners[0](connection, None)
+
+            assert connection.autocommit is initial_autocommit
+            assert connection.statements == ["SET TIME ZONE 'UTC'"]

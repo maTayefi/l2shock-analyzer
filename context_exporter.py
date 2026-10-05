@@ -72,7 +72,7 @@ DEFAULT_SEGMENT_COUNT = 0
 DEFAULT_SEGMENT_TARGET_BYTES = 1400 * 1024
 
 # Some upload platforms expose only a limited amount of each uploaded file.
-DEFAULT_SMALL_SEGMENT_TARGET_BYTES = 400 * 1024
+DEFAULT_SMALL_SEGMENT_TARGET_BYTES = 300 * 1024
 
 # Reserve space for generated headers, path labels, delimiters, and verification
 # markers when calculating the source payload available in a physical segment.
@@ -2643,13 +2643,13 @@ def main() -> int:
         default=None,
         help=(
             "Maximum physical TXT size target. Defaults to 1400 KiB, or "
-            "400 KiB with --small-chunks."
+            "300 KiB with --small-chunks."
         ),
     )
     ap.add_argument(
         "--small-chunks",
         action="store_true",
-        help="Use a 400 KiB physical segment target.",
+        help="Use a 300 KiB physical segment target.",
     )
     ap.add_argument(
         "--segment-prefix",
@@ -2736,6 +2736,7 @@ def main() -> int:
             ".vscodecounter",
             "logs",
             "exports",
+            "data",
             "backups",
             "ai_chunks",
         ],

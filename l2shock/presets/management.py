@@ -177,10 +177,13 @@ def _market_profile_from_config(
         ),
     }
 
-    actual_signature = _market_signature(preset)
+    actual_config = preset.to_canonical_dict()
 
     for profile, expected_preset in expected.items():
-        if actual_signature == _market_signature(expected_preset):
+        # An editor-supported preset must be reproducible in full.
+        # Matching only provider/venue/instrument would silently replace
+        # unsupported algorithm or market semantics with builder defaults.
+        if actual_config == expected_preset.to_canonical_dict():
             return profile
 
     return None
@@ -190,7 +193,7 @@ def _fraction(
     field_name: str,
     value: object,
 ) -> Decimal:
-    text = str(value or "").strip()
+    text = "" if value is None else str(value).strip()
 
     if not text:
         raise PresetManagementError(f"{field_name} is required")

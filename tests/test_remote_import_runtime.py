@@ -551,3 +551,164 @@ async def test_preworker_stop_does_not_resolve_remote_revision(
         assert state.tracked_tasks == set()
     finally:
         reset_state_for_tests()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ("revision", "download"))
+async def test_remote_import_runtime_logs_do_not_render_private_exception_chain(
+    caplog,
+    failure_stage,
+) -> None:
+    import asyncio
+    import logging
+    from datetime import datetime, timedelta, timezone
+    from decimal import Decimal
+
+    from l2shock.ui.remote_import_runtime import RemoteImportRuntime
+    from l2shock.ui.state import reset_state_for_tests
+
+    reset_state_for_tests()
+
+    private_message = "runtime-private-message-must-not-escape"
+    private_cause = "runtime-private-cause-must-not-escape"
+
+    failure = RuntimeError(private_message)
+    failure.__cause__ = ValueError(private_cause)
+
+    class Repository:
+        def current_revision(self):
+            if failure_stage == "revision":
+                raise failure
+            return "a" * 40
+
+        def download_artifact(self, key, *, revision=None):
+            del key, revision
+            raise failure
+
+    def forbidden_importer(_downloaded):
+        raise AssertionError("Importer must not run after download failure")
+
+    runtime = RemoteImportRuntime(
+        repository=Repository(),
+        artifact_importer=forbidden_importer,
+    )
+    start = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger="l2shock.ui.remote_import_runtime",
+    ):
+        task = runtime.start(
+            requested_start_utc=start,
+            requested_end_utc=start + timedelta(hours=1),
+            bases=("BTC",),
+            lower_depth_fraction=Decimal("0"),
+            upper_depth_fraction=Decimal("0.01"),
+        )
+
+        if failure_stage == "revision":
+            with pytest.raises(RuntimeError) as caught:
+                await task
+            assert caught.value is failure
+        else:
+            result = await task
+            assert result.failed_count == result.artifacts_selected
+            assert result.imported_count == 0
+
+        await asyncio.sleep(0)
+
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "l2shock.ui.remote_import_runtime"
+        and "Remote import" in record.getMessage()
+    ]
+
+    assert records
+    assert all(record.exc_info is None for record in records)
+    assert any("RuntimeError" in record.getMessage() for record in records)
+    assert private_message not in caplog.text
+    assert private_cause not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_remote_import_cancelled_worker_logs_failure_once_without_details(
+    caplog,
+) -> None:
+    import asyncio
+    import logging
+    import threading
+
+    from l2shock.ui.remote_import_runtime import RemoteImportRuntime
+
+    class Repository:
+        def current_revision(self):
+            return "a" * 40
+
+        def download_artifact(self, key, *, revision=None):
+            del key, revision
+            return None
+
+    runtime = RemoteImportRuntime(repository=Repository())
+    entered = threading.Event()
+    release = threading.Event()
+    exited = threading.Event()
+    cancellation_event = threading.Event()
+
+    private_message = "cancelled-worker-private-message-must-not-escape"
+    private_cause = "cancelled-worker-private-cause-must-not-escape"
+
+    def work():
+        entered.set()
+        try:
+            if not release.wait(timeout=5.0):
+                raise TimeoutError("Test did not release the worker")
+
+            try:
+                raise ValueError(private_cause)
+            except ValueError as cause:
+                raise RuntimeError(private_message) from cause
+        finally:
+            exited.set()
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger="l2shock.ui.remote_import_runtime",
+    ):
+        task = asyncio.create_task(
+            runtime._run_thread_boundary(
+                work,
+                task_name="test-private-remote-import-worker",
+                cancellation_event=cancellation_event,
+            )
+        )
+
+        try:
+            assert await asyncio.to_thread(entered.wait, 2.0)
+
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+
+            assert cancellation_event.is_set()
+            assert not exited.is_set()
+            assert not task.done()
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=3.0)
+
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "l2shock.ui.remote_import_runtime"
+        and "failed while responding" in record.getMessage()
+    ]
+
+    assert exited.is_set()
+    assert len(records) == 1
+    assert records[0].exc_info is None
+    assert "RuntimeError" in records[0].getMessage()
+    assert private_message not in caplog.text
+    assert private_cause not in caplog.text

@@ -314,3 +314,119 @@ def test_move_failure_rolls_back_and_reports_source_for_retry(
     assert setup.counters.commits == 0
     assert setup.counters.rollbacks == 1
     assert failures == [setup.spec.remote_path]
+
+
+def test_quarantine_restore_never_overwrites_competing_publication(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import l2shock.ui.automatic_fetch_runtime as runtime
+
+    quarantined = tmp_path / "quarantine" / "corrupt.parquet"
+    canonical = tmp_path / "raw" / "source.parquet"
+
+    quarantined.parent.mkdir()
+    canonical.parent.mkdir()
+    quarantined.write_bytes(b"corrupt-quarantined-bytes")
+
+    sidecar = quarantined.with_suffix(quarantined.suffix + ".quarantine.json")
+    sidecar.write_text("{}", encoding="utf-8")
+
+    real_link = runtime.os.link
+
+    def competing_link(source, destination, *args, **kwargs):
+        assert source == quarantined
+        assert destination == canonical
+
+        # Simulate another downloader publishing after restoration's
+        # existence check but before its atomic publication attempt.
+        canonical.write_bytes(b"new-verified-publication")
+        return real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(runtime.os, "link", competing_link)
+
+    assert runtime._restore_quarantined_archive(quarantined, canonical) is False
+
+    assert canonical.read_bytes() == b"new-verified-publication"
+    assert quarantined.read_bytes() == b"corrupt-quarantined-bytes"
+    assert sidecar.is_file()
+
+
+def test_quarantine_restore_handles_cross_filesystem_without_overwrite(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import errno
+
+    import l2shock.ui.automatic_fetch_runtime as runtime
+
+    quarantined = tmp_path / "quarantine" / "source.parquet"
+    canonical = tmp_path / "raw" / "source.parquet"
+
+    quarantined.parent.mkdir()
+    canonical.parent.mkdir()
+    content = b"quarantined-original-bytes"
+    quarantined.write_bytes(content)
+
+    sidecar = quarantined.with_suffix(quarantined.suffix + ".quarantine.json")
+    sidecar.write_text("{}", encoding="utf-8")
+
+    real_link = runtime.os.link
+    calls = []
+
+    def cross_filesystem_link(source, destination, *args, **kwargs):
+        calls.append((source, destination))
+
+        if source == quarantined:
+            raise OSError(errno.EXDEV, "simulated cross-filesystem link")
+
+        assert destination == canonical
+        assert source.parent.parent == canonical.parent
+        return real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(runtime.os, "link", cross_filesystem_link)
+
+    assert runtime._restore_quarantined_archive(quarantined, canonical) is True
+
+    assert canonical.read_bytes() == content
+    assert not quarantined.exists()
+    assert not sidecar.exists()
+    assert len(calls) == 2
+    assert not list(canonical.parent.glob(".l2shock-quarantine-restore-*"))
+
+
+def test_cross_filesystem_quarantine_restore_preserves_competing_destination(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import errno
+
+    import l2shock.ui.automatic_fetch_runtime as runtime
+
+    quarantined = tmp_path / "quarantine" / "source.parquet"
+    canonical = tmp_path / "raw" / "source.parquet"
+
+    quarantined.parent.mkdir()
+    canonical.parent.mkdir()
+    quarantined.write_bytes(b"quarantined-original-bytes")
+
+    sidecar = quarantined.with_suffix(quarantined.suffix + ".quarantine.json")
+    sidecar.write_text("{}", encoding="utf-8")
+
+    real_link = runtime.os.link
+
+    def cross_filesystem_race(source, destination, *args, **kwargs):
+        if source == quarantined:
+            raise OSError(errno.EXDEV, "simulated cross-filesystem link")
+
+        canonical.write_bytes(b"new-verified-publication")
+        return real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(runtime.os, "link", cross_filesystem_race)
+
+    assert runtime._restore_quarantined_archive(quarantined, canonical) is False
+
+    assert canonical.read_bytes() == b"new-verified-publication"
+    assert quarantined.read_bytes() == b"quarantined-original-bytes"
+    assert sidecar.is_file()
+    assert not list(canonical.parent.glob(".l2shock-quarantine-restore-*"))

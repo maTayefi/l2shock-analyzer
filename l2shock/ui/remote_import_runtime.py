@@ -1041,39 +1041,70 @@ class RemoteImportRuntime:
             asyncio.to_thread(function),
             name=task_name,
         )
+        loop = asyncio.get_running_loop()
+
+        def _mark_worker_exception_retrieved(done_worker):
+            # Python 3.14's asyncio.shield() can eagerly report an inner
+            # task exception through the loop exception handler, even when
+            # this boundary retrieves the exception immediately afterwards.
+            # Retrieving it here keeps asyncio's default handler from
+            # rendering arbitrary worker exception text.
+            if done_worker.cancelled():
+                return
+            done_worker.exception()
+
+        worker.add_done_callback(_mark_worker_exception_retrieved)
+
+        waiter = loop.create_future()
+
+        def _release_initial_waiter(done_worker):
+            del done_worker
+            if not waiter.done():
+                waiter.set_result(None)
+
+        worker.add_done_callback(_release_initial_waiter)
 
         try:
-            return await asyncio.shield(worker)
+            await waiter
         except asyncio.CancelledError:
             cancellation_event.set()
 
-            # Cancelling an asyncio.to_thread waiter cannot terminate the
-            # underlying Python thread. Retain operation ownership until that
-            # thread has actually exited, even if shutdown issues additional
+            # Cancelling this boundary task must not cancel the worker
+            # thread. Retain operation ownership until that thread has
+            # actually exited, even if shutdown issues additional
             # cancellation requests while this join is in progress.
             while not worker.done():
+                join_waiter = loop.create_future()
+
+                def _release_join_waiter(done_worker, *, _waiter=join_waiter):
+                    del done_worker
+                    if not _waiter.done():
+                        _waiter.set_result(None)
+
+                worker.add_done_callback(_release_join_waiter)
                 try:
-                    await asyncio.shield(worker)
+                    await join_waiter
                 except asyncio.CancelledError:
                     cancellation_event.set()
                     continue
-                except Exception:
-                    log.exception(
-                        "Remote import worker failed while responding "
-                        "to task cancellation."
-                    )
-                    break
+                finally:
+                    worker.remove_done_callback(_release_join_waiter)
 
             if worker.done() and not worker.cancelled():
                 try:
                     worker.result()
-                except Exception:
-                    log.exception(
+                except Exception as exc:
+                    log.error(
                         "Remote import worker failed while responding "
-                        "to task cancellation."
+                        "to task cancellation; error_type=%s.",
+                        type(exc).__name__,
                     )
 
             raise
+        finally:
+            worker.remove_done_callback(_release_initial_waiter)
+
+        return worker.result()
 
     async def _run(
         self,
@@ -1312,9 +1343,10 @@ class RemoteImportRuntime:
                             else None
                         ),
                     )
-                    log.exception(
-                        "Remote import failed for %s.",
+                    log.error(
+                        "Remote import failed for %s; error_type=%s.",
                         key.relative_path,
+                        type(exc).__name__,
                     )
 
                 items.append(item)
@@ -1408,7 +1440,10 @@ class RemoteImportRuntime:
                 else:
                     self._last_error = f"Unexpected {type(exc).__name__}"
 
-            log.exception("Remote import runtime failed.")
+            log.error(
+                "Remote import runtime failed; error_type=%s.",
+                type(exc).__name__,
+            )
             raise
 
         finally:

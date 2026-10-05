@@ -12,9 +12,11 @@ poll interval.
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import os
 import shutil
+from tempfile import TemporaryDirectory
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -601,7 +603,7 @@ def _restore_quarantined_archive(
     quarantined: Path,
     canonical_path: Path,
 ) -> bool:
-    """Undo one quarantine move after its database transaction failed."""
+    """Undo a quarantine move without overwriting a newer publication."""
 
     try:
         if os.path.lexists(canonical_path):
@@ -610,16 +612,56 @@ def _restore_quarantined_archive(
         canonical_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            os.replace(quarantined, canonical_path)
-        except OSError:
-            shutil.move(str(quarantined), str(canonical_path))
-    except OSError:
-        log.exception(
+            # Atomic create-if-absent publication. The earlier existence
+            # check is only an optimization, never the no-clobber guarantee.
+            os.link(quarantined, canonical_path)
+        except FileExistsError:
+            return False
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+
+            # Quarantine and raw storage may be on different filesystems.
+            # Copy privately on the destination filesystem, then publish
+            # with the same atomic no-clobber operation.
+            with TemporaryDirectory(
+                prefix=".l2shock-quarantine-restore-",
+                dir=canonical_path.parent,
+            ) as directory:
+                temporary = Path(directory) / "archive"
+
+                with quarantined.open("rb") as source:
+                    with temporary.open("xb") as destination:
+                        shutil.copyfileobj(source, destination)
+                        destination.flush()
+                        os.fsync(destination.fileno())
+
+                try:
+                    os.link(temporary, canonical_path)
+                except FileExistsError:
+                    return False
+
+    except OSError as exc:
+        log.error(
             "Could not restore quarantined archive %s after a failed "
-            "database commit.",
+            "database commit; error_type=%s.",
             quarantined.name,
+            type(exc).__name__,
         )
         return False
+
+    try:
+        quarantined.unlink()
+    except OSError as exc:
+        # The canonical file has already been published completely.
+        # Retain the quarantine sidecar when its archive remains present.
+        log.warning(
+            "Quarantine restoration published the canonical archive, "
+            "but quarantine cleanup failed for %s; error_type=%s.",
+            quarantined.name,
+            type(exc).__name__,
+        )
+        return True
 
     sidecar = quarantined.with_suffix(quarantined.suffix + ".quarantine.json")
 
