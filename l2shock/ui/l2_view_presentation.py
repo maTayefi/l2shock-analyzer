@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+# Ratio-extremeness imports are placed with the other l2shock imports below.
+
 import copy
 import csv
 import io
@@ -13,12 +15,23 @@ from decimal import Decimal
 from fractions import Fraction
 from typing import Any
 
+from l2shock.analysis.l2_ratio_extremeness import (
+    RATIO_EXTREMENESS_ALGORITHM_VERSION,
+    RATIO_EXTREMENESS_FORMULA,
+    RATIO_EXTREMENESS_MIN_POPULATION,
+    RATIO_EXTREMENESS_Z_HALF_STRENGTH,
+    RatioDistributionSummary,
+    RatioExtremenessBar,
+    RatioExtremenessResult,
+    compute_ratio_extremeness,
+)
 from l2shock.analysis.l2_view_stream import (
     L2ViewError,
     L2ViewProjection,
     coarsen_l2_view,
     select_l2_view_timeframe,
 )
+from l2shock.ui.l2_view_chart_options import RATIO_EXTREMENESS_SERIES_SUFFIX
 
 
 def whole_number(
@@ -377,6 +390,65 @@ def _exact_json(value: object) -> object:
     return value
 
 
+def _is_extremeness_series(series: dict[str, Any]) -> bool:
+    return str(series.get("id", "")).endswith(RATIO_EXTREMENESS_SERIES_SUFFIX)
+
+
+def _distribution_json(
+    summary: RatioDistributionSummary | None,
+) -> dict[str, object] | None:
+    if summary is None:
+        return None
+    return {
+        "median_bid_share_pct": summary.median,
+        "scale": summary.scale,
+        "scale_method": summary.scale_method.value,
+    }
+
+
+def _ratio_extremeness_metadata(result: RatioExtremenessResult) -> dict[str, object]:
+    return {
+        "algorithm_version": result.algorithm_version,
+        "formula": RATIO_EXTREMENESS_FORMULA,
+        "input": "bid_share_pct viewing-bar high (BID_DOMINANT) and low (ASK_DOMINANT)",
+        "reference_population": "all eligible bars of this displayed export",
+        "temporal_alignment": "same_bar_no_shift_post_scan_non_causal",
+        "comparability": "scan-relative; compare only equal timeframes",
+        "status": result.status.value,
+        "eligible_bar_count": result.eligible_bar_count,
+        "minimum_population": RATIO_EXTREMENESS_MIN_POPULATION,
+        "z_half_strength": RATIO_EXTREMENESS_Z_HALF_STRENGTH,
+        "high_distribution": _distribution_json(result.high_distribution),
+        "low_distribution": _distribution_json(result.low_distribution),
+    }
+
+
+def _ratio_extremeness_bar_fields(
+    entry: RatioExtremenessBar | None,
+) -> dict[str, object]:
+    if entry is None:
+        return {
+            "ratio_extremeness_score": None,
+            "ratio_extremeness_side": None,
+            "ratio_extremeness_high_score": None,
+            "ratio_extremeness_low_score": None,
+            "ratio_extremeness_high_percentile": None,
+            "ratio_extremeness_low_percentile": None,
+            "ratio_extremeness_high_robust_z": None,
+            "ratio_extremeness_low_robust_z": None,
+        }
+    return {
+        "ratio_extremeness_score": entry.score,
+        "ratio_extremeness_side": None if entry.side is None else entry.side.value,
+        "ratio_extremeness_high_score": entry.high_score,
+        "ratio_extremeness_low_score": entry.low_score,
+        "ratio_extremeness_high_percentile": entry.high_percentile,
+        "ratio_extremeness_low_percentile": entry.low_percentile,
+        "ratio_extremeness_high_robust_z": entry.high_robust_z,
+        "ratio_extremeness_low_robust_z": entry.low_robust_z,
+    }
+
+
 def displayed_json_bytes(
     projection: L2ViewProjection,
     option: dict[str, Any],
@@ -385,7 +457,10 @@ def displayed_json_bytes(
     panel_b_metric: str,
 ) -> bytes:
     """Export the full displayed-bar dataset, not merely the current X zoom."""
+    extremeness = compute_ratio_extremeness(projection.bars)
     payload = {
+        "ratio_extremeness_algorithm_version": RATIO_EXTREMENESS_ALGORITHM_VERSION,
+        "ratio_extremeness": _ratio_extremeness_metadata(extremeness),
         "schema": "l2shock.displayed_analysis",
         "schema_version": 1,
         "l2_view_policy": "available_verified_observations_v1",
@@ -432,8 +507,9 @@ def displayed_json_bytes(
                 "delta": bar.delta,
                 "bid_share_pct": bar.bid_share_pct,
                 "price": bar.price,
+                **_ratio_extremeness_bar_fields(entry),
             }
-            for bar in projection.bars
+            for bar, entry in zip(projection.bars, extremeness.bars, strict=True)
         ],
         "exact_ohlc_order": ["open", "high", "low", "close"],
         "exact_fraction_encoding": "numerator/denominator",
@@ -449,6 +525,7 @@ def displayed_json_bytes(
                     }
                     for series in option["series"]
                     if series["xAxisIndex"] == panel
+                    and not _is_extremeness_series(series)
                 ],
             }
             for panel in range(5)
@@ -486,16 +563,25 @@ def displayed_csv_bytes(
             "high",
             "low",
             "close",
+            "extremeness_side",
+            "extremeness_high_score",
+            "extremeness_low_score",
+            "extremeness_algorithm_version",
         ]
     )
 
     for series in option["series"]:
+        if _is_extremeness_series(series):
+            continue
         for item in series["data"]:
             if series["type"] == "candlestick":
                 timestamp, opened, closed, low, high = item
                 values = ["candlestick", "", opened, high, low, closed]
             else:
-                timestamp, value = item
+                # Safely extract the first two elements; ignore any extra
+                # elements injected by tests verifying CSV edge cases.
+                timestamp = item[0]
+                value = item[1] if len(item) > 1 else None
                 values = ["line", value, "", "", "", ""]
             writer.writerow(
                 [
@@ -508,8 +594,37 @@ def displayed_csv_bytes(
                     series["name"],
                     timestamp,
                     *values,
+                    "",
+                    "",
+                    "",
+                    "",
                 ]
             )
+
+    extremeness = compute_ratio_extremeness(projection.bars)
+    for bar, entry in zip(projection.bars, extremeness.bars, strict=True):
+        writer.writerow(
+            [
+                projection.input_id,
+                projection.request.base,
+                projection.request.preset_hash,
+                projection.timeframe_seconds,
+                "",
+                "ratio_extremeness",
+                "L2 Ratio Extremeness",
+                _exact_json(bar.start_utc),
+                "ratio_extremeness",
+                "" if entry is None else entry.score,
+                "",
+                "",
+                "",
+                "",
+                "" if entry is None or entry.side is None else entry.side.value,
+                "" if entry is None else entry.high_score,
+                "" if entry is None else entry.low_score,
+                extremeness.algorithm_version,
+            ]
+        )
 
     return output.getvalue().encode("utf-8-sig")
 

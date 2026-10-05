@@ -9,12 +9,20 @@ Each panel has an independent inside Y zoom on Shift+wheel.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from l2shock.analysis.l2_ratio_extremeness import (
+    RATIO_EXTREMENESS_ALGORITHM_VERSION,
+    RatioExtremenessResult,
+    RatioExtremenessSide,
+    compute_ratio_extremeness,
+)
 from l2shock.analysis.l2_view_metrics import (
     L2_VIEW_METRIC_SPECS,
+    L2ViewMetric,
     L2ViewMetricKind,
+    L2ViewMetricSpec,
     compute_l2_view_metric,
     l2_view_metric,
 )
@@ -31,6 +39,28 @@ L2_VIEW_COLORS = {
 
 PRICE_SERIES_ID = "l2view-price"
 _PANELS = 5
+
+# Invisible helper series: carries the background markArea and tooltip data.
+RATIO_EXTREMENESS_SERIES_SUFFIX = "-extremeness"
+RATIO_EXTREMENESS_PANEL_METRICS = frozenset(
+    {
+        L2ViewMetric.IMBALANCE_PCT,
+        L2ViewMetric.BID_SHARE_PCT,
+        L2ViewMetric.ASK_SHARE_PCT,
+    }
+)
+RATIO_EXTREMENESS_SIDE_CODES = {
+    RatioExtremenessSide.BID_DOMINANT: 1,
+    RatioExtremenessSide.ASK_DOMINANT: 2,
+    RatioExtremenessSide.BOTH: 3,
+}
+_EXTREMENESS_RGB = {
+    RatioExtremenessSide.BID_DOMINANT: "45, 212, 191",
+    RatioExtremenessSide.ASK_DOMINANT: "244, 114, 182",
+    RatioExtremenessSide.BOTH: "167, 139, 250",
+}
+_EXTREMENESS_MAX_OPACITY = 0.45
+_EXTREMENESS_MIN_VISIBLE_OPACITY = 0.02
 
 
 class L2ViewChartError(ValueError):
@@ -141,12 +171,97 @@ def _metric_series(
     return series
 
 
+def ratio_extremeness_opacity(score: float) -> float:
+    """Fixed presentation curve: transparent near 0, strongest at 100."""
+    if not math.isfinite(score) or score <= 0.0:
+        return 0.0
+    bounded = min(score, 100.0) / 100.0
+    return round(_EXTREMENESS_MAX_OPACITY * bounded * bounded, 4)
+
+
+def _ratio_extremeness_series(
+    projection: L2ViewProjection,
+    result: RatioExtremenessResult,
+    spec: L2ViewMetricSpec,
+    panel: int,
+    slot: str,
+    *,
+    show_background: bool,
+) -> list[dict]:
+    if spec.metric not in RATIO_EXTREMENESS_PANEL_METRICS:
+        return []
+
+    half = timedelta(seconds=projection.timeframe_seconds / 2)
+    data: list[list[object]] = []
+    areas: list[list[dict[str, object]]] = []
+
+    for bar, entry in zip(projection.bars, result.bars, strict=True):
+        timestamp = _iso(bar.start_utc)
+
+        if entry is None:
+            data.append([timestamp, None, None, None])
+            continue
+
+        side_code = (
+            None if entry.side is None else RATIO_EXTREMENESS_SIDE_CODES[entry.side]
+        )
+        data.append([timestamp, None, round(_finite(entry.score), 4), side_code])
+
+        if not show_background or entry.side is None:
+            continue
+
+        alpha = ratio_extremeness_opacity(entry.score)
+
+        if alpha < _EXTREMENESS_MIN_VISIBLE_OPACITY:
+            continue
+
+        # Candles are centred on start_utc; centre the band on the candle.
+        areas.append(
+            [
+                {
+                    "name": f"l2shock-extremeness:{entry.side.value}",
+                    "xAxis": _iso(bar.start_utc - half),
+                    "itemStyle": {
+                        "color": f"rgba({_EXTREMENESS_RGB[entry.side]}, {alpha})"
+                    },
+                },
+                {"xAxis": _iso(bar.start_utc + half)},
+            ]
+        )
+
+    series: dict[str, Any] = {
+        "id": f"l2view-panel-{slot}{RATIO_EXTREMENESS_SERIES_SUFFIX}",
+        "name": "L2 Ratio Extremeness",
+        "type": "line",
+        "xAxisIndex": panel,
+        "yAxisIndex": panel,
+        "z": 1,
+        "showSymbol": False,
+        "symbol": "none",
+        "connectNulls": False,
+        "lineStyle": {"opacity": 0, "width": 0},
+        "itemStyle": {"opacity": 0},
+        "data": data,
+    }
+
+    if areas:
+        series["markArea"] = {
+            "silent": True,
+            "animation": False,
+            "label": {"show": False},
+            "data": areas,
+        }
+
+    return [series]
+
+
 def build_l2_view_chart_options(
     projection: L2ViewProjection,
     *,
     panel_a_metric: object,
     panel_b_metric: object,
     show_warnings: bool = True,
+    show_ratio_extremeness: bool = True,
 ) -> dict[str, Any]:
     if not isinstance(projection, L2ViewProjection) or not projection.bars:
         raise L2ViewChartError("Projection must contain at least one viewing bar")
@@ -154,6 +269,9 @@ def build_l2_view_chart_options(
     spec_a = L2_VIEW_METRIC_SPECS[l2_view_metric(panel_a_metric)]
     spec_b = L2_VIEW_METRIC_SPECS[l2_view_metric(panel_b_metric)]
     names = ("Price", "Bid", "Ask", spec_a.axis_name, spec_b.axis_name)
+    # Population = every displayed viewing bar; never the browser zoom.
+    extremeness = compute_ratio_extremeness(projection.bars)
+    show_background = bool(show_ratio_extremeness)
     source_start = _iso(projection.start_utc)
     source_end = _iso(projection.end_utc_exclusive)
 
@@ -226,7 +344,23 @@ def build_l2_view_chart_options(
             L2_VIEW_COLORS["ask"],
         ),
         *_metric_series(projection, spec_a.metric, 3, "a"),
+        *_ratio_extremeness_series(
+            projection,
+            extremeness,
+            spec_a,
+            3,
+            "a",
+            show_background=show_background,
+        ),
         *_metric_series(projection, spec_b.metric, 4, "b"),
+        *_ratio_extremeness_series(
+            projection,
+            extremeness,
+            spec_b,
+            4,
+            "b",
+            show_background=show_background,
+        ),
     ]
 
     if show_warnings:
@@ -237,6 +371,8 @@ def build_l2_view_chart_options(
             if regions and item["xAxisIndex"] in {0, 1, 2, 3, 4}:
                 # Only the first series of each panel carries the overlay.
                 if item["id"].endswith("-1"):
+                    continue
+                if item["id"].endswith(RATIO_EXTREMENESS_SERIES_SUFFIX):
                     continue
                 item["markArea"] = _warning_area(regions)
 
@@ -277,6 +413,11 @@ def build_l2_view_chart_options(
             "discontinuities": {},
             "panel_a_metric": spec_a.metric.value,
             "panel_b_metric": spec_b.metric.value,
+            "ratio_extremeness_algorithm_version": (
+                RATIO_EXTREMENESS_ALGORITHM_VERSION
+            ),
+            "ratio_extremeness_status": extremeness.status.value,
+            "ratio_extremeness_eligible_bars": extremeness.eligible_bar_count,
         },
     }
 
@@ -284,6 +425,10 @@ def build_l2_view_chart_options(
 __all__ = [
     "L2_VIEW_COLORS",
     "PRICE_SERIES_ID",
+    "RATIO_EXTREMENESS_PANEL_METRICS",
+    "RATIO_EXTREMENESS_SERIES_SUFFIX",
+    "RATIO_EXTREMENESS_SIDE_CODES",
     "L2ViewChartError",
     "build_l2_view_chart_options",
+    "ratio_extremeness_opacity",
 ]

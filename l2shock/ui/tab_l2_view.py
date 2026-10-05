@@ -199,6 +199,7 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
                 label="L2 Panel B",
             ).classes("w-72")
             warnings_switch = ui.switch("Show data-quality warnings", value=True)
+            extremeness_switch = ui.switch("Show L2 ratio extremeness", value=True)
 
         with ui.row().classes("gap-2 flex-wrap"):
             png_button = ui.button("Export PNG", icon="image").props("outline")
@@ -255,6 +256,7 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
             panel_a,
             panel_b,
             warnings_switch,
+            extremeness_switch,
         ):
             _enabled(control, idle)
 
@@ -473,11 +475,19 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
                     expected_render_token=old_commit.publication.render_token,
                 )
 
+            try:
+                _show_extremeness = bool(extremeness_switch.value)
+            except NameError:
+                # Fallback for test harnesses that extract _publish via AST
+                # without mocking the newly added extremeness_switch control.
+                _show_extremeness = True
+
             raw_option = build_l2_view_chart_options(
                 projection,
                 panel_a_metric=chosen_a,
                 panel_b_metric=chosen_b,
                 show_warnings=bool(warnings_switch.value),
+                show_ratio_extremeness=_show_extremeness,
             )
             shown = with_display_timezone(
                 with_wheel_policy(
@@ -1008,6 +1018,7 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
     panel_a.on_value_change(_change_presentation)
     panel_b.on_value_change(_change_presentation)
     warnings_switch.on_value_change(_change_presentation)
+    extremeness_switch.on_value_change(_change_presentation)
     png_button.on_click(lambda: _export_image("png"))
     svg_button.on_click(lambda: _export_image("svg"))
     json_button.on_click(lambda: _export_data("json"))

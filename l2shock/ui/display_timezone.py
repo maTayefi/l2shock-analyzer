@@ -95,6 +95,14 @@ __PARTS__
         if (!Array.isArray(value)) {
             return;
         }
+        if (/-extremeness$/.test(String((item && item.seriesId) || ""))) {
+            if (value.length === 4 && value[2] !== null && value[2] !== undefined) {
+                var side = {1: "bid-dominant", 2: "ask-dominant", 3: "both sides"}[value[3]] || "none";
+                rows.push("&nbsp;&nbsp;Extremeness  " + Number(value[2]).toFixed(1)
+                    + " / 100  (" + side + ")");
+            }
+            return;
+        }
         if (value.length === 5) {
             for (var i = 1; i < 5; i += 1) {
                 if (value[i] === null || value[i] === undefined) {

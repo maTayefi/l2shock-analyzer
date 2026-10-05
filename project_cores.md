@@ -57,6 +57,7 @@ l2shock/acquisition/retention.py
 l2shock/acquisition/validation.py
 l2shock/analysis/__init__.py
 l2shock/analysis/aggregation.py
+l2shock/analysis/l2_ratio_extremeness.py
 l2shock/analysis/l2_seconds.py
 l2shock/analysis/l2_view_metrics.py
 l2shock/analysis/l2_view_stream.py
@@ -204,6 +205,7 @@ tests/test_hourly_block_codec.py
 tests/test_hourly_liquidity.py
 tests/test_l2_available_observation_regression.py
 tests/test_l2_ohlc_aggregation.py
+tests/test_l2_ratio_extremeness.py
 tests/test_l2_view_batch2.py
 tests/test_l2_view_batch3a.py
 tests/test_l2_view_batch3b.py
@@ -628,6 +630,7 @@ tests/test_bybit_contract_diagnostics.py
 ```text
 l2shock/analysis/__init__.py
 l2shock/analysis/aggregation.py
+l2shock/analysis/l2_ratio_extremeness.py
 l2shock/analysis/l2_seconds.py
 l2shock/analysis/l2_view_metrics.py
 l2shock/analysis/l2_view_stream.py
@@ -654,6 +657,7 @@ l2shock/config.py
 ```text
 tests/test_analysis_multi_market.py
 tests/test_l2_ohlc_aggregation.py
+tests/test_l2_ratio_extremeness.py
 tests/test_l2_view_stream.py
 tests/test_l2_view_batch2.py
 tests/test_l2_view_batch3a.py

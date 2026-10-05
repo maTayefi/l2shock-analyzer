@@ -142,6 +142,34 @@ PNG and SVG export chart images. JSON and CSV export the full displayed-bar
 dataset, not only the current browser zoom window. Exported data remains
 UTC-owned; screen presentation uses the configured timezone.
 
+### L2 Ratio Extremeness Score
+
+Analysis also calculates one deterministic post-scan descriptive statistic:
+the L2 Ratio Extremeness Score. It is not shock detection, hypothesis
+generation, area ranking, evidence scoring, or an A/B/C annotation, and it is
+not a causal or live signal.
+
+Every eligible displayed viewing bar is compared with all eligible viewing
+bars of the same displayed range, including later bars. Browser zoom never
+changes the population; a timeframe change recomputes it from the new bars.
+score[i] belongs to bar[i]; no shift is applied.
+
+The input is the Bid Share % viewing-bar high and low. Signed Imbalance % and
+Ask Share % are exact transforms of Bid Share %, so their score is identical.
+Highs and lows form separate populations. Each side combines a midpoint-tie
+tail fraction with a median/MAD robust distance (mean absolute deviation when
+MAD is zero) mapped by z / (z + 3.5), using a geometric mean. The final
+0-100 score is the larger side; BID_DOMINANT, ASK_DOMINANT, or BOTH is
+separate metadata. Fewer than 20 eligible bars produce no scores.
+
+The score is scan-relative. Scores are comparable between scan ranges only at
+the same timeframe, and are not probabilities of abnormal activity.
+
+The score is shown as a background band behind Imbalance %, Bid Share %, and
+Ask Share % candle panels, and in their tooltip. One switch hides only the
+background. JSON and CSV exports always include the score, side, side
+components, and ratio_extremeness_algorithm_version. Nothing is persisted.
+
 ## Default remote preprocessing profile
 
 The checked-in scheduled workflow selects Backblaze B2 for remote
