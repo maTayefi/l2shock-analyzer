@@ -132,6 +132,13 @@ jobs:
       queue: single
 
     env:
+      # B2 Credentials (mapped to the exact names the Python script expects)
+      L2SHOCK__REMOTE__B2__KEY_ID: ${{ secrets.L2SHOCK_B2_KEY_ID }}
+      L2SHOCK__REMOTE__B2__APPLICATION_KEY: ${{ secrets.L2SHOCK_B2_APPLICATION_KEY }}
+      L2SHOCK_B2_ENDPOINT_URL: ${{ vars.L2SHOCK_B2_ENDPOINT_URL }}
+      L2SHOCK_B2_BUCKET: ${{ vars.L2SHOCK_B2_BUCKET }}
+      
+      # Retaining HF variables temporarily for emergency rollback
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       L2SHOCK_HF_REPO_ID: ${{ vars.L2SHOCK_HF_REPO_ID }}
       L2SHOCK_HF_REVISION: ${{ vars.L2SHOCK_HF_REVISION || 'main' }}
