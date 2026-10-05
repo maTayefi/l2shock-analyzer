@@ -2035,8 +2035,9 @@ async def process_remote_hour(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Acquire, process, and publish one completed CryptoHFTData "
-            "hour to a private Hugging Face dataset."
+            "Acquire, process, and publish completed CryptoHFTData hours "
+            "to the selected remote storage backend (Backblaze B2 or a "
+            "private Hugging Face dataset)."
         )
     )
     parser.add_argument(
@@ -2071,9 +2072,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=_positive_integer,
         default=720,
         help=(
-            "Bounded newest-to-oldest HF frontier search used when --hour "
-            "is omitted. The default covers established historical seed "
-            "frontiers during initial chain catch-up."
+            "Bounded newest-to-oldest remote frontier search used when "
+            "--hour is omitted. The default covers established historical "
+            "seed frontiers during initial chain catch-up."
         ),
     )
     parser.add_argument(
@@ -2109,7 +2110,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--storage-backend",
         choices=(HF_STORAGE_BACKEND, B2_STORAGE_BACKEND),
         default=HF_STORAGE_BACKEND,
-        help="Explicit remote storage backend; scheduled HF behavior is unchanged.",
+        help=(
+            "Explicit remote storage backend. Direct invocations default "
+            "to huggingface for rollback compatibility; the scheduled "
+            "workflow passes backblaze_b2 explicitly."
+        ),
     )
     parser.add_argument(
         "--b2-endpoint-url",

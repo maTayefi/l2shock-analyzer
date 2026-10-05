@@ -209,23 +209,17 @@ jobs:
       - name: Process and publish bounded remote catch-up
         shell: bash
         run: |
-          args=(
-            "--venue" "${{ matrix.venue }}"
-            "--instrument" "${{ matrix.instrument }}"
-            "--storage-backend" "backblaze_b2"
-            "--b2-endpoint-url" "${L2SHOCK_B2_ENDPOINT_URL}"
-            "--b2-bucket" "${L2SHOCK_B2_BUCKET}"
-            "--b2-single-writer-confirmed"
-            "--release-delay-minutes" "15"
-            "--catch-up-hours" "${CATCH_UP_HOURS}"
-            "--max-hours-per-run" "${MAX_HOURS_PER_RUN}"
-            "--max-runtime-minutes" "${MAX_RUNTIME_MINUTES}"
-            "--depth-lower" "${DEPTH_LOWER}"
-            "--depth-upper" "${DEPTH_UPPER}"
-          )
-
-          if [[ -n "${TARGET_HOUR}" ]]; then
-            args+=("--hour" "${TARGET_HOUR}")
-          fi
-
-          python -m l2shock.remote_worker "${args[@]}"
+          python -m l2shock.remote_worker \
+            --venue "${{ matrix.venue }}" \
+            --instrument "${{ matrix.instrument }}" \
+            --storage-backend backblaze_b2 \
+            --b2-endpoint-url "${L2SHOCK_B2_ENDPOINT_URL}" \
+            --b2-bucket "${L2SHOCK_B2_BUCKET}" \
+            --b2-single-writer-confirmed \
+            --release-delay-minutes "15" \
+            --catch-up-hours "${CATCH_UP_HOURS}" \
+            --max-hours-per-run "${MAX_HOURS_PER_RUN}" \
+            --max-runtime-minutes "${MAX_RUNTIME_MINUTES}" \
+            --depth-lower "${DEPTH_LOWER}" \
+            --depth-upper "${DEPTH_UPPER}" \
+            ${TARGET_HOUR:+--hour "${TARGET_HOUR}"}

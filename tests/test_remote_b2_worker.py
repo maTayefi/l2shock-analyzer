@@ -1662,3 +1662,43 @@ def test_migration_cli_does_not_print_arbitrary_exception_details(
     assert "did not complete successfully" in captured.err
     assert private_message not in rendered
     assert private_cause not in rendered
+
+
+def test_worker_parser_help_describes_selected_storage_backend() -> None:
+    from l2shock.remote_worker import build_parser
+
+    # argparse wraps help text; normalize whitespace before matching.
+    help_text = " ".join(build_parser().format_help().split())
+
+    assert "Backblaze B2" in help_text
+    assert "private Hugging Face dataset" in help_text
+    assert "scheduled HF behavior is unchanged" not in help_text
+    assert "HF frontier search" not in help_text
+    assert "backblaze_b2" in help_text
+
+
+def test_worker_parser_keeps_hf_default_for_rollback() -> None:
+    from l2shock.remote_worker import (
+        B2_STORAGE_BACKEND,
+        HF_STORAGE_BACKEND,
+        build_parser,
+    )
+
+    base = [
+        "--venue",
+        "bybit",
+        "--instrument",
+        "BTCUSDT",
+        "--depth-lower",
+        "0",
+        "--depth-upper",
+        "0.25",
+    ]
+
+    assert build_parser().parse_args(base).storage_backend == HF_STORAGE_BACKEND
+    assert (
+        build_parser()
+        .parse_args(base + ["--storage-backend", B2_STORAGE_BACKEND])
+        .storage_backend
+        == B2_STORAGE_BACKEND
+    )

@@ -4165,12 +4165,11 @@ and exact publication/object versions; they never fabricate an HF commit.
 The local Fetch UI supports explicit HF and B2 range imports through one
 application-owned runtime. HF remains the configured default unless changed.
 
-The scheduled worker remains on HF. Explicit B2 worker/checkpoint-frontier
-execution is implemented separately. Verified seed/history migration,
-production writer coordination, and controlled live cutover remain required.
+The checked-in scheduled workflow explicitly selects Backblaze B2.
+Verified seed/history migration, production writer coordination, and
+controlled live cutover remain required.
 Local importer tests do not establish completed cutover.
 
-The checked-in scheduled workflow explicitly selects Backblaze B2.
 Production readiness still requires executed seed/history verification,
 external writer coordination, and controlled live handoff.
 Keep HF dependencies, source history, and explicit rollback credentials
