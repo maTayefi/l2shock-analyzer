@@ -707,11 +707,7 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     except Exception as exc:
         # HF SDK exceptions may contain private request details in their chains.
-        print(
-            f"Migration failed: {type(exc).__name__}. "
-            "No cutover readiness is established.",
-            file=sys.stderr,
-        )
+        print(f"Migration failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 
 
