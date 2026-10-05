@@ -27,7 +27,7 @@ on:
         type: string
 
       catch_up_hours:
-        description: "Bounded HF chain-frontier search when hour is omitted"
+        description: "Bounded B2 chain-frontier search when hour is omitted"
         required: true
         default: "720"
         type: string
@@ -35,13 +35,13 @@ on:
       max_hours_per_run:
         description: "Maximum contiguous hours processed per catch-up run"
         required: true
-        default: "24"
+        default: "12"
         type: string
 
       max_runtime_minutes:
         description: "Cooperative catch-up runtime budget in minutes"
         required: true
-        default: "240"
+        default: "300"
         type: string
 
 permissions:
@@ -84,9 +84,9 @@ jobs:
                 matrix='{"include":[{"chain":"bybit_btc","venue":"bybit","instrument":"BTCUSDT","publication_delay_seconds":0},{"chain":"bybit_eth","venue":"bybit","instrument":"ETHUSDT","publication_delay_seconds":45},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP","publication_delay_seconds":90},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP","publication_delay_seconds":135}]}'
               elif [[ "${EVENT_NAME}" == "schedule" ]] \
                    && [[ "${BYBIT_SEEDS_READY}" != "true" ]]; then
-                matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT","publication_delay_seconds":0},{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT","publication_delay_seconds":45},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP","publication_delay_seconds":90},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP","publication_delay_seconds":135}]}'
+                matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT","publication_delay_seconds":0},{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT","publication_delay_seconds":0},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP","publication_delay_seconds":0},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP","publication_delay_seconds":0}]}'
               else
-                matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT","publication_delay_seconds":0},{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT","publication_delay_seconds":45},{"chain":"bybit_btc","venue":"bybit","instrument":"BTCUSDT","publication_delay_seconds":90},{"chain":"bybit_eth","venue":"bybit","instrument":"ETHUSDT","publication_delay_seconds":135},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP","publication_delay_seconds":180},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP","publication_delay_seconds":225}]}'
+                matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT","publication_delay_seconds":0},{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT","publication_delay_seconds":0},{"chain":"bybit_btc","venue":"bybit","instrument":"BTCUSDT","publication_delay_seconds":0},{"chain":"bybit_eth","venue":"bybit","instrument":"ETHUSDT","publication_delay_seconds":0},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP","publication_delay_seconds":0},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP","publication_delay_seconds":0}]}'
               fi
               ;;
             binance_btc)
@@ -144,10 +144,10 @@ jobs:
       L2SHOCK_HF_REVISION: ${{ vars.L2SHOCK_HF_REVISION || 'main' }}
       TARGET_HOUR: ${{ inputs.hour || '' }}
       CATCH_UP_HOURS: ${{ inputs.catch_up_hours || vars.L2SHOCK_CATCH_UP_HOURS || '720' }}
-      MAX_HOURS_PER_RUN: ${{ inputs.max_hours_per_run || vars.L2SHOCK_MAX_HOURS_PER_RUN || '24' }}
-      MAX_RUNTIME_MINUTES: ${{ inputs.max_runtime_minutes || vars.L2SHOCK_MAX_RUNTIME_MINUTES || '240' }}
+      MAX_HOURS_PER_RUN: ${{ inputs.max_hours_per_run || vars.L2SHOCK_MAX_HOURS_PER_RUN || '12' }}
+      MAX_RUNTIME_MINUTES: ${{ inputs.max_runtime_minutes || vars.L2SHOCK_MAX_RUNTIME_MINUTES || '300' }}
       DEPTH_LOWER: ${{ vars.L2SHOCK_DEPTH_LOWER || '0' }}
-      DEPTH_UPPER: ${{ vars.L2SHOCK_DEPTH_UPPER || '0.01' }}
+      DEPTH_UPPER: ${{ vars.L2SHOCK_DEPTH_UPPER || '0.25' }}
 
     steps:
       - name: Check out source
@@ -168,23 +168,26 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
 
-      - name: Stagger shared Hugging Face publication writers
-        if: ${{ matrix.publication_delay_seconds > 0 }}
+      - name: Validate required B2 and private-dataset configuration
         shell: bash
         run: |
-          echo "Delaying this chain by ${{ matrix.publication_delay_seconds }} seconds."
-          sleep "${{ matrix.publication_delay_seconds }}"
-
-      - name: Validate required private-dataset configuration
-        shell: bash
-        run: |
-          if [[ -z "${HF_TOKEN}" ]]; then
-            echo "HF_TOKEN GitHub Actions secret is not configured." >&2
+          if [[ -z "${L2SHOCK__REMOTE__B2__KEY_ID}" ]]; then
+            echo "L2SHOCK_B2_KEY_ID GitHub Actions secret is not configured." >&2
             exit 2
           fi
 
-          if [[ -z "${L2SHOCK_HF_REPO_ID}" ]]; then
-            echo "L2SHOCK_HF_REPO_ID GitHub Actions variable is not configured." >&2
+          if [[ -z "${L2SHOCK__REMOTE__B2__APPLICATION_KEY}" ]]; then
+            echo "L2SHOCK_B2_APPLICATION_KEY GitHub Actions secret is not configured." >&2
+            exit 2
+          fi
+
+          if [[ -z "${L2SHOCK_B2_ENDPOINT_URL}" ]]; then
+            echo "L2SHOCK_B2_ENDPOINT_URL GitHub Actions variable is not configured." >&2
+            exit 2
+          fi
+
+          if [[ -z "${L2SHOCK_B2_BUCKET}" ]]; then
+            echo "L2SHOCK_B2_BUCKET GitHub Actions variable is not configured." >&2
             exit 2
           fi
 
@@ -209,14 +212,16 @@ jobs:
           args=(
             "--venue" "${{ matrix.venue }}"
             "--instrument" "${{ matrix.instrument }}"
+            "--storage-backend" "backblaze_b2"
+            "--b2-endpoint-url" "${L2SHOCK_B2_ENDPOINT_URL}"
+            "--b2-bucket" "${L2SHOCK_B2_BUCKET}"
+            "--b2-single-writer-confirmed"
             "--release-delay-minutes" "15"
             "--catch-up-hours" "${CATCH_UP_HOURS}"
             "--max-hours-per-run" "${MAX_HOURS_PER_RUN}"
             "--max-runtime-minutes" "${MAX_RUNTIME_MINUTES}"
             "--depth-lower" "${DEPTH_LOWER}"
             "--depth-upper" "${DEPTH_UPPER}"
-            "--hf-repo-id" "${L2SHOCK_HF_REPO_ID}"
-            "--hf-revision" "${L2SHOCK_HF_REVISION}"
           )
 
           if [[ -n "${TARGET_HOUR}" ]]; then
