@@ -1600,3 +1600,65 @@ def test_migration_success_receipt_follows_pinned_readback(
     assert any(event["event"] == "publication_intent" for event in events)
     assert not any(event["event"] == "copied" for event in events)
     assert events[-1]["stage"] == "pinned_readback"
+
+
+@pytest.mark.parametrize("failure_kind", ("unexpected", "hf"))
+def test_migration_cli_does_not_print_arbitrary_exception_details(
+    monkeypatch,
+    capsys,
+    failure_kind,
+) -> None:
+    import l2shock.remote.b2_migration as migration
+    from l2shock.remote.hf_repository import HuggingFaceRepositoryError
+
+    private_message = "private-migration-detail-must-not-escape"
+    private_cause = "private-sdk-cause-must-not-escape"
+
+    failure_type = (
+        RuntimeError if failure_kind == "unexpected" else HuggingFaceRepositoryError
+    )
+
+    failure = failure_type(private_message)
+    failure.__cause__ = ValueError(private_cause)
+
+    monkeypatch.setattr(
+        migration,
+        "load_dotenv",
+        lambda *_args, **_kwargs: False,
+    )
+
+    def fail_plan(**_kwargs):
+        raise failure
+
+    monkeypatch.setattr(
+        migration,
+        "build_migration_keys",
+        fail_plan,
+    )
+
+    status = migration.main(
+        [
+            "--source",
+            "local",
+            "--chain",
+            "okx_btc",
+            "--from-hour",
+            "2026-10-01T12:00:00Z",
+            "--until-hour",
+            "2026-10-01T13:00:00Z",
+            "--depth-lower",
+            "0",
+            "--depth-upper",
+            "0.25",
+            "--b2-single-writer-confirmed",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    rendered = captured.out + captured.err
+
+    assert status == 2
+    assert failure_type.__name__ in captured.err
+    assert "did not complete successfully" in captured.err
+    assert private_message not in rendered
+    assert private_cause not in rendered

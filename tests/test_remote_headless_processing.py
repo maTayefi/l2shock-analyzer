@@ -644,3 +644,62 @@ def test_headless_l2_docstring_and_type_check_precede_logging() -> None:
 
     with pytest.raises(TypeError, match="ProcessingSourceArchive"):
         process_l2_archive_headlessly(object(), object())  # type: ignore[arg-type]
+
+
+def test_headless_l2_failure_log_does_not_render_exception_details(
+    tmp_path,
+    monkeypatch,
+    caplog,
+) -> None:
+    import logging
+
+    import l2shock.remote.headless_processing as headless
+
+    path = tmp_path / "BTCUSDT_orderbook.parquet"
+    _write_snapshot_archive(
+        path,
+        hour=_hour(),
+    )
+
+    archive = _archive(path, _l2_spec())
+
+    private_message = "private-headless-detail-must-not-escape"
+    private_cause = "private-headless-cause-must-not-escape"
+
+    failure = RuntimeError(private_message)
+    failure.__cause__ = ValueError(private_cause)
+
+    def fail_sampling(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(
+        headless,
+        "sample_liquidity_archives",
+        fail_sampling,
+    )
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger=headless.__name__,
+    ):
+        with pytest.raises(RuntimeError) as caught:
+            headless.process_l2_archive_headlessly(
+                archive,
+                _preset(),
+                batch_size=1,
+            )
+
+    assert caught.value is failure
+
+    records = [
+        record
+        for record in caplog.records
+        if "HEADLESS L2 REPLAY FAILED" in record.getMessage()
+    ]
+
+    assert len(records) == 1
+    assert "RuntimeError" in records[0].getMessage()
+    assert records[0].exc_info is None
+
+    assert private_message not in caplog.text
+    assert private_cause not in caplog.text

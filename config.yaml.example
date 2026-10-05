@@ -45,8 +45,6 @@ cryptohft:
 
 processing:
   checkpoint_search_max_hours: 168
-  default_depth_lower: "0"
-  default_depth_upper: "0.25"
 
 remote:
   # Retain HF settings until the verified B2 adapter and cutover are complete.

@@ -144,7 +144,8 @@ UTC-owned; screen presentation uses the configured timezone.
 
 ## Default remote preprocessing profile
 
-The preferred production workflow is remote preprocessing through:
+The checked-in scheduled workflow selects Backblaze B2 for remote
+processed-artifact publication:
 
 ```text
 CryptoHFTData
@@ -153,14 +154,22 @@ GitHub Actions standard Linux runner
     ->
 shared l2shock acquisition/replay/liquidity/price engine
     ->
-private Hugging Face dataset
+private Backblaze B2 processed-artifact bucket
     ->
-local verified importer
+local verified B2 importer
     ->
 local PostgreSQL
     ->
 local Analysis and NiceGUI
 ```
+
+Checked-in backend selection is not proof of completed production handoff.
+Production readiness also requires verified seed/history ownership, exclusion
+of overlapping writers, and successful live worker/import validation.
+
+The Hugging Face adapter and credentials remain available for explicit
+migration-source reads and rollback. A B2 integrity failure never silently
+substitutes HF content.
 
 The existing local workflow remains supported:
 
@@ -187,12 +196,16 @@ artifact verification
 recovery
 ```
 
-The local verified Hugging Face importer consumes one artifact pair from one
-full immutable dataset commit SHA.
+The Fetch tab supports explicit Remote B2 Import and Remote HF Import.
+The example local configuration retains Remote HF Import as its default
+unless remote.default_workflow is explicitly changed.
 
-The Fetch tab defaults to the `Remote HF Import` workflow profile. A remote
-range import resolves one full Hugging Face revision and uses that same commit
-SHA for every artifact in the operation.
+B2 imports resolve one completion descriptor per artifact and retain exact
+descriptor, artifact, and manifest versions. B2 has no repository-wide
+commit revision or atomic range snapshot.
+
+The retained HF importer consumes artifact/manifest pairs from one full
+immutable dataset commit SHA shared by the range operation.
 
 For each selected base and exact UTC hour, the range importer plans:
 
@@ -369,8 +382,9 @@ logs
 backups
 ```
 
-The complete workspace is deleted after compact results have been successfully
-published by the later Hugging Face orchestration layer.
+The worker owns the complete temporary workspace and closes it after worker
+execution. Joined synchronous work finishes before cancellation can close the
+workspace or B2 transport. Raw archives are not durable production storage.
 
 The private Hugging Face dataset adapter stores one immutable processed
 artifact and its matching canonical external manifest in one repository
@@ -414,7 +428,8 @@ Tokens must never appear in source, workflow files, logs, manifests, artifact
 content, exceptions, or object representations.
 
 The remote-hour worker composes the existing release schedule, remote source
-acquisition adapter, headless processors, and Hugging Face repository adapter.
+acquisition adapter, headless processors, and explicitly selected HF or B2
+repository adapter. The checked-in workflow selects B2.
 It does not add another downloader or analytical implementation.
 
 The worker supports these chains:
@@ -537,17 +552,18 @@ L2SHOCK__REMOTE__HF_TOKEN="..."
 
 Use a fine-grained read token restricted to the private dataset. The local
 application does not need HF write permission for imports.
-Required GitHub configuration is:
+Required GitHub configuration for the checked-in B2 workflow is:
 
 ```text
-Actions secret:
-    HF_TOKEN
+Actions secrets:
+    L2SHOCK_B2_KEY_ID
+    L2SHOCK_B2_APPLICATION_KEY
 
-Actions variable:
-    L2SHOCK_HF_REPO_ID
+Actions variables:
+    L2SHOCK_B2_ENDPOINT_URL
+    L2SHOCK_B2_BUCKET
 
-Optional Actions variables:
-    L2SHOCK_HF_REVISION
+Operational Actions variables:
     L2SHOCK_DEPTH_LOWER
     L2SHOCK_DEPTH_UPPER
     L2SHOCK_CATCH_UP_HOURS
@@ -556,7 +572,20 @@ Optional Actions variables:
     L2SHOCK_REMOTE_PROCESSING_ENABLED
     L2SHOCK_BINANCE_SEEDS_READY
     L2SHOCK_BYBIT_SEEDS_READY
+
+Retained explicit HF rollback/source configuration:
+    HF_TOKEN
+    L2SHOCK_HF_REPO_ID
+    L2SHOCK_HF_REVISION
 ```
+
+The workflow maps the B2 Actions secrets to
+L2SHOCK__REMOTE__B2__KEY_ID and
+L2SHOCK__REMOTE__B2__APPLICATION_KEY in the worker process.
+
+Production depth variables must match the exact migrated component presets.
+Seed gates refer to verified checkpoints in the selected B2 destination,
+not merely to earlier HF readiness.
 
 The workflow serializes each venue/instrument chain independently while
 allowing different chains to run concurrently.
@@ -4141,10 +4170,11 @@ execution is implemented separately. Verified seed/history migration,
 production writer coordination, and controlled live cutover remain required.
 Local importer tests do not establish completed cutover.
 
-Production still uses Hugging Face until live B2 verification, explicit B2
-worker execution, seed/history migration, and controlled cutover are
-complete. Keep HF dependencies and rollback credentials during this staged
-migration.
+The checked-in scheduled workflow explicitly selects Backblaze B2.
+Production readiness still requires executed seed/history verification,
+external writer coordination, and controlled live handoff.
+Keep HF dependencies, source history, and explicit rollback credentials
+until the rollback window is deliberately closed.
 <!-- l2shock:b2-publication-foundation:end -->
 
 <!-- l2shock:b2-import-boundary:start -->
@@ -4164,11 +4194,10 @@ Remote price imports acquire source-hour admission before quality decoding
 and analytical persistence. Source-metadata reconciliation retains its own
 transaction-lock requirement.
 
-The importer boundary alone does not switch production storage.
-Explicit local B2 range-runtime and Fetch UI integration are documented below.
-The scheduled worker, workflow, and production default remain on HF.
-Explicit B2 worker/frontier execution is documented below. Verified
-seed/history migration and live end-to-end cutover gates remain pending.
+Explicit local B2 range-runtime and Fetch UI integration are implemented.
+The checked-in scheduled workflow also selects B2. These implementation
+facts do not establish executed seed/history handoff for every production
+chain. HF remains available for explicit rollback.
 <!-- l2shock:b2-import-boundary:end -->
 
 <!-- l2shock:b2-range-runtime:start -->
@@ -4176,8 +4205,8 @@ seed/history migration and live end-to-end cutover gates remain pending.
 
 The shared remote-import runtime supports explicit HF and B2 execution.
 The Fetch workflow selector exposes remote_hf_import, remote_b2_import,
-and local_fetch_processing. HF remains the default unless explicitly
-configured otherwise.
+and local_fetch_processing. The example local default remains HF unless
+explicitly changed.
 
 One application-owned remote runtime is visible to polling and shutdown.
 An idle backend may be changed only while shared admission is free.
@@ -4195,17 +4224,16 @@ cancellation retains operation ownership until the synchronous worker exits.
 Stop or shutdown before execution does not start repository work.
 UI revision labels also support HF operations stopped before revision pinning.
 
-The scheduled worker and workflow remain on HF. Explicit B2 worker/frontier
-execution is documented below. Verified seed/history migration and live
-end-to-end cutover gates remain pending. Explicit local B2 import support is
-not completed production cutover.
+The checked-in scheduled workflow selects B2. This source configuration
+does not establish audited seed/history handoff or complete live readiness
+for every production chain. HF remains an explicit rollback option.
 <!-- l2shock:b2-range-runtime:end -->
 <!-- l2shock:b2-worker-integration:start -->
 ### Explicit B2 worker execution and frontier integration
 
 The shared remote worker supports explicit hugging_face and backblaze_b2
-selection. HF remains the CLI default and the scheduled workflow remains
-unchanged.
+selection. HF remains the CLI default; the checked-in scheduled workflow
+explicitly selects backblaze_b2.
 
 l2shock/remote/b2_worker_repository.py scopes B2 access to one component
 chain and preset. Each inspection generation retains one completion
@@ -4219,14 +4247,16 @@ version ownership and contain no fabricated HF revisions.
 
 B2 execution requires externally enforced single-writer ownership.
 --b2-single-writer-confirmed acknowledges that ownership; it is not a lock.
-Migration tools and production publishers must not race for the same chain.
+The workflow serializes each component chain. Local migration tools and
+other publishers remain outside that GitHub concurrency protection and
+must not overlap its destination writes.
 
 The caller owns the object-store lifetime. Joined synchronous work finishes
 before cancellation can close the transport or temporary workspace.
 
-Verified seed/history migration, production writer coordination, workflow
-cutover, and live end-to-end gates remain pending. Explicit worker support
-is not completed production cutover.
+Executed seed/history verification, final writer handoff, and live new-hour
+worker validation remain deployment gates. Backend selection in a workflow
+file is not proof those gates have been completed.
 <!-- l2shock:b2-worker-integration:end -->
 
 <!-- l2shock:b2-seed-migration:start -->
@@ -4254,13 +4284,13 @@ External destination single-writer ownership remains mandatory.
 --b2-single-writer-confirmed acknowledges that exclusion; it is not a lock.
 Migration and production publishers must not write overlapping B2 keys.
 
-tests/test_remote_b2_worker.py also exercises new-hour acquisition-boundary,
-real headless replay, predecessor continuation, invalid-hour checkpoint
-suppression, Binance price repair, and interrupted completion-publication
-recovery against a version-retaining in-memory transport.
+tests/test_remote_b2_worker.py exercises migration identity, terminal
+checkpoint gates, pinned read-back, journal behavior, new-hour execution,
+predecessor continuation, invalid-hour checkpoint suppression, price repair,
+and interrupted completion-publication recovery.
 
-These offline tests are not live service verification. The scheduled workflow
-and default production path remain on HF. Executed and audited seed migration,
-final writer handoff, live worker/import/Analysis gates, and workflow cutover
-remain deployment requirements. HF history and rollback credentials are retained.
+Offline tests are not live service verification. The checked-in scheduled
+workflow selects B2, but executed and audited seed migration and final writer
+handoff remain deployment requirements. HF history and rollback credentials
+are retained. CLI failure output does not print arbitrary exception details.
 <!-- l2shock:b2-seed-migration:end -->

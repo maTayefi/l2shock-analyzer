@@ -78,34 +78,34 @@ jobs:
               if [[ "${EVENT_NAME}" == "schedule" ]] \
                  && [[ "${BINANCE_SEEDS_READY}" != "true" ]] \
                  && [[ "${BYBIT_SEEDS_READY}" != "true" ]]; then
-                matrix='{"include":[{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP","publication_delay_seconds":0},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP","publication_delay_seconds":45}]}'
+                matrix='{"include":[{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP"},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP"}]}'
               elif [[ "${EVENT_NAME}" == "schedule" ]] \
                    && [[ "${BINANCE_SEEDS_READY}" != "true" ]]; then
-                matrix='{"include":[{"chain":"bybit_btc","venue":"bybit","instrument":"BTCUSDT","publication_delay_seconds":0},{"chain":"bybit_eth","venue":"bybit","instrument":"ETHUSDT","publication_delay_seconds":45},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP","publication_delay_seconds":90},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP","publication_delay_seconds":135}]}'
+                matrix='{"include":[{"chain":"bybit_btc","venue":"bybit","instrument":"BTCUSDT"},{"chain":"bybit_eth","venue":"bybit","instrument":"ETHUSDT"},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP"},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP"}]}'
               elif [[ "${EVENT_NAME}" == "schedule" ]] \
                    && [[ "${BYBIT_SEEDS_READY}" != "true" ]]; then
-                matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT","publication_delay_seconds":0},{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT","publication_delay_seconds":0},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP","publication_delay_seconds":0},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP","publication_delay_seconds":0}]}'
+                matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT"},{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT"},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP"},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP"}]}'
               else
-                matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT","publication_delay_seconds":0},{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT","publication_delay_seconds":0},{"chain":"bybit_btc","venue":"bybit","instrument":"BTCUSDT","publication_delay_seconds":0},{"chain":"bybit_eth","venue":"bybit","instrument":"ETHUSDT","publication_delay_seconds":0},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP","publication_delay_seconds":0},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP","publication_delay_seconds":0}]}'
+                matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT"},{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT"},{"chain":"bybit_btc","venue":"bybit","instrument":"BTCUSDT"},{"chain":"bybit_eth","venue":"bybit","instrument":"ETHUSDT"},{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP"},{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP"}]}'
               fi
               ;;
             binance_btc)
-              matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT","publication_delay_seconds":0}]}'
+              matrix='{"include":[{"chain":"binance_btc","venue":"binance_futures","instrument":"BTCUSDT"}]}'
               ;;
             binance_eth)
-              matrix='{"include":[{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT","publication_delay_seconds":0}]}'
+              matrix='{"include":[{"chain":"binance_eth","venue":"binance_futures","instrument":"ETHUSDT"}]}'
               ;;
             bybit_btc)
-              matrix='{"include":[{"chain":"bybit_btc","venue":"bybit","instrument":"BTCUSDT","publication_delay_seconds":0}]}'
+              matrix='{"include":[{"chain":"bybit_btc","venue":"bybit","instrument":"BTCUSDT"}]}'
               ;;
             bybit_eth)
-              matrix='{"include":[{"chain":"bybit_eth","venue":"bybit","instrument":"ETHUSDT","publication_delay_seconds":0}]}'
+              matrix='{"include":[{"chain":"bybit_eth","venue":"bybit","instrument":"ETHUSDT"}]}'
               ;;
             okx_btc)
-              matrix='{"include":[{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP","publication_delay_seconds":0}]}'
+              matrix='{"include":[{"chain":"okx_btc","venue":"okx_futures","instrument":"BTC-USDT-SWAP"}]}'
               ;;
             okx_eth)
-              matrix='{"include":[{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP","publication_delay_seconds":0}]}'
+              matrix='{"include":[{"chain":"okx_eth","venue":"okx_futures","instrument":"ETH-USDT-SWAP"}]}'
               ;;
             *)
               echo "Unsupported remote chain selection." >&2
@@ -168,7 +168,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
 
-      - name: Validate required B2 and private-dataset configuration
+      - name: Validate required B2 worker configuration
         shell: bash
         run: |
           if [[ -z "${L2SHOCK__REMOTE__B2__KEY_ID}" ]]; then

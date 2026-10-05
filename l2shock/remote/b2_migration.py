@@ -706,8 +706,14 @@ def main(argv: list[str] | None = None) -> int:
         print("Migration interrupted; rerun the same pinned plan.", file=sys.stderr)
         return 130
     except Exception as exc:
-        # HF SDK exceptions may contain private request details in their chains.
-        print(f"Migration failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        # Arbitrary exception arguments and SDK chains are not safe output.
+        # The journal records completed version-pinned receipts separately.
+        print(
+            f"Migration failed: {type(exc).__name__}. "
+            "The migration did not complete successfully; inspect the "
+            "migration journal and configuration without exposing credentials.",
+            file=sys.stderr,
+        )
         return 2
 
 

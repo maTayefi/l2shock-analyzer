@@ -309,16 +309,16 @@ def process_l2_archive_headlessly(
                 imbalance_decimal_precision=imbalance_decimal_precision,
             )
         except Exception as exc:
+            # Preserve source ownership and failure classification without
+            # exposing arbitrary exception arguments or chained details.
             log.error(
                 "HEADLESS L2 REPLAY FAILED: venue=%s symbol=%s hour=%s "
-                "file=%s error_type=%s error_msg=%s",
+                "file=%s error_type=%s",
                 target_archive.spec.venue,
                 target_archive.spec.symbol,
                 target_archive.spec.hour_utc.isoformat(),
                 target_archive.local_path.name,
                 type(exc).__name__,
-                str(exc),
-                exc_info=True,
             )
             raise
     except StreamedParquetReadError as exc:

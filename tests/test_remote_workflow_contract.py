@@ -102,15 +102,78 @@ def test_remote_workflow_uses_extended_bootstrap_search_bound() -> None:
     assert "|| '720'" in source
 
 
-def test_remote_workflow_staggers_shared_hf_writers() -> None:
+def test_remote_workflow_uses_b2_without_hf_publication_stagger() -> None:
     source = _workflow_text()
 
-    assert '"publication_delay_seconds":0' in source
-    assert '"publication_delay_seconds":45' in source
-    assert '"publication_delay_seconds":90' in source
-    assert '"publication_delay_seconds":135' in source
-    assert '"publication_delay_seconds":180' in source
-    assert '"publication_delay_seconds":225' in source
+    assert '"--storage-backend" "backblaze_b2"' in source
+    assert '"--b2-endpoint-url" "${L2SHOCK_B2_ENDPOINT_URL}"' in source
+    assert '"--b2-bucket" "${L2SHOCK_B2_BUCKET}"' in source
+    assert '"--b2-single-writer-confirmed"' in source
 
-    assert "Stagger shared Hugging Face publication writers" in source
-    assert 'sleep "${{ matrix.publication_delay_seconds }}"' in source
+    assert "publication_delay_seconds" not in source
+    assert "Stagger shared Hugging Face publication writers" not in source
+
+    assert "group: l2shock-remote-${{ matrix.chain }}" in source
+    assert "cancel-in-progress: false" in source
+    assert "queue: single" in source
+
+
+def test_b2_workflow_maps_secrets_to_worker_environment_names() -> None:
+    source = _workflow_text()
+
+    assert (
+        "L2SHOCK__REMOTE__B2__KEY_ID: " "${{ secrets.L2SHOCK_B2_KEY_ID }}"
+    ) in source
+
+    assert (
+        "L2SHOCK__REMOTE__B2__APPLICATION_KEY: "
+        "${{ secrets.L2SHOCK_B2_APPLICATION_KEY }}"
+    ) in source
+
+    assert ("L2SHOCK_B2_ENDPOINT_URL: " "${{ vars.L2SHOCK_B2_ENDPOINT_URL }}") in source
+
+    assert ("L2SHOCK_B2_BUCKET: " "${{ vars.L2SHOCK_B2_BUCKET }}") in source
+
+
+def test_all_b2_matrix_branches_have_only_chain_identity_fields() -> None:
+    import json
+    import re
+
+    source = _workflow_text()
+
+    payloads = re.findall(
+        r"(?m)^[ \t]*matrix='(\{[^\r\n]*\})'[ \t]*$",
+        source,
+    )
+
+    assert len(payloads) == 10
+
+    observed = set()
+
+    for raw in payloads:
+        matrix = json.loads(raw)
+
+        assert set(matrix) == {"include"}
+        assert matrix["include"]
+
+        chains = []
+
+        for entry in matrix["include"]:
+            assert set(entry) == {
+                "chain",
+                "venue",
+                "instrument",
+            }
+            chains.append(entry["chain"])
+            observed.add(entry["chain"])
+
+        assert len(chains) == len(set(chains))
+
+    assert observed == {
+        "binance_btc",
+        "binance_eth",
+        "bybit_btc",
+        "bybit_eth",
+        "okx_btc",
+        "okx_eth",
+    }

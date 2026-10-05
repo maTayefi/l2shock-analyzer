@@ -1307,15 +1307,15 @@ async def process_remote_catch_up(
             )
             break
         except Exception as exc:
+            # Keep operation identity and failure type, but do not render
+            # arbitrary exception arguments or underlying SDK chains.
             log.error(
                 "=== PROCESSING HOUR FAILED === venue=%s instrument=%s "
-                "hour=%s error_type=%s error_msg=%s",
+                "hour=%s error_type=%s",
                 normalized_venue,
                 normalized_instrument,
                 target_hour.isoformat(),
                 type(exc).__name__,
-                str(exc),
-                exc_info=True,
             )
             raise
         completed.append(result)

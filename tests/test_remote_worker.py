@@ -1252,3 +1252,73 @@ def test_remote_worker_routes_thread_calls_through_joining_helper() -> None:
 
     assert len(direct_thread_calls) == 1
     assert all(id(node) in helper_node_ids for node in direct_thread_calls)
+
+
+@pytest.mark.asyncio
+async def test_catch_up_failure_log_does_not_render_exception_details(
+    monkeypatch,
+    caplog,
+) -> None:
+    import logging
+
+    private_message = "private-worker-detail-must-not-escape"
+    private_cause = "private-worker-sdk-cause-must-not-escape"
+
+    failure = RuntimeError(private_message)
+    failure.__cause__ = ValueError(private_cause)
+
+    target = _hour()
+
+    async def select_target(**_kwargs):
+        return target
+
+    async def fail_processing(**_kwargs):
+        raise failure
+
+    monkeypatch.setattr(
+        remote_worker_module,
+        "select_remote_catch_up_hour",
+        select_target,
+    )
+    monkeypatch.setattr(
+        remote_worker_module,
+        "process_remote_hour",
+        fail_processing,
+    )
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger=remote_worker_module.__name__,
+    ):
+        with pytest.raises(RuntimeError) as caught:
+            await process_remote_catch_up(
+                repository=object(),
+                cryptohft=object(),
+                workspace=object(),
+                venue="okx_futures",
+                instrument="BTC-USDT-SWAP",
+                latest_eligible_hour_utc=target,
+                lower_fraction=Decimal("0"),
+                upper_fraction=Decimal("0.01"),
+                search_hours=72,
+                max_hours_per_run=1,
+                max_runtime_minutes=1,
+                producer_git_commit=None,
+            )
+
+    assert caught.value is failure
+
+    records = [
+        record
+        for record in caplog.records
+        if "PROCESSING HOUR FAILED" in record.getMessage()
+    ]
+
+    assert len(records) == 1
+    assert "RuntimeError" in records[0].getMessage()
+    assert "okx_futures" in records[0].getMessage()
+    assert "BTC-USDT-SWAP" in records[0].getMessage()
+    assert records[0].exc_info is None
+
+    assert private_message not in caplog.text
+    assert private_cause not in caplog.text

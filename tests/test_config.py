@@ -392,3 +392,35 @@ def test_environment_example_contains_only_supported_settings(
     settings = Settings(_env_file=template)
 
     assert settings.processing.checkpoint_search_max_hours == 168
+
+
+def test_example_yaml_uses_supported_configuration_fields(
+    monkeypatch,
+) -> None:
+    import os
+    from pathlib import Path
+
+    import yaml
+
+    from l2shock.config import Settings
+
+    for name in tuple(os.environ):
+        if name.upper().startswith("L2SHOCK__"):
+            monkeypatch.delenv(name, raising=False)
+
+    root = Path(__file__).resolve().parents[1]
+    payload = yaml.safe_load((root / "config.yaml.example").read_text(encoding="utf-8"))
+
+    assert isinstance(payload, dict)
+    assert payload["processing"] == {
+        "checkpoint_search_max_hours": 168,
+    }
+
+    settings = Settings(
+        _env_file=None,
+        **payload,
+    )
+
+    assert settings.processing.checkpoint_search_max_hours == 168
+    assert settings.remote.default_workflow == "remote_hf_import"
+    assert settings.remote.b2.configured is False
