@@ -200,11 +200,14 @@ class SingleMarketPriceProcessingCoordinator:
                 )
         except ProcessingContractError:
             raise
-        except Exception:
+        except Exception as exc:
             # UI or progress failures must not alter processing truth.
-            log.exception(
-                "Price processing progress sink failed for operation %s.",
+            # Callback exception text and chains may contain private details.
+            log.error(
+                "Price processing progress sink failed for operation %s; "
+                "error_type=%s.",
                 request.operation_id,
+                type(exc).__name__,
             )
 
     def run(

@@ -420,3 +420,167 @@ def test_price_processing_request_rejects_non_binance_trades() -> None:
             operation_id=uuid4(),
             target=target,
         )
+
+
+def _audit_5_progress_boundary(kind, sink):
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from l2shock.acquisition.models import SourceDataKind, SourceFileSpec
+    from l2shock.processing.models import (
+        PriceProcessingRequest,
+        ProcessingRequest,
+    )
+
+    if kind == "l2":
+        from l2shock.processing.l2_coordinator import (
+            SingleMarketL2ProcessingCoordinator,
+        )
+
+        coordinator_type = SingleMarketL2ProcessingCoordinator
+        data_kind = SourceDataKind.ORDERBOOK
+        logger_name = "l2shock.processing.l2_coordinator"
+    else:
+        from l2shock.processing.price_coordinator import (
+            SingleMarketPriceProcessingCoordinator,
+        )
+
+        coordinator_type = SingleMarketPriceProcessingCoordinator
+        data_kind = SourceDataKind.TRADES
+        logger_name = "l2shock.processing.price_coordinator"
+
+    target = SourceFileSpec(
+        provider="cryptohftdata",
+        venue="binance_futures",
+        symbol="BTCUSDT",
+        data_kind=data_kind,
+        hour_utc=datetime(2095, 1, 1, 12, tzinfo=timezone.utc),
+    )
+
+    if kind == "l2":
+        request = ProcessingRequest(
+            operation_id=uuid4(),
+            target=target,
+            max_checkpoint_search_hours=24,
+        )
+    else:
+        request = PriceProcessingRequest(
+            operation_id=uuid4(),
+            target=target,
+        )
+
+    coordinator = object.__new__(coordinator_type)
+    coordinator._progress_sink = sink
+    return coordinator, request, logger_name
+
+
+def test_audit_5_processing_progress_logs_exclude_private_exception_chains(
+    caplog,
+):
+    import logging
+
+    from l2shock.processing.models import ProcessingProgressPhase
+
+    for kind in ("l2", "price"):
+        caplog.clear()
+        received = []
+        private_message = f"audit-5-private-{kind}-callback-message"
+        private_cause = f"audit-5-private-{kind}-callback-cause"
+
+        def failing_sink(event):
+            received.append(event)
+
+            try:
+                raise ValueError(private_cause)
+            except ValueError as cause:
+                raise RuntimeError(private_message) from cause
+
+        coordinator, request, logger_name = _audit_5_progress_boundary(
+            kind,
+            failing_sink,
+        )
+
+        with caplog.at_level(logging.ERROR, logger=logger_name):
+            coordinator._emit(
+                request,
+                ProcessingProgressPhase.PLANNING,
+                "Planning processing.",
+            )
+
+        assert len(received) == 1
+        assert received[0].operation_id == request.operation_id
+        assert received[0].target == request.target
+
+        records = [record for record in caplog.records if record.name == logger_name]
+        assert len(records) == 1
+        assert records[0].exc_info is None
+        assert records[0].exc_text is None
+        assert "error_type=RuntimeError" in records[0].getMessage()
+        assert str(request.operation_id) in records[0].getMessage()
+        assert private_message not in caplog.text
+        assert private_cause not in caplog.text
+
+
+def test_audit_5_processing_progress_contract_errors_still_propagate(
+    caplog,
+):
+    import pytest
+
+    from l2shock.processing.errors import ProcessingContractError
+    from l2shock.processing.models import ProcessingProgressPhase
+
+    for kind in ("l2", "price"):
+        caplog.clear()
+        failure = ProcessingContractError("Simulated callback contract failure")
+
+        def failing_sink(_event):
+            raise failure
+
+        coordinator, request, logger_name = _audit_5_progress_boundary(
+            kind,
+            failing_sink,
+        )
+
+        with pytest.raises(ProcessingContractError) as captured:
+            coordinator._emit(
+                request,
+                ProcessingProgressPhase.PLANNING,
+                "Planning processing.",
+            )
+
+        assert captured.value is failure
+        assert not any(record.name == logger_name for record in caplog.records)
+
+
+def test_audit_5_successful_processing_progress_preserves_event(
+    caplog,
+):
+    from l2shock.processing.models import ProcessingProgressPhase
+
+    for kind in ("l2", "price"):
+        caplog.clear()
+        received = []
+
+        coordinator, request, logger_name = _audit_5_progress_boundary(
+            kind,
+            received.append,
+        )
+
+        coordinator._emit(
+            request,
+            ProcessingProgressPhase.VERIFYING_SOURCES,
+            "Verified source archive.",
+            completed_units=1,
+            total_units=2,
+        )
+
+        assert len(received) == 1
+        event = received[0]
+        assert event.operation_id == request.operation_id
+        assert event.target == request.target
+        assert event.phase is ProcessingProgressPhase.VERIFYING_SOURCES
+        assert event.message == "Verified source archive."
+        assert event.completed_units == 1
+        assert event.total_units == 2
+
+        assert not any(record.name == logger_name for record in caplog.records)

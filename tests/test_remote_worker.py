@@ -1437,3 +1437,337 @@ def test_audit_worker_contract_failure_keeps_existing_exit_status(
     assert status == int(worker.RemoteWorkerExitStatus.INPUT_OR_CONTRACT_ERROR)
     assert status == 2
     assert "contract failed" in capsys.readouterr().err
+
+
+def _audit_4b_catch_up_arguments():
+    from decimal import Decimal
+
+    return {
+        "repository": object(),
+        "cryptohft": object(),
+        "workspace": object(),
+        "venue": "okx_futures",
+        "instrument": "BTC-USDT-SWAP",
+        "latest_eligible_hour_utc": _hour(2),
+        "lower_fraction": Decimal("0"),
+        "upper_fraction": Decimal("0.01"),
+        "search_hours": 72,
+        "max_hours_per_run": 3,
+        "max_runtime_minutes": 240,
+        "producer_git_commit": None,
+        "_monotonic": lambda: 0.0,
+    }
+
+
+def _audit_4b_failure_payloads(text):
+    import json
+
+    payloads = []
+
+    for line in text.splitlines():
+        if not line.lstrip().startswith("{"):
+            continue
+
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+
+        if (
+            isinstance(value, dict)
+            and value.get("schema") == "l2shock.remote_catch_up_failure"
+        ):
+            payloads.append(value)
+
+    return payloads
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scenario", "expected_stage", "expected_completed"),
+    (
+        ("selection", "select_target", 0),
+        ("first_processing", "process_hour", 0),
+        ("later_processing", "process_hour", 1),
+        ("replanning", "replan", 1),
+        ("nonadvancing", "replan", 1),
+        ("future_target", "replan", 1),
+    ),
+)
+async def test_audit_4b_failed_catch_up_reports_completed_operations(
+    monkeypatch,
+    capsys,
+    caplog,
+    scenario,
+    expected_stage,
+    expected_completed,
+):
+    import logging
+
+    import l2shock.remote_worker as worker
+
+    private_message = "audit-4b-private-exception-message"
+    private_cause = "audit-4b-private-exception-cause"
+    failure = RuntimeError(private_message)
+    failure.__cause__ = ValueError(private_cause)
+
+    selection_calls = 0
+    attempted = []
+
+    async def select_target(**_arguments):
+        nonlocal selection_calls
+        selection_calls += 1
+
+        if scenario == "selection":
+            raise failure
+
+        if selection_calls == 1:
+            return _hour(0)
+
+        if scenario == "replanning":
+            raise failure
+
+        if scenario == "nonadvancing":
+            return _hour(0)
+
+        if scenario == "future_target":
+            return _hour(3)
+
+        return _hour(1)
+
+    async def process_hour(**arguments):
+        hour = arguments["hour_utc"]
+        attempted.append(hour)
+
+        if scenario == "first_processing":
+            raise failure
+
+        if scenario == "later_processing" and hour == _hour(1):
+            raise failure
+
+        return _worker_result(hour)
+
+    monkeypatch.setattr(worker, "select_remote_catch_up_hour", select_target)
+    monkeypatch.setattr(worker, "process_remote_hour", process_hour)
+
+    expected_type = (
+        worker.RemoteWorkerError
+        if scenario in {"nonadvancing", "future_target"}
+        else RuntimeError
+    )
+
+    with caplog.at_level(logging.WARNING, logger=worker.__name__):
+        with pytest.raises(expected_type) as captured:
+            await worker.process_remote_catch_up(**_audit_4b_catch_up_arguments())
+
+    if scenario not in {"nonadvancing", "future_target"}:
+        assert captured.value is failure
+
+    output = capsys.readouterr()
+    payloads = _audit_4b_failure_payloads(output.out)
+    assert len(payloads) == 1
+
+    payload = payloads[0]
+    assert payload["schema_version"] == 1
+    assert payload["status"] == "failed"
+    assert payload["venue"] == "okx_futures"
+    assert payload["instrument"] == "BTC-USDT-SWAP"
+    assert payload["completed_hour_count"] == expected_completed
+    assert payload["failure"]["stage"] == expected_stage
+    assert payload["failure"]["error_type"] == expected_type.__name__
+    assert payload["completion_policy"] == "returned_hour_operations_only"
+
+    assert payload["hours"] == (
+        [_worker_result(_hour(0)).to_dict()] if expected_completed else []
+    )
+
+    if expected_completed:
+        expected_last = _hour(0).isoformat().replace("+00:00", "Z")
+        assert payload["first_hour_utc"] == expected_last
+        assert payload["last_hour_utc"] == expected_last
+        assert payload["failure"]["after_completed_hour_utc"] == expected_last
+    else:
+        assert payload["first_hour_utc"] is None
+        assert payload["last_hour_utc"] is None
+        assert payload["failure"]["after_completed_hour_utc"] is None
+
+    if expected_stage == "process_hour":
+        failed_hour = _hour(1) if expected_completed else _hour(0)
+        assert payload["failure"]["failed_hour_utc"] == (
+            failed_hour.isoformat().replace("+00:00", "Z")
+        )
+        assert payload["failed_hour_publication_state"] == "not_determined"
+    else:
+        assert payload["failure"]["failed_hour_utc"] is None
+        assert payload["failed_hour_publication_state"] is None
+
+    if scenario == "selection":
+        assert attempted == []
+    elif scenario == "later_processing":
+        assert attempted == [_hour(0), _hour(1)]
+    else:
+        assert attempted == [_hour(0)]
+
+    rendered = output.out + output.err + caplog.text
+    assert private_message not in rendered
+    assert private_cause not in rendered
+
+    records = [record for record in caplog.records if record.name == worker.__name__]
+    assert all(record.exc_info is None for record in records)
+
+    assert "timing" in payload
+    assert payload["timing"]["total_seconds"] >= 0
+
+
+@pytest.mark.parametrize(
+    ("error_name", "expected_status"),
+    (
+        ("RemoteRequestError", 7),
+        ("DownloadIntegrityError", 7),
+        ("InsufficientDiskSpaceError", 7),
+        ("RemoteWorkerCheckpointBlockedError", 4),
+        ("HuggingFaceRepositoryError", 5),
+        ("B2TransportError", 6),
+        ("RuntimeError", 1),
+    ),
+)
+def test_audit_4b_cli_preserves_original_failure_classification(
+    monkeypatch,
+    capsys,
+    error_name,
+    expected_status,
+):
+    import l2shock.remote_worker as worker
+
+    error_type = (
+        RuntimeError
+        if error_name == "RuntimeError"
+        else getattr(
+            worker,
+            error_name,
+        )
+    )
+    failure = error_type("Simulated catch-up failure")
+    attempted = []
+    propagated = []
+
+    async def select_target(**_arguments):
+        return _hour(len(attempted))
+
+    async def process_hour(**arguments):
+        hour = arguments["hour_utc"]
+        attempted.append(hour)
+
+        if hour == _hour(1):
+            raise failure
+
+        return _worker_result(hour)
+
+    async def run_arguments(_arguments):
+        try:
+            return await worker.process_remote_catch_up(
+                **_audit_4b_catch_up_arguments()
+            )
+        except Exception as exc:
+            propagated.append(exc)
+            raise
+
+    monkeypatch.setattr(worker, "select_remote_catch_up_hour", select_target)
+    monkeypatch.setattr(worker, "process_remote_hour", process_hour)
+    monkeypatch.setattr(worker, "_run_from_arguments", run_arguments)
+
+    status = worker.main(
+        [
+            "--venue",
+            "okx_futures",
+            "--instrument",
+            "BTC-USDT-SWAP",
+            "--depth-lower",
+            "0",
+            "--depth-upper",
+            "0.01",
+        ]
+    )
+
+    output = capsys.readouterr()
+    payloads = _audit_4b_failure_payloads(output.out)
+
+    assert status == expected_status
+    assert status != int(worker.RemoteWorkerExitStatus.OK)
+    assert propagated == [failure]
+    assert propagated[0] is failure
+    assert attempted == [_hour(0), _hour(1)]
+
+    assert len(payloads) == 1
+    assert payloads[0]["status"] == "failed"
+    assert payloads[0]["completed_hour_count"] == 1
+    assert payloads[0]["failure"]["error_type"] == error_name
+    assert payloads[0]["hours"] == [_worker_result(_hour(0)).to_dict()]
+
+    assert output.err
+
+
+@pytest.mark.asyncio
+async def test_audit_4b_reporting_failure_preserves_original_exception(
+    monkeypatch,
+    caplog,
+):
+    import logging
+
+    import l2shock.remote_worker as worker
+
+    failure = worker.RemoteRequestError("audit-4b-private-original-request-detail")
+
+    async def select_target(**_arguments):
+        return _hour(0)
+
+    async def process_hour(**_arguments):
+        raise failure
+
+    def broken_print(*_arguments, **_keywords):
+        raise OSError("audit-4b-private-output-stream-detail")
+
+    monkeypatch.setattr(worker, "select_remote_catch_up_hour", select_target)
+    monkeypatch.setattr(worker, "process_remote_hour", process_hour)
+    monkeypatch.setattr(worker, "print", broken_print, raising=False)
+
+    with caplog.at_level(logging.WARNING, logger=worker.__name__):
+        with pytest.raises(worker.RemoteRequestError) as captured:
+            await worker.process_remote_catch_up(**_audit_4b_catch_up_arguments())
+
+    assert captured.value is failure
+    assert "Could not emit remote catch-up failure summary" in caplog.text
+    assert "error_type=OSError" in caplog.text
+    assert "audit-4b-private-original-request-detail" not in caplog.text
+    assert "audit-4b-private-output-stream-detail" not in caplog.text
+
+    records = [record for record in caplog.records if record.name == worker.__name__]
+    assert all(record.exc_info is None for record in records)
+
+
+@pytest.mark.asyncio
+async def test_audit_4b_successful_catch_up_emits_no_failure_record(
+    monkeypatch,
+    capsys,
+):
+    import l2shock.remote_worker as worker
+
+    attempted = []
+
+    async def select_target(**_arguments):
+        return _hour(len(attempted))
+
+    async def process_hour(**arguments):
+        hour = arguments["hour_utc"]
+        attempted.append(hour)
+        return _worker_result(hour)
+
+    monkeypatch.setattr(worker, "select_remote_catch_up_hour", select_target)
+    monkeypatch.setattr(worker, "process_remote_hour", process_hour)
+
+    result = await worker.process_remote_catch_up(**_audit_4b_catch_up_arguments())
+
+    assert result.stop_reason == "caught_up"
+    assert result.completed_hour_count == 3
+    assert attempted == [_hour(0), _hour(1), _hour(2)]
+    assert _audit_4b_failure_payloads(capsys.readouterr().out) == []

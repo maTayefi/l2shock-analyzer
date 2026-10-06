@@ -330,11 +330,13 @@ class SingleMarketL2ProcessingCoordinator:
                 )
         except ProcessingContractError:
             raise
-        except Exception:
+        except Exception as exc:
             # Progress/UI failure must not corrupt processing truth.
-            log.exception(
-                "Processing progress sink failed for operation %s.",
+            # Callback exception text and chains may contain private details.
+            log.error(
+                "Processing progress sink failed for operation %s; " "error_type=%s.",
                 request.operation_id,
+                type(exc).__name__,
             )
 
     def run(

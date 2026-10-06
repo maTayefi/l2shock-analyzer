@@ -1253,24 +1253,98 @@ async def process_remote_catch_up(
     started_at = clock()
     runtime_seconds = float(max_runtime_minutes * 60)
 
-    target_hour = await select_remote_catch_up_hour(
-        repository=repository,
-        venue=normalized_venue,
-        instrument=normalized_instrument,
-        latest_eligible_hour_utc=latest,
-        lower_fraction=lower_fraction,
-        upper_fraction=upper_fraction,
-        search_hours=search_hours,
-    )
-    if target_hour > latest:
-        raise RemoteWorkerError(
-            "Catch-up planner selected an hour after the eligible boundary"
-        )
-
     completed: list[RemoteWorkerResult] = []
     stop_reason = "no_work"  # Fallback initialization
-
     run_timer = _PhaseTimer()
+
+    def report_failure(
+        failure: Exception,
+        *,
+        stage: str,
+        failed_hour: datetime | None,
+    ) -> None:
+        """Emit completed-operation receipts without replacing the failure.
+
+        A failed hour may already own a partial remote publication. Only
+        operations which returned a RemoteWorkerResult are listed as
+        completed; this report does not infer rollback or artifact absence.
+        """
+        try:
+            run_timer.end()
+
+            first_hour = completed[0].hour_utc if completed else None
+            last_hour = completed[-1].hour_utc if completed else None
+
+            def utc_text(value: datetime | None) -> str | None:
+                if value is None:
+                    return None
+                return value.isoformat().replace("+00:00", "Z")
+
+            payload = {
+                "schema": "l2shock.remote_catch_up_failure",
+                "schema_version": 1,
+                "status": "failed",
+                "venue": normalized_venue,
+                "instrument": normalized_instrument,
+                "latest_eligible_hour_utc": utc_text(latest),
+                "first_hour_utc": utc_text(first_hour),
+                "last_hour_utc": utc_text(last_hour),
+                "completed_hour_count": len(completed),
+                "max_hours_per_run": max_hours_per_run,
+                "max_runtime_minutes": max_runtime_minutes,
+                "failure": {
+                    "stage": stage,
+                    "error_type": type(failure).__name__,
+                    "failed_hour_utc": utc_text(failed_hour),
+                    "after_completed_hour_utc": utc_text(last_hour),
+                },
+                "completion_policy": "returned_hour_operations_only",
+                "failed_hour_publication_state": (
+                    "not_determined" if failed_hour is not None else None
+                ),
+                "hours": [item.to_dict() for item in completed],
+                "timing": run_timer.to_dict(),
+            }
+
+            print(
+                json.dumps(
+                    payload,
+                    ensure_ascii=True,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
+        except Exception as reporting_failure:
+            # Reporting is secondary. A broken output stream or serialization
+            # failure must not replace the original processing/storage error.
+            log.warning(
+                "Could not emit remote catch-up failure summary; " "error_type=%s.",
+                type(reporting_failure).__name__,
+            )
+
+    try:
+        target_hour = await select_remote_catch_up_hour(
+            repository=repository,
+            venue=normalized_venue,
+            instrument=normalized_instrument,
+            latest_eligible_hour_utc=latest,
+            lower_fraction=lower_fraction,
+            upper_fraction=upper_fraction,
+            search_hours=search_hours,
+        )
+        if target_hour > latest:
+            raise RemoteWorkerError(
+                "Catch-up planner selected an hour after the eligible boundary"
+            )
+    except Exception as exc:
+        report_failure(
+            exc,
+            stage="select_target",
+            failed_hour=None,
+        )
+        raise
 
     while True:
         # Always admit the first selected hour. On later iterations, enforce
@@ -1323,6 +1397,11 @@ async def process_remote_catch_up(
                 target_hour.isoformat(),
                 type(exc).__name__,
             )
+            report_failure(
+                exc,
+                stage="process_hour",
+                failed_hour=target_hour,
+            )
             raise
         completed.append(result)
 
@@ -1342,34 +1421,42 @@ async def process_remote_catch_up(
             stop_reason = "runtime_budget"
             break
 
-        # Refresh Hugging Face state after every successful operation.
+        # Refresh remote state after every successful operation.
         #
         # This is required when the completed operation repaired price at an
         # older usable L2 frontier. The refreshed planner can then skip an
         # immutable checkpoint-less L2 artifact and select the first later
         # missing hour instead of mechanically attempting the blocked hour.
-        next_target_hour = await select_remote_catch_up_hour(
-            repository=repository,
-            venue=normalized_venue,
-            instrument=normalized_instrument,
-            latest_eligible_hour_utc=latest,
-            lower_fraction=lower_fraction,
-            upper_fraction=upper_fraction,
-            search_hours=search_hours,
-        )
-
-        if next_target_hour > latest:
-            raise RemoteWorkerError(
-                "Catch-up planner selected an hour after the eligible boundary"
+        try:
+            next_target_hour = await select_remote_catch_up_hour(
+                repository=repository,
+                venue=normalized_venue,
+                instrument=normalized_instrument,
+                latest_eligible_hour_utc=latest,
+                lower_fraction=lower_fraction,
+                upper_fraction=upper_fraction,
+                search_hours=search_hours,
             )
 
-        if next_target_hour <= target_hour:
-            raise RemoteWorkerError(
-                "Catch-up replanning did not advance after a successful "
-                "operation; "
-                f"completed_hour={target_hour.isoformat()} "
-                f"selected_hour={next_target_hour.isoformat()}"
+            if next_target_hour > latest:
+                raise RemoteWorkerError(
+                    "Catch-up planner selected an hour after the eligible boundary"
+                )
+
+            if next_target_hour <= target_hour:
+                raise RemoteWorkerError(
+                    "Catch-up replanning did not advance after a successful "
+                    "operation; "
+                    f"completed_hour={target_hour.isoformat()} "
+                    f"selected_hour={next_target_hour.isoformat()}"
+                )
+        except Exception as exc:
+            report_failure(
+                exc,
+                stage="replan",
+                failed_hour=None,
             )
+            raise
 
         log.info(
             "CATCH-UP REPLANNED AFTER SUCCESS: completed=%s next_target=%s "
