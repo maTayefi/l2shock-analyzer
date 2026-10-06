@@ -71,6 +71,38 @@ def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
+def l2_view_bar_time_coordinates(
+    projection: L2ViewProjection,
+) -> tuple[tuple[datetime, datetime, datetime], ...]:
+    """Return owned start, owned exclusive end, and plot centre per bar.
+
+    The analytical bucket start remains bar.start_utc. Display coordinates
+    belong to the requested portion of that bucket, including partial edges.
+    """
+    if not isinstance(projection, L2ViewProjection):
+        raise TypeError("projection must be L2ViewProjection")
+
+    duration = timedelta(seconds=projection.timeframe_seconds)
+    coordinates: list[tuple[datetime, datetime, datetime]] = []
+
+    for bar in projection.bars:
+        owned_start = max(projection.start_utc, bar.start_utc)
+        owned_end = min(
+            projection.end_utc_exclusive,
+            bar.start_utc + duration,
+        )
+
+        if owned_end <= owned_start:
+            raise L2ViewChartError(
+                "Viewing bar has no owned interval inside the projection"
+            )
+
+        centre = owned_start + (owned_end - owned_start) / 2
+        coordinates.append((owned_start, owned_end, centre))
+
+    return tuple(coordinates)
+
+
 def _finite(value: object) -> float:
     number = float(value)  # type: ignore[arg-type]
     if not math.isfinite(number):
@@ -129,7 +161,10 @@ def _metric_series(
 ) -> list[dict]:
     spec = L2_VIEW_METRIC_SPECS[l2_view_metric(metric)]
     values = compute_l2_view_metric(projection.bars, spec.metric)
-    times = [_iso(bar.start_utc) for bar in projection.bars]
+    times = [
+        _iso(centre)
+        for _start, _end, centre in l2_view_bar_time_coordinates(projection)
+    ]
 
     if spec.kind is L2ViewMetricKind.CANDLE:
         data = [[t, *_candle(v)] for t, v in zip(times, values, strict=True)]
@@ -191,12 +226,16 @@ def _ratio_extremeness_series(
     if spec.metric not in RATIO_EXTREMENESS_PANEL_METRICS:
         return []
 
-    half = timedelta(seconds=projection.timeframe_seconds / 2)
+    coordinates = l2_view_bar_time_coordinates(projection)
     data: list[list[object]] = []
     areas: list[list[dict[str, object]]] = []
 
-    for bar, entry in zip(projection.bars, result.bars, strict=True):
-        timestamp = _iso(bar.start_utc)
+    for (owned_start, owned_end, centre), entry in zip(
+        coordinates,
+        result.bars,
+        strict=True,
+    ):
+        timestamp = _iso(centre)
 
         if entry is None:
             data.append([timestamp, None, None, None])
@@ -215,17 +254,18 @@ def _ratio_extremeness_series(
         if alpha < _EXTREMENESS_MIN_VISIBLE_OPACITY:
             continue
 
-        # Candles are centred on start_utc; centre the band on the candle.
+        # Background ownership matches the requested part of this bucket.
+        # Partial edge bars must not shade time outside the loaded range.
         areas.append(
             [
                 {
                     "name": f"l2shock-extremeness:{entry.side.value}",
-                    "xAxis": _iso(bar.start_utc - half),
+                    "xAxis": _iso(owned_start),
                     "itemStyle": {
                         "color": f"rgba({_EXTREMENESS_RGB[entry.side]}, {alpha})"
                     },
                 },
-                {"xAxis": _iso(bar.start_utc + half)},
+                {"xAxis": _iso(owned_end)},
             ]
         )
 
@@ -303,7 +343,12 @@ def build_l2_view_chart_options(
             }
         )
 
-    times = [_iso(bar.start_utc) for bar in projection.bars]
+    coordinates = l2_view_bar_time_coordinates(projection)
+    times = [_iso(centre) for _start, _end, centre in coordinates]
+    bucket_times = [_iso(bar.start_utc) for bar in projection.bars]
+    owned_starts = [_iso(start) for start, _end, _centre in coordinates]
+    owned_ends = [_iso(end) for _start, end, _centre in coordinates]
+
     price_name = (
         "Price (optional context)"
         if projection.price_status == "loaded"
@@ -407,7 +452,11 @@ def build_l2_view_chart_options(
             "chart_timeframe": f"{projection.timeframe_seconds}s",
             "activity_timeframe": "1s",
             "visible_bar_count": len(projection.bars),
-            "visible_start_times_utc": times,
+            "visible_start_times_utc": bucket_times,
+            "visible_owned_start_times_utc": owned_starts,
+            "visible_owned_end_times_utc_exclusive": owned_ends,
+            "visible_plot_times_utc": times,
+            "plot_timestamp_policy": "owned_interval_midpoint_v1",
             "bar_duration_seconds": projection.timeframe_seconds,
             "source_bar_indices": list(range(len(projection.bars))),
             "discontinuities": {},

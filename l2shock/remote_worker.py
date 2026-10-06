@@ -49,10 +49,15 @@ from l2shock.acquisition import (
     RemoteFileNotFoundError,
     SourceDataKind,
     SourceFileSpec,
-    RemoteFileNotFoundError,
     latest_release_eligible_hour,
 )
+from l2shock.acquisition.errors import (
+    DownloadIntegrityError,
+    InsufficientDiskSpaceError,
+    RemoteRequestError,
+)
 from l2shock.config import B2Config, CryptoHFTConfig
+
 from l2shock.presets import (
     LiquidityDataPreset,
     build_binance_futures_data_preset,
@@ -212,6 +217,7 @@ class RemoteWorkerExitStatus(IntEnum):
     CHECKPOINT_CHAIN_BLOCKED = 4
     HUGGING_FACE_ERROR = 5
     B2_STORAGE_ERROR = 6
+    ACQUISITION_OPERATIONAL_ERROR = 7
     INTERRUPTED = 130
 
 
@@ -2366,6 +2372,22 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return int(RemoteWorkerExitStatus.B2_STORAGE_ERROR)
+
+    except (
+        RemoteRequestError,
+        DownloadIntegrityError,
+        InsufficientDiskSpaceError,
+    ) as exc:
+        # These failures concern source transport, transferred bytes, or
+        # local resources. They are not evidence of invalid command input.
+        # Keep arbitrary exception messages and chained causes out of output.
+        print(
+            "Remote source acquisition failed; "
+            f"error_type={type(exc).__name__}. "
+            "No successful completion is reported for the failed operation.",
+            file=sys.stderr,
+        )
+        return int(RemoteWorkerExitStatus.ACQUISITION_OPERATIONAL_ERROR)
 
     except (
         AcquisitionError,

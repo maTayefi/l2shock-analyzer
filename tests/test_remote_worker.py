@@ -1322,3 +1322,118 @@ async def test_catch_up_failure_log_does_not_render_exception_details(
 
     assert private_message not in caplog.text
     assert private_cause not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error_name",
+    (
+        "RemoteRequestError",
+        "DownloadIntegrityError",
+        "InsufficientDiskSpaceError",
+    ),
+)
+def test_audit_worker_operational_acquisition_has_distinct_failed_exit(
+    monkeypatch,
+    capsys,
+    error_name,
+):
+    import l2shock.remote_worker as worker
+
+    error_type = getattr(worker, error_name)
+    private_message = "audit-private-acquisition-message"
+    private_cause = "audit-private-acquisition-cause"
+    failure = error_type(private_message)
+    failure.__cause__ = RuntimeError(private_cause)
+
+    async def fail_run(_arguments):
+        raise failure
+
+    monkeypatch.setattr(worker, "_run_from_arguments", fail_run)
+
+    status = worker.main(
+        [
+            "--venue",
+            "okx_futures",
+            "--instrument",
+            "BTC-USDT-SWAP",
+            "--depth-lower",
+            "0",
+            "--depth-upper",
+            "0.01",
+            "--hour",
+            "2026-10-01T12:00:00Z",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    rendered = captured.out + captured.err
+
+    assert status == int(worker.RemoteWorkerExitStatus.ACQUISITION_OPERATIONAL_ERROR)
+    assert status == 7
+    assert status != int(worker.RemoteWorkerExitStatus.OK)
+    assert error_name in captured.err
+    assert "Remote source acquisition failed" in captured.err
+    assert private_message not in rendered
+    assert private_cause not in rendered
+
+
+def test_audit_worker_source_absence_keeps_existing_exit_status(
+    monkeypatch,
+    capsys,
+):
+    import l2shock.remote_worker as worker
+
+    async def fail_run(_arguments):
+        raise worker.RemoteFileNotFoundError("Source is unavailable")
+
+    monkeypatch.setattr(worker, "_run_from_arguments", fail_run)
+
+    status = worker.main(
+        [
+            "--venue",
+            "okx_futures",
+            "--instrument",
+            "BTC-USDT-SWAP",
+            "--depth-lower",
+            "0",
+            "--depth-upper",
+            "0.01",
+            "--hour",
+            "2026-10-01T12:00:00Z",
+        ]
+    )
+
+    assert status == int(worker.RemoteWorkerExitStatus.SOURCE_UNAVAILABLE)
+    assert status == 3
+    assert "not currently available" in capsys.readouterr().err
+
+
+def test_audit_worker_contract_failure_keeps_existing_exit_status(
+    monkeypatch,
+    capsys,
+):
+    import l2shock.remote_worker as worker
+
+    async def fail_run(_arguments):
+        raise worker.RemoteWorkerError("Simulated contract failure")
+
+    monkeypatch.setattr(worker, "_run_from_arguments", fail_run)
+
+    status = worker.main(
+        [
+            "--venue",
+            "okx_futures",
+            "--instrument",
+            "BTC-USDT-SWAP",
+            "--depth-lower",
+            "0",
+            "--depth-upper",
+            "0.01",
+            "--hour",
+            "2026-10-01T12:00:00Z",
+        ]
+    )
+
+    assert status == int(worker.RemoteWorkerExitStatus.INPUT_OR_CONTRACT_ERROR)
+    assert status == 2
+    assert "contract failed" in capsys.readouterr().err

@@ -1089,3 +1089,361 @@ async def test_rejected_cached_view_restores_last_committed_setting() -> None:
     assert harness.handlers["read_state"]()["displayed_timeframe_setting"] == 0
     assert not harness.controller.calls
     assert "View not changed" in harness.status.text
+
+
+def _audit_owned_interval_projection():
+    from datetime import datetime, timedelta, timezone
+    from fractions import Fraction
+
+    from l2shock.analysis.l2_view_stream import (
+        L2ViewBar,
+        L2ViewOutageRegion,
+        L2ViewProjection,
+        L2ViewRequest,
+    )
+
+    origin = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    start = origin + timedelta(seconds=17)
+    end = origin + timedelta(minutes=24, seconds=43)
+
+    def constant(value):
+        number = Fraction(value)
+        return number, number, number, number
+
+    bars = []
+
+    for index in range(25):
+        bucket_start = origin + timedelta(minutes=index)
+        owned_start = max(start, bucket_start)
+        owned_end = min(end, bucket_start + timedelta(minutes=1))
+
+        high = Fraction(90 if index == 12 else 50)
+        share = Fraction(50), high, Fraction(50), Fraction(50)
+
+        bars.append(
+            L2ViewBar(
+                start_utc=bucket_start,
+                source_seconds=int((owned_end - owned_start).total_seconds()),
+                valid_l2=True,
+                bid=constant(2),
+                ask=constant(1),
+                total=constant(3),
+                delta=constant(1),
+                bid_share_pct=share,
+                price=constant(100),
+            )
+        )
+
+    region = L2ViewOutageRegion(
+        channel="l2",
+        start_utc=origin + timedelta(minutes=12),
+        end_utc_exclusive=origin + timedelta(minutes=13),
+    )
+    request = L2ViewRequest(
+        base="BTC",
+        preset_hash="a" * 64,
+        requested_start_utc=start,
+        requested_end_utc=end - timedelta(seconds=1),
+    )
+
+    return L2ViewProjection(
+        request=request,
+        start_utc=start,
+        end_utc_exclusive=end,
+        timeframe_seconds=60,
+        max_bars=1200,
+        bars=tuple(bars),
+        l2_regions=(region,),
+        price_regions=(),
+        l2_regions_truncated=False,
+        price_regions_truncated=False,
+        price_status="loaded",
+        usable_l2_seconds=int((end - start).total_seconds()),
+        unusable_l2_seconds=0,
+        partial_market_seconds=0,
+        input_id="b" * 64,
+    )
+
+
+def test_audit_all_chart_series_use_owned_interval_centres():
+    from datetime import timedelta
+
+    from l2shock.ui.l2_view_chart_options import (
+        build_l2_view_chart_options,
+        l2_view_bar_time_coordinates,
+    )
+
+    projection = _audit_owned_interval_projection()
+    coordinates = l2_view_bar_time_coordinates(projection)
+
+    assert coordinates[0][0] == projection.start_utc
+    assert coordinates[-1][1] == projection.end_utc_exclusive
+    assert coordinates[0][2] == (
+        projection.start_utc + timedelta(seconds=21, microseconds=500_000)
+    )
+
+    expected = [centre.isoformat() for _start, _end, centre in coordinates]
+
+    # Exercise candle, single-line, and two-line metric configurations.
+    for metric in (
+        "imbalance_pct",
+        "total_change",
+        "bid_ask_shares_pct",
+    ):
+        option = build_l2_view_chart_options(
+            projection,
+            panel_a_metric=metric,
+            panel_b_metric="delta",
+        )
+
+        for series in option["series"]:
+            assert [item[0] for item in series["data"]] == expected
+
+        metadata = option["l2shockChartMetadata"]
+        assert metadata["visible_plot_times_utc"] == expected
+        assert metadata["visible_start_times_utc"] == [
+            bar.start_utc.isoformat() for bar in projection.bars
+        ]
+        assert metadata["plot_timestamp_policy"] == ("owned_interval_midpoint_v1")
+
+        for owned_start, owned_end, centre in coordinates:
+            assert projection.start_utc <= owned_start < centre < owned_end
+            assert owned_end <= projection.end_utc_exclusive
+
+        for axis in option["xAxis"]:
+            assert axis["min"] == projection.start_utc.isoformat()
+            assert axis["max"] == projection.end_utc_exclusive.isoformat()
+
+
+def test_audit_extremeness_and_warning_intervals_share_utc_ownership():
+    from l2shock.ui.l2_view_chart_options import (
+        RATIO_EXTREMENESS_SERIES_SUFFIX,
+        build_l2_view_chart_options,
+        l2_view_bar_time_coordinates,
+    )
+
+    projection = _audit_owned_interval_projection()
+    option = build_l2_view_chart_options(
+        projection,
+        panel_a_metric="imbalance_pct",
+        panel_b_metric="delta",
+    )
+
+    helper = next(
+        series
+        for series in option["series"]
+        if series["id"].endswith(RATIO_EXTREMENESS_SERIES_SUFFIX)
+    )
+    owned_start, owned_end, centre = l2_view_bar_time_coordinates(projection)[12]
+
+    assert helper["data"][12][0] == centre.isoformat()
+    assert helper["data"][12][2] > 0
+
+    bands = helper["markArea"]["data"]
+    assert any(
+        band[0]["xAxis"] == owned_start.isoformat()
+        and band[1]["xAxis"] == owned_end.isoformat()
+        for band in bands
+    )
+
+    bid = next(series for series in option["series"] if series["id"] == "l2view-bid")
+    warning = bid["markArea"]["data"][0]
+
+    assert warning[0]["xAxis"] == owned_start.isoformat()
+    assert warning[1]["xAxis"] == owned_end.isoformat()
+
+
+def test_audit_single_partial_bar_is_inside_time_axis():
+    from dataclasses import replace
+    from datetime import timedelta
+
+    from l2shock.analysis.l2_view_stream import L2ViewRequest
+    from l2shock.ui.l2_view_chart_options import build_l2_view_chart_options
+
+    source = _audit_owned_interval_projection()
+    start = source.start_utc
+    end = start + timedelta(seconds=10)
+
+    projection = replace(
+        source,
+        request=L2ViewRequest(
+            base="BTC",
+            preset_hash="a" * 64,
+            requested_start_utc=start,
+            requested_end_utc=end - timedelta(seconds=1),
+        ),
+        end_utc_exclusive=end,
+        bars=(replace(source.bars[0], source_seconds=10),),
+        l2_regions=(),
+        usable_l2_seconds=10,
+    )
+    option = build_l2_view_chart_options(
+        projection,
+        panel_a_metric="imbalance_pct",
+        panel_b_metric="delta",
+    )
+    expected = (start + timedelta(seconds=5)).isoformat()
+
+    for series in option["series"]:
+        assert series["data"][0][0] == expected
+
+    assert option["xAxis"][0]["min"] < expected
+    assert expected < option["xAxis"][0]["max"]
+
+
+def test_audit_exports_distinguish_bucket_interval_and_plot_time():
+    import csv
+    import io
+    import json
+
+    from l2shock.ui.l2_view_chart_options import (
+        build_l2_view_chart_options,
+        l2_view_bar_time_coordinates,
+    )
+    from l2shock.ui.l2_view_presentation import (
+        displayed_csv_bytes,
+        displayed_json_bytes,
+    )
+
+    projection = _audit_owned_interval_projection()
+    option = build_l2_view_chart_options(
+        projection,
+        panel_a_metric="imbalance_pct",
+        panel_b_metric="delta",
+    )
+    owned_start, owned_end, centre = l2_view_bar_time_coordinates(projection)[0]
+
+    payload = json.loads(
+        displayed_json_bytes(
+            projection,
+            option,
+            panel_a_metric="imbalance_pct",
+            panel_b_metric="delta",
+        )
+    )
+
+    assert payload["schema_version"] == 2
+    assert payload["analysis_id"] == projection.input_id
+    assert payload["plot_timestamp_policy"] == "owned_interval_midpoint_v1"
+
+    first = payload["bars"][0]
+    assert first["start_utc"] == projection.bars[0].start_utc.isoformat()
+    assert first["owned_start_utc"] == owned_start.isoformat()
+    assert first["owned_end_utc_exclusive"] == owned_end.isoformat()
+    assert first["plot_timestamp_utc"] == centre.isoformat()
+
+    raw = displayed_csv_bytes(projection, option).decode("utf-8-sig")
+    physical_rows = list(csv.reader(io.StringIO(raw)))
+    assert all(len(row) == len(physical_rows[0]) for row in physical_rows)
+
+    rows = list(csv.DictReader(io.StringIO(raw)))
+    bid = next(row for row in rows if row["series_id"] == "l2view-bid")
+    score = next(row for row in rows if row["series_id"] == "ratio_extremeness")
+
+    for row in (bid, score):
+        assert row["timestamp_utc"] == centre.isoformat()
+        assert row["bar_start_utc"] == (projection.bars[0].start_utc.isoformat())
+        assert row["owned_start_utc"] == owned_start.isoformat()
+        assert row["owned_end_utc_exclusive"] == owned_end.isoformat()
+        assert row["plot_timestamp_policy"] == "owned_interval_midpoint_v1"
+
+
+def test_audit_timezone_tooltip_contains_owned_interval_mapping():
+    import copy
+
+    from l2shock.ui.display_timezone import (
+        display_timezone_formatters,
+        with_display_timezone,
+    )
+    from l2shock.ui.l2_view_chart_options import build_l2_view_chart_options
+
+    projection = _audit_owned_interval_projection()
+    option = build_l2_view_chart_options(
+        projection,
+        panel_a_metric="imbalance_pct",
+        panel_b_metric="delta",
+    )
+    original = copy.deepcopy(option)
+
+    localized = with_display_timezone(option, "UTC")
+    javascript = localized["tooltip"][":formatter"]
+
+    assert option == original
+    assert localized["series"] == option["series"]
+    assert "__BAR_INTERVALS__" not in javascript
+    assert projection.start_utc.isoformat() in javascript
+    assert "var interval = intervals[String(plotMilliseconds)];" in javascript
+    assert 'stamp(interval[1]) + ")"' in javascript
+
+    for formatter in display_timezone_formatters("UTC").values():
+        assert "__BAR_INTERVALS__" not in formatter
+        assert "__PARTS__" not in formatter
+        assert "__TZ__" not in formatter
+
+
+def test_audit_generated_tooltip_renders_owned_interval():
+    import json
+    import shutil
+    import subprocess
+
+    import pytest
+
+    from l2shock.ui.display_timezone import with_display_timezone
+    from l2shock.ui.l2_view_chart_options import build_l2_view_chart_options
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Optional JavaScript runtime is not installed")
+
+    projection = _audit_owned_interval_projection()
+    option = build_l2_view_chart_options(
+        projection,
+        panel_a_metric="imbalance_pct",
+        panel_b_metric="delta",
+    )
+    localized = with_display_timezone(option, "UTC")
+    formatter = localized["tooltip"][":formatter"]
+    bid = next(series for series in option["series"] if series["id"] == "l2view-bid")
+
+    harness = r"""
+"use strict";
+const fs = require("node:fs");
+const vm = require("node:vm");
+const payload = JSON.parse(fs.readFileSync(0, "utf8"));
+
+const context = vm.createContext({window: {}});
+const formatter = vm.runInContext(
+    "(" + payload.formatter + ")",
+    context,
+    {timeout: 2000}
+);
+const rendered = formatter([{
+    axisValue: payload.value[0],
+    value: payload.value,
+    marker: "",
+    seriesName: "Bid",
+    seriesId: "l2view-bid"
+}]);
+process.stdout.write(JSON.stringify({rendered}));
+"""
+
+    completed = subprocess.run(
+        [node, "-e", harness],
+        input=json.dumps(
+            {
+                "formatter": formatter,
+                "value": bid["data"][0],
+            }
+        ),
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
+    rendered = json.loads(completed.stdout)["rendered"]
+
+    assert "[2026-01-01 00:00:17, 2026-01-01 00:01:00) (UTC)" in rendered
+    assert "Bid" in rendered
+    assert " O 2" in rendered

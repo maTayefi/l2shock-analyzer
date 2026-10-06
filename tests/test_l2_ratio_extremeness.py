@@ -371,9 +371,11 @@ def test_csv_export_has_one_extremeness_row_per_bar() -> None:
     )
     header, body = rows[0], rows[1:]
 
-    assert header[-1] == "extremeness_algorithm_version"
+    assert "extremeness_algorithm_version" in header
+    assert header[-1] == "plot_timestamp_policy"
     assert all(len(row) == len(header) for row in body)
-    extreme_rows = [row for row in body if row[8] == "ratio_extremeness"]
+
+    extreme_rows = [row for row in body if row[5] == "ratio_extremeness"]
     assert len(extreme_rows) == len(projection.bars)
     assert extreme_rows[5][header.index("extremeness_side")] == "BID_DOMINANT"
     assert not any(row[5].endswith("-extremeness") for row in body)

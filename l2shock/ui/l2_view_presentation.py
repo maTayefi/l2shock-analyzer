@@ -31,7 +31,10 @@ from l2shock.analysis.l2_view_stream import (
     coarsen_l2_view,
     select_l2_view_timeframe,
 )
-from l2shock.ui.l2_view_chart_options import RATIO_EXTREMENESS_SERIES_SUFFIX
+from l2shock.ui.l2_view_chart_options import (
+    RATIO_EXTREMENESS_SERIES_SUFFIX,
+    l2_view_bar_time_coordinates,
+)
 
 
 def whole_number(
@@ -458,11 +461,15 @@ def displayed_json_bytes(
 ) -> bytes:
     """Export the full displayed-bar dataset, not merely the current X zoom."""
     extremeness = compute_ratio_extremeness(projection.bars)
+    coordinates = l2_view_bar_time_coordinates(projection)
     payload = {
         "ratio_extremeness_algorithm_version": RATIO_EXTREMENESS_ALGORITHM_VERSION,
         "ratio_extremeness": _ratio_extremeness_metadata(extremeness),
         "schema": "l2shock.displayed_analysis",
-        "schema_version": 1,
+        "schema_version": 2,
+        "plot_timestamp_policy": "owned_interval_midpoint_v1",
+        "bar_start_timestamp_policy": "utc_aligned_bucket_start",
+        "owned_interval_policy": "half_open_clipped_to_projection",
         "l2_view_policy": "available_verified_observations_v1",
         "l2_quality_policy": {
             "partial_market_sums_rendered": True,
@@ -499,6 +506,9 @@ def displayed_json_bytes(
         "bars": [
             {
                 "start_utc": bar.start_utc,
+                "owned_start_utc": owned_start,
+                "owned_end_utc_exclusive": owned_end,
+                "plot_timestamp_utc": centre,
                 "source_seconds": bar.source_seconds,
                 "valid_l2": bar.valid_l2,
                 "bid": bar.bid,
@@ -509,7 +519,12 @@ def displayed_json_bytes(
                 "price": bar.price,
                 **_ratio_extremeness_bar_fields(entry),
             }
-            for bar, entry in zip(projection.bars, extremeness.bars, strict=True)
+            for bar, entry, (owned_start, owned_end, centre) in zip(
+                projection.bars,
+                extremeness.bars,
+                coordinates,
+                strict=True,
+            )
         ],
         "exact_ohlc_order": ["open", "high", "low", "close"],
         "exact_fraction_encoding": "numerator/denominator",
@@ -544,7 +559,13 @@ def displayed_csv_bytes(
     projection: L2ViewProjection,
     option: dict[str, Any],
 ) -> bytes:
-    """Long-form plot-coordinate export; nulls are empty cells, not zero."""
+    """Export plot coordinates plus explicit analytical interval ownership.
+
+    timestamp_utc is the plotted coordinate. bar_start_utc is the UTC-aligned
+    analytical bucket start. Owned intervals are half-open and clipped to the
+    projection. Null numerical values remain empty cells, never zero.
+    """
+    coordinates = l2_view_bar_time_coordinates(projection)
     output = io.StringIO(newline="")
     writer = csv.writer(output)
     writer.writerow(
@@ -567,22 +588,39 @@ def displayed_csv_bytes(
             "extremeness_high_score",
             "extremeness_low_score",
             "extremeness_algorithm_version",
+            "bar_start_utc",
+            "owned_start_utc",
+            "owned_end_utc_exclusive",
+            "plot_timestamp_policy",
         ]
     )
 
     for series in option["series"]:
         if _is_extremeness_series(series):
             continue
-        for item in series["data"]:
+
+        data = series["data"]
+
+        if len(data) != len(projection.bars):
+            raise ValueError(
+                "Displayed CSV series does not contain one item per viewing bar"
+            )
+
+        for item, bar, (owned_start, owned_end, _centre) in zip(
+            data,
+            projection.bars,
+            coordinates,
+            strict=True,
+        ):
             if series["type"] == "candlestick":
                 timestamp, opened, closed, low, high = item
                 values = ["candlestick", "", opened, high, low, closed]
             else:
-                # Safely extract the first two elements; ignore any extra
-                # elements injected by tests verifying CSV edge cases.
+                # Retain compatibility with extra non-coordinate dimensions.
                 timestamp = item[0]
                 value = item[1] if len(item) > 1 else None
                 values = ["line", value, "", "", "", ""]
+
             writer.writerow(
                 [
                     projection.input_id,
@@ -598,11 +636,21 @@ def displayed_csv_bytes(
                     "",
                     "",
                     "",
+                    _exact_json(bar.start_utc),
+                    _exact_json(owned_start),
+                    _exact_json(owned_end),
+                    "owned_interval_midpoint_v1",
                 ]
             )
 
     extremeness = compute_ratio_extremeness(projection.bars)
-    for bar, entry in zip(projection.bars, extremeness.bars, strict=True):
+
+    for bar, entry, (owned_start, owned_end, centre) in zip(
+        projection.bars,
+        extremeness.bars,
+        coordinates,
+        strict=True,
+    ):
         writer.writerow(
             [
                 projection.input_id,
@@ -612,7 +660,7 @@ def displayed_csv_bytes(
                 "",
                 "ratio_extremeness",
                 "L2 Ratio Extremeness",
-                _exact_json(bar.start_utc),
+                _exact_json(centre),
                 "ratio_extremeness",
                 "" if entry is None else entry.score,
                 "",
@@ -623,6 +671,10 @@ def displayed_csv_bytes(
                 "" if entry is None else entry.high_score,
                 "" if entry is None else entry.low_score,
                 extremeness.algorithm_version,
+                _exact_json(bar.start_utc),
+                _exact_json(owned_start),
+                _exact_json(owned_end),
+                "owned_interval_midpoint_v1",
             ]
         )
 

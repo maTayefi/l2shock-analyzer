@@ -89,7 +89,29 @@ __PARTS__
     function num(value) {
         return Number(value).toLocaleString("en-US", {maximumFractionDigits: 4});
     }
-    var rows = [stamp(list[0].axisValue) + " (" + zone + ")"];
+
+    var rawIntervals = __BAR_INTERVALS__;
+    var intervals = {};
+
+    Object.keys(rawIntervals).forEach(function (key) {
+        var milliseconds = Date.parse(key);
+        if (isFinite(milliseconds)) {
+            intervals[String(milliseconds)] = rawIntervals[key];
+        }
+    });
+
+    var firstValue = list[0].value;
+    var plotTime = Array.isArray(firstValue) ? firstValue[0] : list[0].axisValue;
+    var plotMilliseconds = typeof plotTime === "number"
+        ? plotTime
+        : Date.parse(plotTime);
+    var interval = intervals[String(plotMilliseconds)];
+
+    var heading = Array.isArray(interval) && interval.length === 2
+        ? "[" + stamp(interval[0]) + ", " + stamp(interval[1]) + ")"
+        : stamp(list[0].axisValue);
+
+    var rows = [heading + " (" + zone + ")"];
     list.forEach(function (item) {
         var value = item && item.value;
         if (!Array.isArray(value)) {
@@ -134,12 +156,39 @@ def _display_timezone(name: object) -> str:
     return name
 
 
-def display_timezone_formatters(timezone_name: str) -> dict[str, str]:
-    """Return validated JavaScript formatters for one display timezone."""
+def display_timezone_formatters(
+    timezone_name: str,
+    *,
+    bar_intervals: dict[str, tuple[str, str]] | None = None,
+) -> dict[str, str]:
+    """Return display formatters, optionally identifying owned bar intervals."""
     zone = json.dumps(_display_timezone(timezone_name))
+    intervals = {} if bar_intervals is None else dict(bar_intervals)
+
+    if any(
+        not isinstance(key, str)
+        or not isinstance(value, (tuple, list))
+        or len(value) != 2
+        or any(not isinstance(endpoint, str) for endpoint in value)
+        for key, value in intervals.items()
+    ):
+        raise DisplayTimezoneError(
+            "Bar tooltip intervals must map plot timestamps to two UTC strings"
+        )
+
+    interval_json = json.dumps(
+        intervals,
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(",", ":"),
+    )
 
     def render(template: str) -> str:
-        return template.replace("__PARTS__", _TZ_PARTS_JS).replace("__TZ__", zone)
+        return (
+            template.replace("__PARTS__", _TZ_PARTS_JS)
+            .replace("__TZ__", zone)
+            .replace("__BAR_INTERVALS__", interval_json)
+        )
 
     return {
         "axis_label": render(_AXIS_LABEL_JS),
@@ -156,7 +205,48 @@ def with_display_timezone(
     if not isinstance(option, dict):
         raise TypeError("option must be a dictionary")
 
-    formatters = display_timezone_formatters(timezone_name)
+    bar_intervals: dict[str, tuple[str, str]] = {}
+    metadata = option.get("l2shockChartMetadata")
+
+    if (
+        isinstance(metadata, dict)
+        and metadata.get("plot_timestamp_policy") == "owned_interval_midpoint_v1"
+    ):
+        plot_times = metadata.get("visible_plot_times_utc")
+        owned_starts = metadata.get("visible_owned_start_times_utc")
+        owned_ends = metadata.get("visible_owned_end_times_utc_exclusive")
+
+        if (
+            not isinstance(plot_times, list)
+            or not isinstance(owned_starts, list)
+            or not isinstance(owned_ends, list)
+            or len(plot_times) != len(owned_starts)
+            or len(plot_times) != len(owned_ends)
+        ):
+            raise DisplayTimezoneError("Owned-interval chart metadata is incomplete")
+
+        for plot_time, start, end in zip(
+            plot_times,
+            owned_starts,
+            owned_ends,
+            strict=True,
+        ):
+            if not all(isinstance(value, str) for value in (plot_time, start, end)):
+                raise DisplayTimezoneError(
+                    "Owned-interval chart timestamps must be UTC strings"
+                )
+
+            if plot_time in bar_intervals:
+                raise DisplayTimezoneError(
+                    "Owned-interval chart contains duplicate plot timestamps"
+                )
+
+            bar_intervals[plot_time] = (start, end)
+
+    formatters = display_timezone_formatters(
+        timezone_name,
+        bar_intervals=bar_intervals,
+    )
     result = dict(option)
     axes = option.get("xAxis")
 
