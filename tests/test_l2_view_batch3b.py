@@ -546,7 +546,8 @@ def test_controls_use_the_correct_handlers() -> None:
         assert f"{control}.on_value_change(_change_presentation)" in source
         assert f"{control}.on_value_change(_change_view)" not in source
 
-    assert "timeframe_input.on_value_change(_change_view)" in source
+    assert "timeframe_input.on_value_change(_timeframe_changed)" in source
+    assert "timeframe_input.on_value_change(_change_view)" not in source
     assert 'max_bars_input.on("blur", _change_view)' in source
     assert 'max_bars_input.on("keydown.enter", _change_view)' in source
     assert "max_bars_input.on_value_change(_change_view)" not in source
@@ -990,3 +991,101 @@ async def test_success_after_failed_publication_is_compared_to_displayed_source(
         kwargs.get("title") == "L2 data-quality warning"
         for _message, kwargs in notifications
     )
+
+
+def _audit_timeframe_gate(*, displayed_setting, change_view):
+    import ast
+    import copy
+    from pathlib import Path
+
+    import l2shock.ui.tab_l2_view as module
+
+    path = Path(module.__file__)
+    tree = ast.parse(
+        path.read_text(encoding="utf-8"),
+        filename=str(path),
+    )
+    matches = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_timeframe_changed"
+    ]
+    assert len(matches) == 1
+
+    extracted = ast.Module(
+        body=[copy.deepcopy(matches[0])],
+        type_ignores=[],
+    )
+    ast.fix_missing_locations(extracted)
+
+    namespace = {
+        "Any": object,
+        "displayed_timeframe_setting": displayed_setting,
+        "_change_view": change_view,
+    }
+    exec(compile(extracted, str(path), "exec"), namespace)
+    return namespace["_timeframe_changed"], namespace
+
+
+def test_audit_timeframe_restoration_creates_no_queued_callback():
+    from types import SimpleNamespace
+
+    def forbidden(_event):
+        raise AssertionError("Restoration created a viewing coroutine")
+
+    gate, namespace = _audit_timeframe_gate(
+        displayed_setting=0,
+        change_view=forbidden,
+    )
+
+    assert gate(SimpleNamespace(value=0)) is None
+
+    # Nothing was scheduled that could start after publication state changes.
+    namespace["displayed_timeframe_setting"] = 15
+
+
+@pytest.mark.asyncio
+async def test_audit_new_timeframe_choice_returns_existing_async_handler():
+    import inspect
+    from types import SimpleNamespace
+
+    calls = []
+
+    async def change_view(event):
+        calls.append(event)
+
+    gate, _namespace = _audit_timeframe_gate(
+        displayed_setting=0,
+        change_view=change_view,
+    )
+    event = SimpleNamespace(value=15)
+    pending = gate(event)
+
+    assert inspect.isawaitable(pending)
+    assert calls == []
+
+    await pending
+    assert calls == [event]
+
+
+def test_audit_timeframe_gate_is_synchronous():
+    import ast
+    from pathlib import Path
+
+    import l2shock.ui.tab_l2_view as module
+
+    path = Path(module.__file__)
+    tree = ast.parse(
+        path.read_text(encoding="utf-8"),
+        filename=str(path),
+    )
+    matches = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "_timeframe_changed"
+    ]
+
+    assert len(matches) == 1
+    assert isinstance(matches[0], ast.FunctionDef)
+    assert not any(isinstance(node, ast.Await) for node in ast.walk(matches[0]))

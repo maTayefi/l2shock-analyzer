@@ -35,6 +35,11 @@ from l2shock.acquisition.models import (
 from l2shock.acquisition.persistence import SourceHourStatus
 from l2shock.acquisition.validation import sha256_file
 from l2shock.db.models import SourceHour
+from l2shock.filesystem import (
+    absolute_path_without_resolution,
+    path_entry_is_link_like,
+    require_owned_regular_file,
+)
 from l2shock.timeutils import (
     floor_to_hour,
     require_aware_utc,
@@ -86,9 +91,9 @@ class RawRetentionCandidate:
         if not isinstance(self.spec, SourceFileSpec):
             raise RawRetentionError("RawRetentionCandidate.spec must be SourceFileSpec")
 
-        path = Path(self.local_path).expanduser().resolve()
+        path = absolute_path_without_resolution(self.local_path)
 
-        if not path.is_file():
+        if path_entry_is_link_like(path) or not path.is_file():
             raise RawRetentionError(
                 f"Retention candidate is not a regular file: {path}"
             )
@@ -302,7 +307,7 @@ def plan_processed_raw_retention(
     """Build a fail-closed dry-run plan without deleting or mutating anything."""
     if not isinstance(session, Session):
         raise TypeError("plan_processed_raw_retention requires a SQLAlchemy Session")
-    root = Path(raw_root).expanduser().resolve()
+    root = absolute_path_without_resolution(raw_root)
     cutoff = raw_retention_cutoff_hour(
         now,
         retention_hours=retention_hours,
@@ -362,14 +367,23 @@ def plan_processed_raw_retention(
                 hour_utc=model.hour_utc,
             )
 
-            stored_path = Path(str(model.local_path or "")).expanduser().resolve()
-            canonical_path = spec.local_path(root)
+            stored_path = absolute_path_without_resolution(
+                str(model.local_path or ""),
+            )
+            canonical_path = absolute_path_without_resolution(
+                spec.local_path(root),
+            )
 
             if stored_path != canonical_path:
                 raise RawRetentionError(
                     "Stored local path does not match canonical source path: "
                     f"stored={stored_path}, canonical={canonical_path}"
                 )
+
+            stored_path = require_owned_regular_file(
+                root,
+                stored_path,
+            )
 
             if model.file_size_bytes is None:
                 raise RawRetentionError("Processed source row has no durable file size")

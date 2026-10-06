@@ -1244,3 +1244,65 @@ def test_state_query_callbacks_observe_safe_replay_boundaries(
         ("before:update", 100, Decimal("1")),
         ("end", 101, Decimal("5")),
     ]
+
+
+def test_audit_bid_heap_preserves_exact_prices_in_small_context():
+    from decimal import Context, Decimal, Inexact, Rounded, localcontext
+
+    from l2shock.ingest import BookSide, OrderBookReplayState
+
+    state = OrderBookReplayState(
+        provider="cryptohftdata",
+        venue="binance_futures",
+        symbol="BTCUSDT",
+    )
+    high = Decimal("100.01")
+    low = Decimal("100")
+
+    with localcontext(Context(prec=4)) as context:
+        context.traps[Inexact] = True
+        context.traps[Rounded] = True
+
+        state._bids = {high: (Decimal("1"), None)}
+        state._rebuild_price_indexes()
+        assert state.best_bid == high
+
+        state._bids = {
+            low: (Decimal("1"), None),
+            high: (Decimal("2"), None),
+        }
+        state._rebuild_price_indexes()
+        assert state.best_bid == high
+
+        assert state._remove_live_level(side=BookSide.BID, price=high)
+        assert state.best_bid == low
+
+        state._upsert_live_level(
+            side=BookSide.BID,
+            price=high,
+            payload=(Decimal("3"), None),
+        )
+        assert state.best_bid == high
+
+        state._bid_price_heap.extend([Decimal("-1")] * 100)
+        state._maybe_compact_price_index(BookSide.BID)
+        assert state.best_bid == high
+
+
+def test_audit_bid_heap_preserves_prices_beyond_default_precision():
+    from decimal import Context, Decimal, localcontext
+
+    from l2shock.ingest import OrderBookReplayState
+
+    price = Decimal("100.0000000000000000000000000001")
+    state = OrderBookReplayState(
+        provider="cryptohftdata",
+        venue="binance_futures",
+        symbol="BTCUSDT",
+    )
+    state._bids = {price: (Decimal("1"), None)}
+
+    with localcontext(Context(prec=28)):
+        state._rebuild_price_indexes()
+        assert state.best_bid == price
+        assert state.best_bid in state._bids

@@ -27,7 +27,8 @@ def test_runtime_state_uses_aware_utc_start_time() -> None:
     assert state.process_started_at.tzinfo is timezone.utc
 
 
-def test_health_snapshot_reports_foundation_status(
+@pytest.mark.asyncio
+async def test_health_snapshot_reports_foundation_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reset_state_for_tests()
@@ -54,7 +55,7 @@ def test_health_snapshot_reports_foundation_status(
         },
     )
 
-    snapshot = ui_app.build_health_snapshot()
+    snapshot = await ui_app.build_health_snapshot()
 
     assert snapshot["ok"] is True
     assert snapshot["ready"] is True
@@ -165,7 +166,8 @@ def test_health_snapshot_reports_foundation_status(
     assert snapshot["automatic_fetch_next_poll_at"] is None
 
 
-def test_health_snapshot_ok_is_false_when_not_ready(
+@pytest.mark.asyncio
+async def test_health_snapshot_ok_is_false_when_not_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reset_state_for_tests()
@@ -192,7 +194,7 @@ def test_health_snapshot_ok_is_false_when_not_ready(
         },
     )
 
-    snapshot = ui_app.build_health_snapshot()
+    snapshot = await ui_app.build_health_snapshot()
 
     assert snapshot["ready"] is False
     assert snapshot["ok"] is False
@@ -345,3 +347,281 @@ def test_remote_import_ui_names_all_l2_component_venues() -> None:
 
     assert "Binance, Bybit, and OKX component L2" in source
     assert "Binance real-trade price artifacts" in source
+
+
+def _audit_isolate_health_runtimes(monkeypatch):
+    import l2shock.ui.app as module
+
+    for name in (
+        "peek_manual_fetch_runtime",
+        "peek_automatic_fetch_runtime",
+        "peek_manual_processing_runtime",
+        "peek_remote_import_runtime",
+        "peek_l2_view_runtime",
+    ):
+        monkeypatch.setattr(module, name, lambda: None)
+
+    monkeypatch.setattr(
+        module,
+        "expected_alembic_head",
+        lambda: "0001_initial",
+    )
+    monkeypatch.setattr(
+        module,
+        "_disk_health",
+        lambda: {
+            "ok": True,
+            "free_gib": 100.0,
+            "minimum_free_gib": 5.0,
+            "raw_path": "audit-raw",
+            "error": None,
+        },
+    )
+    return module
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shutdown_complete", (False, True))
+async def test_audit_health_during_shutdown_does_not_open_database(
+    monkeypatch,
+    shutdown_complete,
+):
+    from l2shock.ui.state import get_state, reset_state_for_tests
+
+    reset_state_for_tests()
+    try:
+        module = _audit_isolate_health_runtimes(monkeypatch)
+        state = get_state()
+        state.shutdown_started = True
+        state.shutdown_complete = shutdown_complete
+
+        def forbidden():
+            raise AssertionError("Shutdown health probe attempted database access")
+
+        monkeypatch.setattr(module, "_database_health", forbidden)
+        monkeypatch.setattr(module, "get_engine", forbidden)
+
+        snapshot = await module.health_endpoint()
+
+        assert snapshot["ready"] is False
+        assert snapshot["ok"] is False
+        assert snapshot["shutdown_started"] is True
+        assert snapshot["shutdown_complete"] is shutdown_complete
+        assert snapshot["database"]["probe_skipped"] is True
+        assert snapshot["database"]["reachable"] is None
+        assert state.untracked_db_workers == set()
+    finally:
+        reset_state_for_tests()
+
+
+def test_audit_database_health_defensively_skips_after_shutdown(monkeypatch):
+    from l2shock.ui.state import get_state, reset_state_for_tests
+
+    reset_state_for_tests()
+    try:
+        module = _audit_isolate_health_runtimes(monkeypatch)
+        get_state().shutdown_started = True
+
+        def forbidden():
+            raise AssertionError("Skipped probe recreated the database engine")
+
+        monkeypatch.setattr(module, "get_engine", forbidden)
+
+        result = module._database_health()
+
+        assert result["ok"] is False
+        assert result["reachable"] is None
+        assert result["probe_skipped"] is True
+    finally:
+        reset_state_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_audit_cancelled_health_request_keeps_db_worker_shutdown_owned(
+    monkeypatch,
+):
+    import asyncio
+    import threading
+
+    from l2shock.ui import shutdown as shutdown_module
+    from l2shock.ui.components import wait_for_untracked_db_workers
+    from l2shock.ui.state import get_state, reset_state_for_tests
+
+    reset_state_for_tests()
+    entered = threading.Event()
+    release = threading.Event()
+    exited = threading.Event()
+    disposed = []
+    task = None
+
+    try:
+        module = _audit_isolate_health_runtimes(monkeypatch)
+        state = get_state()
+
+        def database_probe():
+            entered.set()
+            try:
+                if not release.wait(timeout=5.0):
+                    raise TimeoutError("Test did not release the database probe")
+                return {
+                    "ok": True,
+                    "reachable": True,
+                    "current_heads": ["0001_initial"],
+                    "expected_head": "0001_initial",
+                    "error": None,
+                }
+            finally:
+                exited.set()
+
+        monkeypatch.setattr(module, "_database_health", database_probe)
+
+        for name in (
+            "peek_automatic_fetch_runtime",
+            "peek_manual_fetch_runtime",
+            "peek_remote_import_runtime",
+            "peek_manual_processing_runtime",
+            "peek_l2_view_runtime",
+        ):
+            monkeypatch.setattr(shutdown_module, name, lambda: None)
+
+        monkeypatch.setattr(
+            shutdown_module,
+            "reset_engine",
+            lambda: disposed.append(True),
+        )
+
+        task = asyncio.create_task(module.health_endpoint())
+        assert await asyncio.to_thread(entered.wait, 2.0)
+        assert state.untracked_db_workers
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert not exited.is_set()
+        assert any(not worker.done() for worker in state.untracked_db_workers)
+
+        with pytest.raises(RuntimeError, match="background work"):
+            await shutdown_module.shutdown_runtime(
+                request_server_stop=False,
+                other_task_timeout_seconds=0.0,
+            )
+
+        assert state.shutdown_started is True
+        assert state.shutdown_complete is False
+        assert disposed == []
+
+        release.set()
+        assert await wait_for_untracked_db_workers(timeout_seconds=2.0) == 0
+        await asyncio.sleep(0)
+
+        await shutdown_module.shutdown_runtime(
+            request_server_stop=False,
+            other_task_timeout_seconds=2.0,
+        )
+
+        assert exited.is_set()
+        assert state.shutdown_complete is True
+        assert disposed == [True]
+    finally:
+        release.set()
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        await wait_for_untracked_db_workers(timeout_seconds=2.0)
+        reset_state_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_audit_health_admitted_before_shutdown_cannot_report_ready(
+    monkeypatch,
+):
+    import asyncio
+    import threading
+
+    from l2shock.ui.components import wait_for_untracked_db_workers
+    from l2shock.ui.state import get_state, reset_state_for_tests
+
+    reset_state_for_tests()
+    entered = threading.Event()
+    release = threading.Event()
+    task = None
+
+    try:
+        module = _audit_isolate_health_runtimes(monkeypatch)
+        state = get_state()
+
+        def database_probe():
+            entered.set()
+            if not release.wait(timeout=5.0):
+                raise TimeoutError("Test did not release the database probe")
+            return {
+                "ok": True,
+                "reachable": True,
+                "current_heads": ["0001_initial"],
+                "expected_head": "0001_initial",
+                "error": None,
+            }
+
+        monkeypatch.setattr(module, "_database_health", database_probe)
+
+        task = asyncio.create_task(module.health_endpoint())
+        assert await asyncio.to_thread(entered.wait, 2.0)
+
+        state.shutdown_started = True
+        release.set()
+        snapshot = await asyncio.wait_for(task, timeout=2.0)
+
+        assert snapshot["database"]["ok"] is True
+        assert snapshot["shutdown_started"] is True
+        assert snapshot["ready"] is False
+        assert snapshot["ok"] is False
+    finally:
+        release.set()
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        await wait_for_untracked_db_workers(timeout_seconds=2.0)
+        reset_state_for_tests()
+
+
+def test_audit_database_health_logs_only_failure_type(monkeypatch, caplog):
+    import logging
+
+    from l2shock.ui.state import reset_state_for_tests
+
+    reset_state_for_tests()
+    try:
+        module = _audit_isolate_health_runtimes(monkeypatch)
+        private_message = "audit-private-health-message"
+        private_cause = "audit-private-health-cause"
+
+        def fail_engine():
+            try:
+                raise ValueError(private_cause)
+            except ValueError as cause:
+                raise RuntimeError(private_message) from cause
+
+        monkeypatch.setattr(module, "get_engine", fail_engine)
+
+        with caplog.at_level(logging.ERROR, logger=module.__name__):
+            result = module._database_health()
+
+        assert result["ok"] is False
+        assert result["error"] == "Unexpected RuntimeError"
+        assert private_message not in caplog.text
+        assert private_cause not in caplog.text
+
+        records = [
+            record for record in caplog.records if record.name == module.__name__
+        ]
+        assert records
+        assert all(record.exc_info is None for record in records)
+    finally:
+        reset_state_for_tests()

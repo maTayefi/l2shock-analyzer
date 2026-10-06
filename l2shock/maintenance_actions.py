@@ -27,6 +27,7 @@ from typing import Final
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError, PendingRollbackError
 from sqlalchemy.orm import Session
 
 from l2shock.acquisition.locks import (
@@ -1416,6 +1417,15 @@ def _execute_raw_pruning(
                             spec,
                         )
                     )
+
+                except DBAPIError, PendingRollbackError:
+                    # A database failure may have aborted the whole PostgreSQL
+                    # transaction. Do not swallow it and later unlink files
+                    # whose attachment changes were rolled back.
+                    #
+                    # Propagation makes session_scope() roll back and sends
+                    # every earlier rename through the outer restore boundary.
+                    raise
 
                 except Exception as exc:
                     failed.append(

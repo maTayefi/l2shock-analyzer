@@ -332,3 +332,109 @@ def test_same_size_content_mismatch_is_blocked(
     assert plan.blocked_count == 1
     assert "SHA-256 differs" in plan.blocked[0].reason
     assert path.is_file()
+
+
+def _audit_retention_plan_for_path(tmp_path, monkeypatch, path_builder):
+    import hashlib
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    from sqlalchemy.orm import Session
+
+    import l2shock.acquisition.retention as module
+    from l2shock.acquisition import SourceFileSpec
+
+    raw_root = tmp_path / "raw"
+    raw_root.mkdir()
+    hour = datetime(2095, 1, 1, 12, tzinfo=timezone.utc)
+    spec = SourceFileSpec(
+        provider="cryptohftdata",
+        venue="binance_futures",
+        symbol="BTCUSDT",
+        data_kind="orderbook",
+        hour_utc=hour,
+    )
+    canonical = spec.local_path(raw_root)
+    content = b"audit-retention-content"
+    stored_path = path_builder(canonical, content)
+
+    row = SimpleNamespace(
+        id=1,
+        provider=spec.provider,
+        venue=spec.venue,
+        instrument=spec.symbol,
+        data_kind=spec.data_kind.value,
+        hour_utc=hour,
+        local_path=str(stored_path),
+        file_size_bytes=len(content),
+        content_sha256=hashlib.sha256(content).hexdigest(),
+        processed_at=hour + timedelta(hours=1),
+    )
+
+    class Rows:
+        def unique(self):
+            return self
+
+        def all(self):
+            return [row]
+
+    with Session() as session:
+        monkeypatch.setattr(
+            session,
+            "scalars",
+            lambda *_args, **_kwargs: Rows(),
+        )
+        return module.plan_processed_raw_retention(
+            session,
+            raw_root=raw_root,
+            retention_hours=1,
+            now=hour + timedelta(hours=4),
+        )
+
+
+def test_audit_retention_accepts_owned_canonical_file(tmp_path, monkeypatch):
+    def build(canonical, content):
+        canonical.parent.mkdir(parents=True)
+        canonical.write_bytes(content)
+        return canonical
+
+    plan = _audit_retention_plan_for_path(tmp_path, monkeypatch, build)
+    assert plan.candidate_count == 1
+    assert plan.blocked_count == 0
+
+
+def test_audit_retention_rejects_alias_to_canonical_file(tmp_path, monkeypatch):
+    import pytest
+
+    def build(canonical, content):
+        canonical.parent.mkdir(parents=True)
+        canonical.write_bytes(content)
+        alias = tmp_path / "alias.parquet"
+        try:
+            alias.symlink_to(canonical)
+        except OSError, NotImplementedError:
+            pytest.skip("File symlinks are unavailable on this platform")
+        return alias
+
+    plan = _audit_retention_plan_for_path(tmp_path, monkeypatch, build)
+    assert plan.candidate_count == 0
+    assert plan.blocked_count == 1
+
+
+def test_audit_retention_rejects_redirected_parent(tmp_path, monkeypatch):
+    import pytest
+
+    def build(canonical, content):
+        external = tmp_path / "external"
+        external.mkdir()
+        (external / canonical.name).write_bytes(content)
+        canonical.parent.parent.mkdir(parents=True)
+        try:
+            canonical.parent.symlink_to(external, target_is_directory=True)
+        except OSError, NotImplementedError:
+            pytest.skip("Directory symlinks are unavailable on this platform")
+        return canonical
+
+    plan = _audit_retention_plan_for_path(tmp_path, monkeypatch, build)
+    assert plan.candidate_count == 0
+    assert plan.blocked_count == 1

@@ -531,7 +531,13 @@ def _verified_quality_summary(
     if payload["schema"] != PRICE_QUALITY_SUMMARY_SCHEMA:
         raise ValueError("Unsupported trade OHLC quality-summary schema")
 
-    if payload["schema_version"] != PRICE_QUALITY_SUMMARY_SCHEMA_VERSION:
+    schema_version = payload["schema_version"]
+
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != PRICE_QUALITY_SUMMARY_SCHEMA_VERSION
+    ):
         raise ValueError("Unsupported trade OHLC quality-summary version")
 
     observation_count = _nonnegative_int(
@@ -568,11 +574,20 @@ def _verified_quality_summary(
     if not isinstance(reasons, Mapping):
         raise ValueError("invalid_reason_counts must be a JSON object")
 
-    normalized_reasons = dict(reasons)
+    if set(reasons) != {"no_trades"}:
+        raise ValueError(
+            "Trade OHLC invalid-reason counts do not match "
+            "format-version-1 no-trade semantics"
+        )
 
-    if normalized_reasons != {
-        "no_trades": invalid_count,
-    }:
+    normalized_reasons = {
+        "no_trades": _nonnegative_int(
+            "invalid_reason_counts.no_trades",
+            reasons["no_trades"],
+        ),
+    }
+
+    if normalized_reasons["no_trades"] != invalid_count:
         raise ValueError(
             "Trade OHLC invalid-reason counts do not match "
             "format-version-1 no-trade semantics"

@@ -921,3 +921,87 @@ async def test_processing_normal_completion_preserves_newer_same_name_marker() -
     assert state.active_operation_started_at == replacement_started_at
 
     reset_state_for_tests()
+
+
+def test_audit_processing_start_without_loop_preserves_snapshot():
+    import warnings
+    from datetime import datetime, timedelta, timezone
+    from decimal import Decimal
+
+    import pytest
+
+    from l2shock.ui.processing_runtime import ManualProcessingRuntime
+    from l2shock.ui.state import get_state, reset_state_for_tests
+
+    reset_state_for_tests()
+    try:
+        runtime = ManualProcessingRuntime()
+        runtime._last_error = "audit previous processing failure"
+        before = runtime.snapshot()
+        state = get_state()
+        start = datetime(2095, 1, 1, 12, tzinfo=timezone.utc)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            with pytest.raises(RuntimeError):
+                runtime.start(
+                    requested_start_utc=start,
+                    requested_end_utc=start + timedelta(hours=1),
+                    lower_depth_fraction=Decimal("0"),
+                    upper_depth_fraction=Decimal("0.01"),
+                )
+
+        assert runtime.snapshot() == before
+        assert state.active_operation_name == ""
+        assert state.active_operation_started_at is None
+        assert state.tracked_tasks == set()
+    finally:
+        reset_state_for_tests()
+
+
+async def test_audit_processing_task_creation_failure_preserves_snapshot(
+    monkeypatch,
+):
+    import asyncio
+    import warnings
+    from datetime import datetime, timedelta, timezone
+    from decimal import Decimal
+
+    import pytest
+
+    import l2shock.ui.processing_runtime as module
+    from l2shock.ui.state import get_state, reset_state_for_tests
+
+    reset_state_for_tests()
+    try:
+        runtime = module.ManualProcessingRuntime()
+        runtime._last_error = "audit previous processing failure"
+        before = runtime.snapshot()
+        state = get_state()
+        start = datetime(2095, 1, 1, 12, tzinfo=timezone.utc)
+
+        def reject_task(_coroutine, **_kwargs):
+            raise RuntimeError("audit task creation rejected")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            with monkeypatch.context() as patch:
+                patch.setattr(module.asyncio, "create_task", reject_task)
+
+                with pytest.raises(RuntimeError, match="creation rejected"):
+                    runtime.start(
+                        requested_start_utc=start,
+                        requested_end_utc=start + timedelta(hours=1),
+                        lower_depth_fraction=Decimal("0"),
+                        upper_depth_fraction=Decimal("0.01"),
+                    )
+
+        await asyncio.sleep(0)
+        assert runtime.snapshot() == before
+        assert runtime.task is None
+        assert state.active_operation_name == ""
+        assert state.active_operation_started_at is None
+        assert state.tracked_tasks == set()
+        assert not state.operation_lock.locked()
+    finally:
+        reset_state_for_tests()

@@ -1558,3 +1558,90 @@ async def test_persistence_join_preserves_default_and_deferred_cancellation(
         assert len(remembered) == 1
 
     assert exited.is_set()
+
+
+@pytest.mark.asyncio
+async def test_audit_unexpected_fetch_logs_exclude_exception_chain(caplog):
+    import logging
+
+    secret = "audit-private-downloader-value"
+    cause_secret = "audit-private-downloader-cause"
+
+    async def handler(_spec, _cancel_event):
+        try:
+            raise ValueError(cause_secret)
+        except ValueError as cause:
+            raise RuntimeError(secret) from cause
+
+    coordinator = ManualFetchCoordinator(
+        operation_lock=asyncio.Lock(),
+        persistence=FakePersistence(),
+        downloader_factory=_factory(FakeDownloader(handler)),
+    )
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger="l2shock.acquisition.coordinator",
+    ):
+        result = await coordinator.run(
+            requested_start_utc=_utc(12),
+            requested_end_utc=_utc(13),
+        )
+
+    assert result.status == "error"
+
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "l2shock.acquisition.coordinator"
+    ]
+    assert records
+    assert secret not in caplog.text
+    assert cause_secret not in caplog.text
+    assert all(record.exc_info is None for record in records)
+    assert any("RuntimeError" in record.getMessage() for record in records)
+
+
+@pytest.mark.asyncio
+async def test_audit_orchestration_logs_exclude_exception_chain(caplog):
+    import logging
+    from contextlib import asynccontextmanager
+
+    secret = "audit-private-context-value"
+    cause_secret = "audit-private-context-cause"
+
+    @asynccontextmanager
+    async def failing_factory():
+        try:
+            raise ValueError(cause_secret)
+        except ValueError as cause:
+            raise RuntimeError(secret) from cause
+        yield
+
+    coordinator = ManualFetchCoordinator(
+        operation_lock=asyncio.Lock(),
+        persistence=FakePersistence(),
+        downloader_factory=failing_factory,
+    )
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger="l2shock.acquisition.coordinator",
+    ):
+        result = await coordinator.run(
+            requested_start_utc=_utc(12),
+            requested_end_utc=_utc(13),
+        )
+
+    assert result.status == "error"
+    assert result.details["fatal_error"] == "Unexpected RuntimeError"
+    assert secret not in caplog.text
+    assert cause_secret not in caplog.text
+
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "l2shock.acquisition.coordinator"
+    ]
+    assert records
+    assert all(record.exc_info is None for record in records)

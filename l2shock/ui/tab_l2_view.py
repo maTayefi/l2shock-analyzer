@@ -655,6 +655,13 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
                 publishing = False
                 _sync_controls()
 
+    def _timeframe_changed(event: Any) -> object:
+        """Reject committed-setting restoration before scheduling a coroutine."""
+        if event.value == displayed_timeframe_setting:
+            return None
+
+        return _change_view(event)
+
     async def _change_view(_event: Any = None) -> None:
         """Change timeframe or bar budget, reloading only when required."""
         nonlocal publishing
@@ -1012,7 +1019,7 @@ def build_l2_view_section() -> Callable[[AnalysisRangeHandoff], Awaitable[bool]]
     stop_button.on_click(_stop)
     reload_presets_button.on_click(_reload_presets)
     base_input.on_value_change(_reload_presets)
-    timeframe_input.on_value_change(_change_view)
+    timeframe_input.on_value_change(_timeframe_changed)
     max_bars_input.on("blur", _change_view)
     max_bars_input.on("keydown.enter", _change_view)
     panel_a.on_value_change(_change_presentation)

@@ -626,7 +626,7 @@ class OrderBookReplayState:
 
     def _rebuild_price_indexes(self) -> None:
         """Rebuild exact top-of-book and range-query indexes."""
-        self._bid_price_heap = [-price for price in self._bids]
+        self._bid_price_heap = [price.copy_negate() for price in self._bids]
         self._ask_price_heap = list(self._asks)
         heapify(self._bid_price_heap)
         heapify(self._ask_price_heap)
@@ -658,7 +658,7 @@ class OrderBookReplayState:
             return
 
         if side is BookSide.BID:
-            replacement = [-price for price in source]
+            replacement = [price.copy_negate() for price in source]
         else:
             replacement = list(source)
 
@@ -677,7 +677,7 @@ class OrderBookReplayState:
             target = self._bids
             heap = self._bid_price_heap
             sorted_prices = self._bid_prices_sorted
-            heap_price = -price
+            heap_price = price.copy_negate()
         else:
             target = self._asks
             heap = self._ask_price_heap
@@ -723,7 +723,7 @@ class OrderBookReplayState:
     def best_bid(self) -> Decimal | None:
         """Return the greatest live bid without scanning all bid levels."""
         while self._bid_price_heap:
-            price = -self._bid_price_heap[0]
+            price = self._bid_price_heap[0].copy_negate()
 
             if price in self._bids:
                 return price

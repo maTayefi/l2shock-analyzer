@@ -59,6 +59,10 @@ from l2shock.db.checkpoint_reference_locks import (
     acquire_checkpoint_reference_transaction_locks,
 )
 from l2shock.db.engine import session_scope
+from l2shock.filesystem import (
+    absolute_path_without_resolution,
+    require_owned_regular_file,
+)
 from l2shock.ingest import (
     BookSampleInvalidReason,
     BookSampleQuality,
@@ -425,30 +429,33 @@ def _verify_existing_local_source_attachment(
             "Existing local raw attachment has no positive durable file size"
         )
 
-    stored_path = Path(path_text).expanduser()
+    stored_path = absolute_path_without_resolution(path_text)
 
     try:
-        if stored_path.is_symlink():
-            raise RemoteArtifactImportError(
-                "Existing local raw attachment cannot be a symbolic link"
-            )
-
-        resolved_path = stored_path.resolve()
-        canonical_path = spec.local_path(
+        raw_root = absolute_path_without_resolution(
             get_settings().storage.raw_path,
-        ).resolve()
+        )
+        canonical_path = absolute_path_without_resolution(
+            spec.local_path(raw_root),
+        )
 
-        if resolved_path != canonical_path:
+        if stored_path != canonical_path:
             raise RemoteArtifactImportError(
                 "Existing local raw attachment is not at its canonical path"
             )
 
-        if not resolved_path.is_file():
-            raise RemoteArtifactImportError(
-                "Existing local raw attachment is not a regular file"
-            )
+        owned_path = require_owned_regular_file(
+            raw_root,
+            stored_path,
+        )
+        actual_digest, actual_size = sha256_file(owned_path)
 
-        actual_digest, actual_size = sha256_file(resolved_path)
+        # Preserve the observable ownership check across content verification.
+        # This is not a claim of race-proof descriptor-based filesystem access.
+        require_owned_regular_file(
+            raw_root,
+            owned_path,
+        )
 
     except RemoteArtifactImportError:
         raise

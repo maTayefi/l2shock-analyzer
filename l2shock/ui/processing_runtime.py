@@ -428,11 +428,24 @@ class ManualProcessingRuntime:
         if not isinstance(upper_depth_fraction, Decimal):
             raise TypeError("upper_depth_fraction must be Decimal")
 
+        # Reject a synchronous call without changing snapshot or admission.
+        asyncio.get_running_loop()
+
         operation_id = uuid4()
         started_at = now_utc()
         cancellation_event = threading.Event()
 
         with self._state_lock:
+            previous_runtime_state = (
+                self._operation_id,
+                self._started_at,
+                self._stop_requested,
+                self._latest_progress,
+                self._last_result,
+                self._last_error,
+                self._cancellation_event,
+            )
+
             self._operation_id = operation_id
             self._started_at = started_at
             self._stop_requested = False
@@ -463,11 +476,20 @@ class ManualProcessingRuntime:
             coroutine.close()
 
             with self._state_lock:
-                self._operation_id = None
-                self._started_at = None
-                self._cancellation_event = None
+                (
+                    self._operation_id,
+                    self._started_at,
+                    self._stop_requested,
+                    self._latest_progress,
+                    self._last_result,
+                    self._last_error,
+                    self._cancellation_event,
+                ) = previous_runtime_state
 
-            if state.active_operation_name == "manual_processing":
+            if (
+                state.active_operation_name == "manual_processing"
+                and state.active_operation_started_at == started_at
+            ):
                 state.active_operation_name = ""
                 state.active_operation_started_at = None
 

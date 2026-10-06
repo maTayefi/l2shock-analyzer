@@ -363,3 +363,116 @@ def test_checkpoint_preview_identity_changes_even_when_size_is_unchanged() -> No
         MaintenanceActionKind.DELETE_ORPHAN_CHECKPOINTS,
         second,
     )
+
+
+def test_audit_raw_pruning_database_failure_restores_earlier_file(
+    tmp_path,
+    monkeypatch,
+):
+    import hashlib
+    from contextlib import contextmanager
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    import pytest
+    from sqlalchemy.exc import DBAPIError
+    from sqlalchemy.orm import Session
+
+    import l2shock.maintenance_actions as module
+    from l2shock.acquisition import SourceFileSpec
+
+    raw_root = tmp_path / "raw"
+    raw_root.mkdir()
+
+    start = datetime(2095, 1, 1, 12, tzinfo=timezone.utc)
+    items = []
+    specs = {}
+    rows = {}
+    original_contents = {}
+
+    for offset in range(2):
+        spec = SourceFileSpec(
+            provider="cryptohftdata",
+            venue="binance_futures",
+            symbol="BTCUSDT",
+            data_kind="orderbook",
+            hour_utc=start + timedelta(hours=offset),
+        )
+        path = spec.local_path(raw_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = f"audit-pruning-source-{offset}".encode("ascii")
+        path.write_bytes(content)
+        digest = hashlib.sha256(content).hexdigest()
+
+        item = {
+            "local_path": str(path),
+            "file_size_bytes": len(content),
+            "content_sha256": digest,
+        }
+        items.append(item)
+        specs[str(path)] = spec
+        rows[spec.identity_tuple] = SimpleNamespace(
+            status="processed",
+            local_path=str(path),
+            file_size_bytes=len(content),
+            content_sha256=digest,
+        )
+        original_contents[path] = content
+
+    reached_successful_exit = []
+
+    @contextmanager
+    def scope():
+        with Session() as session:
+            try:
+                yield session
+            except BaseException:
+                session.rollback()
+                raise
+            else:
+                reached_successful_exit.append(True)
+
+    lock_calls = []
+
+    def acquire_lock(_session, spec):
+        lock_calls.append(spec)
+        if len(lock_calls) == 2:
+            raise DBAPIError(
+                "audit simulated source-lock statement",
+                {},
+                RuntimeError("audit simulated database failure"),
+            )
+
+    monkeypatch.setattr(module, "session_scope", scope)
+    monkeypatch.setattr(
+        module,
+        "_source_spec_from_item",
+        lambda item: specs[str(item["local_path"])],
+    )
+    monkeypatch.setattr(
+        module,
+        "_source_row_for_spec",
+        lambda _session, spec: rows[spec.identity_tuple],
+    )
+    monkeypatch.setattr(
+        module,
+        "acquire_source_hour_transaction_lock",
+        acquire_lock,
+    )
+
+    settings = SimpleNamespace(
+        storage=SimpleNamespace(raw_path=raw_root),
+    )
+    preview = SimpleNamespace(items=tuple(items))
+
+    with pytest.raises(DBAPIError):
+        module._execute_raw_pruning(preview, settings=settings)
+
+    assert len(lock_calls) == 2
+    assert reached_successful_exit == []
+
+    for path, content in original_contents.items():
+        assert path.is_file()
+        assert path.read_bytes() == content
+
+    assert list(raw_root.rglob("*.pruning")) == []

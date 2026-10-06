@@ -200,11 +200,13 @@ class ManualFetchCoordinator:
                 await result
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             # UI/progress rendering must not corrupt acquisition truth.
-            log.exception(
-                "Fetch progress sink failed for operation %s.",
+            # Arbitrary callback exception text may contain private details.
+            log.error(
+                "Fetch progress sink failed for operation %s; error_type=%s.",
                 event.operation_id,
+                type(exc).__name__,
             )
 
     async def _record_interrupted_source(
@@ -239,10 +241,12 @@ class ManualFetchCoordinator:
                 # so fetch ownership cannot end while the source-state write
                 # remains outstanding.
                 continue
-            except Exception:
-                log.exception(
-                    "Could not persist interrupted source state for %s.",
+            except Exception as exc:
+                log.error(
+                    "Could not persist interrupted source state for %s; "
+                    "error_type=%s.",
                     spec.remote_path,
+                    type(exc).__name__,
                 )
                 return
 
@@ -262,10 +266,11 @@ class ManualFetchCoordinator:
 
         try:
             task.result()
-        except Exception:
-            log.exception(
-                "Could not persist interrupted source state for %s.",
+        except Exception as exc:
+            log.error(
+                "Could not persist interrupted source state for %s; " "error_type=%s.",
                 spec.remote_path,
+                type(exc).__name__,
             )
 
     async def _join_persistence[T](
@@ -546,9 +551,10 @@ class ManualFetchCoordinator:
                         # cancel every later file in the plan.
                         diagnostic = _safe_unexpected_error(admission_exception)
 
-                        log.exception(
-                            "Could not admit source %s for download.",
+                        log.error(
+                            "Could not admit source %s for download; error_type=%s.",
                             spec.remote_path,
+                            type(admission_exception).__name__,
                         )
 
                         items.append(
@@ -710,9 +716,10 @@ class ManualFetchCoordinator:
                         items.append(item)
                         failed += 1
 
-                        log.exception(
-                            "Unexpected source fetch failure for %s.",
+                        log.error(
+                            "Unexpected source fetch failure for %s; error_type=%s.",
                             spec.remote_path,
+                            type(exc).__name__,
                         )
 
                         await self._emit(
@@ -763,11 +770,12 @@ class ManualFetchCoordinator:
                                     )
                                 except asyncio.CancelledError:
                                     raise
-                                except Exception:
-                                    log.exception(
+                                except Exception as persistence_exc:
+                                    log.error(
                                         "Could not persist the artifact failure "
-                                        "for %s.",
+                                        "for %s; error_type=%s.",
                                         spec.remote_path,
+                                        type(persistence_exc).__name__,
                                     )
 
                             items.append(
@@ -835,9 +843,10 @@ class ManualFetchCoordinator:
             # remain excluded because they may contain a DSN or request data.
             fatal_diagnostic = _safe_unexpected_error(exc)
 
-            log.exception(
-                "Manual fetch coordinator failed for operation %s.",
+            log.error(
+                "Manual fetch coordinator failed for operation %s; error_type=%s.",
                 operation_id,
+                type(exc).__name__,
             )
 
         if stopped and native_cancellation is None:

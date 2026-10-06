@@ -1130,9 +1130,11 @@ def stream_l2_view(
         _canonical(
             {
                 "schema": "l2shock.l2_view_input",
-                "schema_version": 2,
+                "schema_version": 3,
                 "l2_view_policy": "available_verified_observations_v1",
                 "aggregate_l2_algorithm": AGGREGATE_L2_ALGORITHM_VERSION,
+                "l2_warning_seconds": options.l2_warning_seconds,
+                "price_warning_seconds": options.price_warning_seconds,
                 "base": request.base,
                 "preset_hash": request.preset_hash,
                 "start_utc": start.isoformat(),
@@ -1154,6 +1156,12 @@ def stream_l2_view(
     price_status: str | None = None  # None while price is still trusted
     price_tracking = True
     price_found = False
+
+    # Missing price observations are still trusted absence. A retrieval,
+    # decoding, or slot-validation failure ends trust at an exact requested
+    # UTC second, independently of the L2 streaming chunk size.
+    price_trusted_until_epoch = end_epoch
+
     usable = unusable = partial_total = 0
     hours_done = 0
 
@@ -1216,6 +1224,7 @@ def stream_l2_view(
                         ):
                             if hourly_price_repository is None:
                                 price_tracking = False
+                                price_trusted_until_epoch = low
                             else:
                                 hourly_price_rows = _price_rows_by_hour(
                                     hourly_price_repository.list_price_hours(
@@ -1232,6 +1241,7 @@ def stream_l2_view(
                     except Exception as exc:
                         price_status = _price_failure_status(exc)
                         price_tracking = False
+                        price_trusted_until_epoch = low
                         log.exception("Optional Analysis price context unavailable.")
 
                 if price_row is not None and price_status is None:
@@ -1253,6 +1263,7 @@ def stream_l2_view(
                     except Exception as exc:
                         price_status = _price_failure_status(exc)
                         price_tracking = False
+                        price_trusted_until_epoch = low
                         decoded_price = None
                         log.exception("Optional Analysis price hour failed to decode.")
 
@@ -1280,6 +1291,7 @@ def stream_l2_view(
                         except L2ViewError:
                             price_status = PRICE_STATUS_CORRUPT
                             price_tracking = False
+                            price_trusted_until_epoch = epoch
                             decoded_price = None
                             log.exception("Verified price slot is inconsistent.")
 
@@ -1311,6 +1323,22 @@ def stream_l2_view(
 
     if price_status is None:
         price_status = PRICE_STATUS_LOADED if price_found else PRICE_STATUS_MISSING
+
+    digest.update(
+        _canonical(
+            {
+                "kind": "load_outcome",
+                "price_status": price_status,
+                "price_trusted_until_utc": _from_epoch(
+                    price_trusted_until_epoch,
+                ).isoformat(),
+                "price_regions_available": price_tracking,
+                "l2_regions_truncated": l2_tracker.truncated,
+                "price_regions_truncated": price_truncated,
+            }
+        )
+        + b"\n"
+    )
 
     projection = L2ViewProjection(
         request=request,

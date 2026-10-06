@@ -21,6 +21,7 @@ from l2shock.config import get_settings
 from l2shock.db.engine import get_engine
 from l2shock.db.schema import expected_alembic_head, verify_schema
 from l2shock.timeutils import now_utc
+from l2shock.ui.components import run_db_worker_thread
 from l2shock.ui.fetch_runtime import peek_manual_fetch_runtime
 from l2shock.ui.automatic_fetch_runtime import (
     get_automatic_fetch_runtime,
@@ -82,7 +83,24 @@ def _disk_health() -> dict[str, Any]:
         }
 
 
+def _shutdown_database_health() -> dict[str, Any]:
+    """Report intentionally unavailable DB readiness without opening an engine."""
+    return {
+        "ok": False,
+        "reachable": None,
+        "current_heads": [],
+        "expected_head": expected_alembic_head(),
+        "error": "Database health probing is blocked during application shutdown",
+        "probe_skipped": True,
+    }
+
+
 def _database_health() -> dict[str, Any]:
+    # An admitted worker may not start executing until after shutdown raises
+    # its barrier. In that case it needs no connection at all.
+    if get_state().shutdown_started:
+        return _shutdown_database_health()
+
     expected_head = expected_alembic_head()
 
     try:
@@ -102,7 +120,10 @@ def _database_health() -> dict[str, Any]:
         }
 
     except Exception as exc:
-        log.exception("Database health probe failed.")
+        log.error(
+            "Database health probe failed; error_type=%s.",
+            type(exc).__name__,
+        )
         return {
             "ok": False,
             "reachable": False,
@@ -112,11 +133,21 @@ def _database_health() -> dict[str, Any]:
         }
 
 
-def build_health_snapshot() -> dict[str, Any]:
-    """Return process, database, and local-storage readiness state."""
+async def build_health_snapshot() -> dict[str, Any]:
+    """Return readiness with shutdown-owned database probing."""
     state = get_state()
-    database = _database_health()
-    disk = _disk_health()
+
+    if state.shutdown_started:
+        database = _shutdown_database_health()
+    else:
+        # Admission and registration occur on the application event loop.
+        # Cancellation of the HTTP caller must not hide the running DB thread
+        # from shutdown's registered-reader join.
+        database = await run_db_worker_thread(_database_health)
+
+    # Disk probing uses no database connection or engine. Keep its potentially
+    # blocking filesystem call off the event loop as well.
+    disk = await asyncio.to_thread(_disk_health)
     now = now_utc()
 
     started_at = state.process_started_at
@@ -331,8 +362,8 @@ def build_health_snapshot() -> dict[str, Any]:
 
 
 @app.get("/health")
-def health_endpoint() -> dict[str, Any]:
-    return build_health_snapshot()
+async def health_endpoint() -> dict[str, Any]:
+    return await build_health_snapshot()
 
 
 @ui.page("/")

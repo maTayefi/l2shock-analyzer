@@ -275,3 +275,81 @@ def test_price_provenance_decoder_rejects_noncanonical_source_order() -> None:
         match="not canonical",
     ):
         PriceHourlyProvenance.from_dict(payload)
+
+
+def test_audit_price_summary_rejects_noninteger_schema_versions(monkeypatch):
+    from types import SimpleNamespace
+
+    import pytest
+
+    import l2shock.db.price_repository as module
+
+    monkeypatch.setattr(
+        module,
+        "decode_hourly_trade_ohlc_blocks",
+        lambda _encoded: SimpleNamespace(
+            valid_count=3599,
+            invalid_count=1,
+            total_trade_count=3599,
+        ),
+    )
+    encoded = SimpleNamespace(observation_count=3600)
+    payload = {
+        "schema": module.PRICE_QUALITY_SUMMARY_SCHEMA,
+        "schema_version": 1,
+        "observation_count": 3600,
+        "valid_count": 3599,
+        "invalid_count": 1,
+        "total_trade_count": 3599,
+        "invalid_reason_counts": {"no_trades": 1},
+    }
+
+    assert module._verified_quality_summary(payload, encoded=encoded) == payload
+
+    for version in (True, False, 1.0, "1", None):
+        changed = dict(payload)
+        changed["schema_version"] = version
+        with pytest.raises(ValueError):
+            module._verified_quality_summary(changed, encoded=encoded)
+
+
+def test_audit_price_summary_rejects_boolean_and_float_reason_counts(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    import pytest
+
+    import l2shock.db.price_repository as module
+
+    encoded = SimpleNamespace(observation_count=3600)
+
+    for invalid_count in (0, 1):
+        valid_count = 3600 - invalid_count
+        decoded = SimpleNamespace(
+            valid_count=valid_count,
+            invalid_count=invalid_count,
+            total_trade_count=valid_count,
+        )
+        monkeypatch.setattr(
+            module,
+            "decode_hourly_trade_ohlc_blocks",
+            lambda _encoded, result=decoded: result,
+        )
+        payload = {
+            "schema": module.PRICE_QUALITY_SUMMARY_SCHEMA,
+            "schema_version": 1,
+            "observation_count": 3600,
+            "valid_count": valid_count,
+            "invalid_count": invalid_count,
+            "total_trade_count": valid_count,
+            "invalid_reason_counts": {"no_trades": invalid_count},
+        }
+
+        assert module._verified_quality_summary(payload, encoded=encoded) == payload
+
+        for count in (bool(invalid_count), float(invalid_count)):
+            changed = dict(payload)
+            changed["invalid_reason_counts"] = {"no_trades": count}
+            with pytest.raises(ValueError):
+                module._verified_quality_summary(changed, encoded=encoded)
